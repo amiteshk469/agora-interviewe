@@ -1,0 +1,11 @@
+packages:
+  - "apps/web"
+  - "packages/*"
+
+allowBuilds:
+  unrs-resolver: true
+
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - unrs-resolver

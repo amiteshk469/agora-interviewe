@@ -1,0 +1,43 @@
+# Human-readable service map. Secret values are read from the named environment
+# variables in .env.example, not stored in this file.
+web:
+  base_url: http://localhost:3000
+  env: WEB_BASE_URL
+  api_base_url_env: NEXT_PUBLIC_API_BASE_URL
+  agent_backend_url_env: AGENT_BACKEND_URL
+  agora_app_id_env: NEXT_PUBLIC_AGORA_APP_ID
+  demo_mode_env: NEXT_PUBLIC_DEMO_MODE
+  supabase_url_env: NEXT_PUBLIC_SUPABASE_URL
+  supabase_anon_key_env: NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+api:
+  base_url: http://localhost:8000
+  env: API_BASE_URL
+
+agora:
+  conversational_ai_base_url: https://api.agora.io/api/conversational-ai-agent/v2/projects
+  app_id_env: AGORA_APP_ID
+  app_certificate_env: AGORA_APP_CERTIFICATE
+  customer_id_env: AGORA_CUSTOMER_ID
+  customer_secret_env: AGORA_CUSTOMER_SECRET
+  webhook_secret_env: AGORA_WEBHOOK_SECRET
+  custom_llm_url_env: AGORA_CUSTOM_LLM_URL
+  custom_llm_bearer_secret_env: AGORA_LLM_BEARER_SECRET
+
+supabase:
+  url_env: SUPABASE_URL
+  anon_key_env: SUPABASE_ANON_KEY
+  service_role_key_env: SUPABASE_SERVICE_ROLE_KEY
+  database_url_env: DATABASE_URL
+  documents_bucket: candidate-documents
+  artifacts_bucket: session-artifacts
+
+models:
+  llm_base_url_env: LLM_BASE_URL
+  llm_key_env: LLM_API_KEY
+  embedding_base_url_env: EMBEDDING_BASE_URL
+  embedding_key_env: EMBEDDING_API_KEY
+
+search:
+  base_url_env: WEB_SEARCH_BASE_URL
+  api_key_env: WEB_SEARCH_API_KEY

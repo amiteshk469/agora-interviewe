@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      database: ${{ steps.filter.outputs.database }}
+      shared: ${{ steps.filter.outputs.shared }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'apps/web/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.github/workflows/ci.yml'
+            api:
+              - 'apps/api/**'
+              - '.github/workflows/ci.yml'
+            database:
+              - 'supabase/**'
+              - '.github/workflows/ci.yml'
+            shared:
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.github/workflows/ci.yml'
+
+  shared:
+    name: Shared packages
+    needs: changes
+    if: needs.changes.outputs.shared == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @roundcraft/contracts typecheck
+      - run: pnpm --filter @roundcraft/config typecheck
+      - run: pnpm --filter @roundcraft/config test
+
+  web:
+    name: Web
+    needs: changes
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.shared == 'true'
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_AGORA_APP_ID: mock-agora-app-id
+      NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
+      NEXT_PUBLIC_DEMO_MODE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir apps/web lint
+      - run: pnpm --dir apps/web typecheck
+      - run: pnpm --dir apps/web test
+      - run: pnpm --dir apps/web build
+
+  api:
+    name: API
+    needs: changes
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.shared == 'true'
+    runs-on: ubuntu-latest
+    env:
+      AGORA_APP_CERTIFICATE: mock-certificate
+      AGORA_APP_ID: mock-agora-app-id
+      AGORA_CUSTOMER_ID: mock-customer-id
+      AGORA_CUSTOMER_SECRET: mock-customer-secret
+      AGORA_CUSTOM_LLM_URL: http://127.0.0.1:8000/llm/chat/completions
+      AGORA_LLM_BEARER_SECRET: mock-llm-bearer-secret
+      AGORA_MOCK_MODE: "true"
+      AGORA_WEBHOOK_SECRET: mock-webhook-secret
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      DEV_AUTH_ENABLED: "true"
+      ENVIRONMENT: test
+      LLM_API_KEY: mock-llm-key
+      SUPABASE_ANON_KEY: mock-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: mock-service-role-key
+      SUPABASE_URL: https://example.supabase.co
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+        working-directory: apps/api
+      - run: uv run ruff check .
+        working-directory: apps/api
+      - run: uv run mypy app
+        working-directory: apps/api
+      - run: uv run pytest
+        working-directory: apps/api
+
+  database:
+    name: Database migrations
+    needs: changes
+    if: needs.changes.outputs.database == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v2
+        with:
+          version: 2.116.0
+      - run: supabase start
+      - run: supabase db reset --local
+      - run: supabase db lint --local --level warning
+      - if: always()
+        run: supabase stop --no-backup
+
+  required:
+    name: Required
+    if: always()
+    needs: [changes, shared, web, api, database]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a selected check failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) exit 1 ;;
+          esac

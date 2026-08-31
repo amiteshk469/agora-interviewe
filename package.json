@@ -1,0 +1,28 @@
+{
+  "name": "roundcraft",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "concurrently -n web,api -c cyan,blue \"pnpm dev:web\" \"pnpm dev:api\"",
+    "dev:web": "pnpm --dir apps/web dev",
+    "dev:api": "uv run --locked --directory apps/api uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "lint": "pnpm lint:web && pnpm lint:api",
+    "lint:web": "pnpm --dir apps/web lint",
+    "lint:api": "uv run --locked --all-extras --directory apps/api ruff check .",
+    "format": "pnpm --dir apps/web format && uv run --locked --all-extras --directory apps/api ruff format .",
+    "typecheck": "pnpm typecheck:shared && pnpm typecheck:web && pnpm typecheck:api",
+    "typecheck:shared": "pnpm --filter @roundcraft/contracts typecheck && pnpm --filter @roundcraft/config typecheck",
+    "typecheck:web": "pnpm --dir apps/web typecheck",
+    "typecheck:api": "uv run --locked --all-extras --directory apps/api mypy app",
+    "test": "pnpm test:shared && pnpm test:web && pnpm test:api",
+    "test:shared": "pnpm --filter @roundcraft/config test",
+    "test:web": "pnpm --dir apps/web test",
+    "test:api": "uv run --locked --all-extras --directory apps/api pytest",
+    "build": "pnpm --dir apps/web build",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
