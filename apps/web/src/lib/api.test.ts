@@ -6,6 +6,7 @@ const localStorageMock = {
   getItem: (key: string) => storage.get(key) ?? null,
   setItem: (key: string, value: string) => storage.set(key, value),
 };
+const productBase = `${process.env.NEXT_PUBLIC_API_BASE_URL ?? ""}/v1`;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -33,9 +34,9 @@ describe("configured interview flow", () => {
 
     expect(live).toMatchObject({ sessionId: "session-1", agentId: "agent-1", demo: false });
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      "/v1/interview-configs",
-      "/v1/sessions",
-      "/v1/sessions/session-1/start",
+      `${productBase}/interview-configs`,
+      `${productBase}/sessions`,
+      `${productBase}/sessions/session-1/start`,
     ]);
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer test-jwt");
   });
@@ -52,7 +53,7 @@ describe("configured interview flow", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(renewInterviewSessionToken("session-1")).resolves.toMatchObject({ token: "fresh" });
-    expect(fetchMock.mock.calls[0][0]).toBe("/v1/sessions/session-1/token");
+    expect(fetchMock.mock.calls[0][0]).toBe(`${productBase}/sessions/session-1/token`);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
   });

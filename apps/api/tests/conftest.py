@@ -18,6 +18,9 @@ os.environ.update(
         "LLM_API_KEY": "test-upstream-key",
         "AGORA_WEBHOOK_SECRET": "test-webhook-secret",
         "SUPABASE_JWT_SECRET": "test-supabase-jwt-secret-at-least-32-bytes",
+        "SUPABASE_JWT_AUDIENCE": "authenticated",
+        "SUPABASE_JWT_ISSUER": "https://test.supabase.co/auth/v1",
+        "SUPABASE_URL": "https://test.supabase.co",
     }
 )
 

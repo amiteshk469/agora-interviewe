@@ -35,6 +35,7 @@ async def test_supabase_hs256_jwt_authentication(client: AsyncClient) -> None:
             "sub": "00000000-0000-4000-8000-000000000002",
             "role": "authenticated",
             "aud": "authenticated",
+            "iss": "https://test.supabase.co/auth/v1",
             "exp": int(time.time()) + 300,
         },
         "test-supabase-jwt-secret-at-least-32-bytes",
