@@ -29,7 +29,7 @@ import {
 import type { RTMClient } from "agora-rtm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Camera, CameraOff, Radio } from "lucide-react";
-import { Badge, Button } from "@/components/ui";
+import { Alert, Badge, Button } from "@/components/ui";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
 
@@ -41,6 +41,10 @@ type Props = {
   onAgentState?: (state: LiveAgentState) => void;
   onMediaState?: (state: LiveMediaState) => void;
 };
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
 
 export default function AgoraVoiceClient(props: Props) {
   const clientRef = useRef<ReturnType<typeof AgoraRTC.createClient> | null>(null);
@@ -58,13 +62,14 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [connectionState, setConnectionState] = useState("CONNECTING");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
+  const [voiceError, setVoiceError] = useState("");
 
-  const { isConnected } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
-  const { localMicrophoneTrack } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
-  const { localCameraTrack } = useLocalCameraTrack(true);
-  const { videoTracks } = useRemoteVideoTracks(remoteUsers);
-  const { audioTracks } = useRemoteAudioTracks(remoteUsers);
-  usePublish([localMicrophoneTrack, localCameraTrack]);
+  const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
+  const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
+  const { localCameraTrack, error: cameraError } = useLocalCameraTrack(true);
+  const { videoTracks, error: remoteVideoError } = useRemoteVideoTracks(remoteUsers);
+  const { audioTracks, error: remoteAudioError } = useRemoteAudioTracks(remoteUsers);
+  const { error: publishError } = usePublish([localMicrophoneTrack, localCameraTrack]);
 
   useEffect(() => {
     onMediaState?.({
@@ -104,11 +109,18 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
           onAgentState?.(event.state);
         });
         ai.on(AgoraVoiceAIEvents.AGENT_METRICS, (_, metrics) => console.debug("[AgoraVoiceAI] metrics", metrics));
-        ai.on(AgoraVoiceAIEvents.MESSAGE_ERROR, (agentUid, error) => console.error("[AgoraVoiceAI] message error", agentUid, error));
-        ai.on(AgoraVoiceAIEvents.AGENT_ERROR, (agentUid, error) => console.error("[AgoraVoiceAI] agent error", agentUid, error));
+        ai.on(AgoraVoiceAIEvents.MESSAGE_ERROR, (agentUid, error) => {
+          console.error("[AgoraVoiceAI] message error", agentUid, error);
+          setVoiceError(`${errorMessage(error, "Agora could not process a live message")}. Rejoin from the lobby if it continues.`);
+        });
+        ai.on(AgoraVoiceAIEvents.AGENT_ERROR, (agentUid, error) => {
+          console.error("[AgoraVoiceAI] agent error", agentUid, error);
+          setVoiceError(`${errorMessage(error, "The interviewer agent encountered an error")}. Rejoin from the lobby to recover.`);
+        });
         ai.subscribeMessage(config.channel_name);
       } catch (error) {
         console.error("[AgoraVoiceAI] init failed", error);
+        if (!cancelled) setVoiceError(`${errorMessage(error, "Agora voice initialization failed")}. Return to the lobby, then retry the session.`);
       }
     })();
     return () => {
@@ -123,18 +135,23 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
 
   useClientEvent(client, "connection-state-change", (current) => setConnectionState(current));
   useClientEvent(client, "token-privilege-will-expire", async () => {
-    if (sessionId) {
-      const next = await renewInterviewSessionToken(sessionId);
-      await client.renewToken(next.token);
-      await rtmClient.renewToken(next.token);
-      return;
+    try {
+      if (sessionId) {
+        const next = await renewInterviewSessionToken(sessionId);
+        await client.renewToken(next.token);
+        await rtmClient.renewToken(next.token);
+        return;
+      }
+      const [rtcConfig, rtmConfig] = await Promise.all([
+        getAgoraConfig({ channel: config.channel_name, uid: String(client.uid ?? config.uid) }),
+        getAgoraConfig({ channel: config.channel_name, uid: config.uid }),
+      ]);
+      await client.renewToken(rtcConfig.token);
+      await rtmClient.renewToken(rtmConfig.token);
+    } catch (error) {
+      console.error("[AgoraVoiceAI] token renewal failed", error);
+      setVoiceError(`${errorMessage(error, "Agora credentials could not be renewed")}. Rejoin from the lobby before the connection expires.`);
     }
-    const [rtcConfig, rtmConfig] = await Promise.all([
-      getAgoraConfig({ channel: config.channel_name, uid: String(client.uid ?? config.uid) }),
-      getAgoraConfig({ channel: config.channel_name, uid: config.uid }),
-    ]);
-    await client.renewToken(rtcConfig.token);
-    await rtmClient.renewToken(rtmConfig.token);
   });
 
   const visualizerState = useMemo<AgentVisualizerState>(() => {
@@ -145,29 +162,54 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     return "ambient";
   }, [agentState, connectionState, isConnected]);
 
+  const sdkError = joinError || microphoneError || cameraError || publishError || remoteAudioError || remoteVideoError;
+  const displayedError = voiceError || (sdkError
+    ? `${errorMessage(sdkError, "Agora media initialization failed")}. Check browser media permissions, then rejoin from the lobby.`
+    : "");
+  const connectionStatus = displayedError
+    ? "Agora voice needs attention"
+    : connectionState === "RECONNECTING"
+      ? "Reconnecting to Agora…"
+      : isConnected
+        ? `Live: ${agentState || "joining"}`
+        : connectionState === "DISCONNECTED"
+          ? "Agora disconnected"
+          : "Joining Agora…";
+
   const toggleMic = useCallback(async () => {
     const next = !enabled;
-    if (localMicrophoneTrack) await localMicrophoneTrack.setEnabled(next);
-    setEnabled(next);
+    try {
+      if (localMicrophoneTrack) await localMicrophoneTrack.setEnabled(next);
+      setEnabled(next);
+    } catch (error) {
+      setVoiceError(`${errorMessage(error, "The microphone could not be updated")}. Check browser permissions and retry.`);
+    }
   }, [enabled, localMicrophoneTrack]);
 
   const toggleCamera = useCallback(async () => {
     const next = !cameraEnabled;
-    if (localCameraTrack) await localCameraTrack.setEnabled(next);
-    setCameraEnabled(next);
+    try {
+      if (localCameraTrack) await localCameraTrack.setEnabled(next);
+      setCameraEnabled(next);
+    } catch (error) {
+      setVoiceError(`${errorMessage(error, "The camera could not be updated")}. Check browser permissions and retry.`);
+    }
   }, [cameraEnabled, localCameraTrack]);
 
   return (
-    <div className="flex flex-wrap items-center justify-center gap-2 rounded-xl border bg-card px-3 py-2 shadow-[var(--panel-shadow)]" aria-label="Agora live media controls">
-      <div className="size-10 overflow-hidden rounded-md border bg-background"><AgentVisualizer state={visualizerState} size="sm" /></div>
-      <Badge variant="default"><Radio className="size-3" aria-hidden="true" />{isConnected ? `Live: ${agentState ?? "joining"}` : "Joining Agora"}</Badge>
-      <div className="conversation-mic-host flex items-center justify-center">
-        <MicButtonWithVisualizer isEnabled={enabled} setIsEnabled={setEnabled} track={localMicrophoneTrack} onToggle={toggleMic} aria-label={enabled ? "Mute microphone" : "Unmute microphone"} enabledColor="oklch(0.675 0.175 245)" disabledColor="oklch(0.63 0.205 25)" />
+    <div className="space-y-2">
+      {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
+      <div className="flex flex-wrap items-center justify-center gap-2 rounded-xl border bg-card px-3 py-2 shadow-[var(--panel-shadow)]" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
+        <div className="size-10 overflow-hidden rounded-md border bg-background" aria-hidden="true"><AgentVisualizer state={visualizerState} size="sm" /></div>
+        <Badge variant={displayedError ? "destructive" : isConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><Radio className="size-3" aria-hidden="true" />{connectionStatus}</Badge>
+        <div className="conversation-mic-host flex items-center justify-center">
+          <MicButtonWithVisualizer isEnabled={enabled} setIsEnabled={setEnabled} track={localMicrophoneTrack} onToggle={toggleMic} aria-label={enabled ? "Mute microphone" : "Unmute microphone"} enabledColor="oklch(0.675 0.175 245)" disabledColor="oklch(0.63 0.205 25)" />
+        </div>
+        <Button size="icon" variant={cameraEnabled ? "outline" : "secondary"} onClick={toggleCamera} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}>
+          {cameraEnabled ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}
+        </Button>
+        {audioTracks.map((track) => <RemoteAudioTrack key={String(track.getUserId())} track={track} play />)}
       </div>
-      <Button size="icon" variant={cameraEnabled ? "outline" : "secondary"} onClick={toggleCamera} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}>
-        {cameraEnabled ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}
-      </Button>
-      {audioTracks.map((track) => <RemoteAudioTrack key={String(track.getUserId())} track={track} play />)}
     </div>
   );
 }

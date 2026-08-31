@@ -26,8 +26,10 @@ apps/api/.env
 apps/web/.env.local
 
 # Local platform state
+.agora/
 .vercel/
 .supabase/
+supabase/.temp/
 .DS_Store
 
 # Source-alignment reference clone

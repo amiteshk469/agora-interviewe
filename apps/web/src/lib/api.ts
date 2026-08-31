@@ -1,3 +1,5 @@
+import { getSupabaseBrowserClient } from "@/lib/supabase";
+
 export type AgoraConfig = {
   app_id: string;
   token: string;
@@ -14,7 +16,7 @@ export type AgoraPanelParticipant = {
   video_mode: "live" | "portrait" | "audio";
 };
 
-export const demoModeEnabled = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+export const demoModeEnabled = process.env.NEXT_PUBLIC_DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
 const demoUserId = process.env.NEXT_PUBLIC_DEV_AUTH_USER_ID ?? "00000000-0000-4000-8000-000000000001";
 
 type Envelope<T> = { code: number; msg?: string; data?: T };
@@ -59,42 +61,48 @@ export async function stopAgoraAgent(agentId: string) {
   await request<unknown>("/api/stopAgent", { method: "POST", body: JSON.stringify({ agentId }) });
 }
 
-const productBase = `${process.env.NEXT_PUBLIC_API_BASE_URL ?? ""}/v1`;
+const configuredProductBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(/\/+$/, "") ?? "";
 
-function productToken() {
-  const stored = typeof window === "undefined" ? null : window.localStorage.getItem("roundcraft.supabase_access_token");
-  if (stored) return stored;
+function productBase() {
+  if (
+    !configuredProductBase
+    || /YOUR-|REPLACE|\.example(?:\.|\/|$)|\.invalid(?:\.|\/|$)/i.test(configuredProductBase)
+    || (process.env.NODE_ENV === "production" && /localhost|127\.0\.0\.1/i.test(configuredProductBase))
+  ) {
+    throw new Error("The RoundCraft API is not configured for this deployment.");
+  }
+  return `${configuredProductBase}/v1`;
+}
+
+async function productToken() {
   if (demoModeEnabled) return `dev:${demoUserId}`;
+  if (process.env.NODE_ENV === "test") {
+    const testToken = typeof window === "undefined" ? null : window.localStorage.getItem("roundcraft.supabase_access_token");
+    if (testToken && !testToken.startsWith("dev:")) return testToken;
+  }
+  const session = await getSupabaseBrowserClient().auth.getSession();
+  if (session.error) throw session.error;
+  if (session.data.session?.access_token) return session.data.session.access_token;
   throw new Error("Sign in is required before saving this interview");
 }
 
 async function refreshProductToken() {
-  const refreshToken = typeof window === "undefined" ? null : window.localStorage.getItem("roundcraft.supabase_refresh_token");
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!refreshToken || !supabaseUrl || !anonKey || demoModeEnabled) return null;
-  const response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
-    method: "POST",
-    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
-  const body = await response.json().catch(() => null) as { access_token?: string; refresh_token?: string } | null;
-  if (!response.ok || !body?.access_token) return null;
-  window.localStorage.setItem("roundcraft.supabase_access_token", body.access_token);
-  if (body.refresh_token) window.localStorage.setItem("roundcraft.supabase_refresh_token", body.refresh_token);
-  return body.access_token;
+  if (demoModeEnabled) return null;
+  const refreshed = await getSupabaseBrowserClient().auth.refreshSession();
+  if (refreshed.error) return null;
+  return refreshed.data.session?.access_token ?? null;
 }
 
 async function fetchWithAuth(url: string, init?: RequestInit) {
   const run = (token: string) => fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...init?.headers } });
-  const response = await run(productToken());
+  const response = await run(await productToken());
   if (response.status !== 401) return response;
   const refreshed = await refreshProductToken();
   return refreshed ? run(refreshed) : response;
 }
 
 async function productRequest<T>(path: string, init?: RequestInit) {
-  const response = await fetchWithAuth(`${productBase}${path}`, {
+  const response = await fetchWithAuth(`${productBase()}${path}`, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
@@ -123,11 +131,59 @@ export type JobDescriptionResponse = {
   error?: string | null;
 };
 
+export type PromptTemplateRecord = {
+  id: string;
+  owner_id: string | null;
+  parent_id: string | null;
+  slug: string;
+  version: number;
+  name: string;
+  role: string;
+  description: string;
+  prompt: string;
+  knowledge: Record<string, unknown>;
+  behavior: Record<string, unknown>;
+  is_builtin: boolean;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type CreatePromptTemplateInput = {
+  slug: string;
+  name: string;
+  role: string;
+  description?: string;
+  prompt: string;
+  knowledge?: Record<string, unknown>;
+  behavior?: Record<string, unknown>;
+};
+
+export type ForkPromptTemplateInput = Partial<Omit<CreatePromptTemplateInput, "role">>;
+
+export function listPromptTemplates() {
+  return productRequest<PromptTemplateRecord[]>("/prompt-templates");
+}
+
+export function createPromptTemplate(payload: CreatePromptTemplateInput) {
+  return productRequest<PromptTemplateRecord>("/prompt-templates", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function forkPromptTemplate(templateId: string, payload: ForkPromptTemplateInput) {
+  return productRequest<PromptTemplateRecord>(`/prompt-templates/${templateId}/fork`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export type ProductPanelist = {
   id?: string;
   display_name: string;
   role: string;
   expertise: string[];
+  prompt_template_id?: string;
   custom_prompt?: string;
   knowledge_prompt?: string;
   voice: string;
@@ -153,8 +209,15 @@ export type ProductSession = {
   id: string;
   interview_config_id: string;
   status: string;
+  config_snapshot: Record<string, unknown>;
+  memory_state?: Record<string, unknown>;
+  channel_name?: string | null;
+  user_uid?: number | null;
+  agent_uid?: number | null;
   agora_agent_id?: string | null;
-  config_snapshot?: Record<string, unknown>;
+  started_at?: string | null;
+  ended_at?: string | null;
+  created_at: string;
 };
 
 export type StoredLiveSession = {
@@ -174,6 +237,10 @@ export async function createInterviewSession(interviewConfigId: string) {
     method: "POST",
     body: JSON.stringify({ interview_config_id: interviewConfigId }),
   });
+}
+
+export function listInterviewSessions() {
+  return productRequest<ProductSession[]>("/sessions");
 }
 
 export async function startInterviewSession(sessionId: string) {
@@ -293,28 +360,4 @@ export function readLiveSession(): StoredLiveSession | null {
   const value = window.sessionStorage.getItem("roundcraft.live_session");
   if (!value) return null;
   try { return JSON.parse(value) as StoredLiveSession; } catch { return null; }
-}
-
-export async function authenticateUser(mode: "sign-in" | "sign-up", email: string, password: string) {
-  if (demoModeEnabled) {
-    const token = `dev:${demoUserId}`;
-    window.localStorage.setItem("roundcraft.supabase_access_token", token);
-    return { accessToken: token, confirmationRequired: false, demo: true };
-  }
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !anonKey) throw new Error("Supabase authentication is not configured");
-  const path = mode === "sign-up" ? "/auth/v1/signup" : "/auth/v1/token?grant_type=password";
-  const response = await fetch(`${supabaseUrl}${path}`, {
-    method: "POST",
-    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const body = await response.json().catch(() => null) as { access_token?: string; refresh_token?: string; session?: { access_token?: string; refresh_token?: string }; msg?: string; error_description?: string } | null;
-  if (!response.ok) throw new Error(body?.msg || body?.error_description || "Authentication failed");
-  const accessToken = body?.access_token || body?.session?.access_token;
-  if (accessToken) window.localStorage.setItem("roundcraft.supabase_access_token", accessToken);
-  const refreshToken = body?.refresh_token || body?.session?.refresh_token;
-  if (refreshToken) window.localStorage.setItem("roundcraft.supabase_refresh_token", refreshToken);
-  return { accessToken: accessToken ?? null, confirmationRequired: !accessToken && mode === "sign-up", demo: false };
 }

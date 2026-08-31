@@ -8,7 +8,7 @@ web:
   agora_app_id_env: NEXT_PUBLIC_AGORA_APP_ID
   demo_mode_env: NEXT_PUBLIC_DEMO_MODE
   supabase_url_env: NEXT_PUBLIC_SUPABASE_URL
-  supabase_anon_key_env: NEXT_PUBLIC_SUPABASE_ANON_KEY
+  supabase_publishable_key_env: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 
 api:
   base_url: http://localhost:8000
@@ -26,8 +26,8 @@ agora:
 
 supabase:
   url_env: SUPABASE_URL
-  anon_key_env: SUPABASE_ANON_KEY
-  service_role_key_env: SUPABASE_SERVICE_ROLE_KEY
+  publishable_key_env: SUPABASE_PUBLISHABLE_KEY
+  secret_key_env: SUPABASE_SECRET_KEY
   database_url_env: DATABASE_URL
   documents_bucket: candidate-documents
   artifacts_bucket: session-artifacts

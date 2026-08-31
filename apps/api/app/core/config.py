@@ -1,12 +1,64 @@
 import json
+import re
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import SplitResult, urlsplit
 from uuid import UUID
 
 from fastapi import Depends
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PLACEHOLDER_PATTERN = re.compile(
+    r"(?:replace[_-]?with|placeholder|change[_-]?me|<[^>]+>|\$\{[^}]+\}|"
+    r"your(?:[_-][a-z0-9]+)*[_-](?:key|url|id|host|project|secret|model))",
+    re.IGNORECASE,
+)
+
+
+def _public_https_url(value: str, name: str, *, origin_only: bool = False) -> SplitResult:
+    if PLACEHOLDER_PATTERN.search(value):
+        raise ValueError(f"{name} contains a placeholder")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid public HTTPS URL") from exc
+
+    if parsed.scheme != "https" or not hostname:
+        raise ValueError(f"{name} must be a public HTTPS URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{name} must not contain credentials")
+
+    normalized_host = hostname.rstrip(".").lower()
+    example_host = (
+        normalized_host.endswith((".example", ".invalid", ".test", ".localhost"))
+        or normalized_host in {"localhost", "example.com", "example.net", "example.org"}
+        or normalized_host.endswith((".example.com", ".example.net", ".example.org"))
+    )
+    try:
+        non_public_ip = not ip_address(normalized_host).is_global
+    except ValueError:
+        non_public_ip = False
+    if example_host or non_public_ip:
+        raise ValueError(f"{name} must use a public non-example host")
+    if origin_only and (parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+        raise ValueError(f"{name} must contain only an HTTPS origin")
+    return parsed
+
+
+def _url_origin(value: SplitResult) -> tuple[str, str, int | None]:
+    return value.scheme, value.hostname.rstrip(".").lower() if value.hostname else "", value.port
+
+
+def _required_secret(value: str, name: str, *, minimum_length: int = 16) -> str:
+    stripped = value.strip()
+    if len(stripped) < minimum_length or PLACEHOLDER_PATTERN.search(stripped):
+        raise ValueError(f"{name} must contain a non-placeholder production credential")
+    return stripped
 
 
 class Settings(BaseSettings):
@@ -22,11 +74,27 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:8000"
     web_base_url: str = "http://localhost:3000"
     cors_origins: str = "http://localhost:3000"
+    release_sha: str = Field(
+        default="local",
+        validation_alias=AliasChoices("RENDER_GIT_COMMIT", "RELEASE_SHA", "release_sha"),
+    )
 
     database_url: str = "sqlite+aiosqlite:///./roundcraft.db"
     supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_service_role_key: str = ""
+    supabase_anon_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY", "supabase_anon_key"
+        ),
+    )
+    supabase_service_role_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_SECRET_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "supabase_service_role_key",
+        ),
+    )
     supabase_jwt_secret: str = ""
     supabase_jwks_url: str = ""
     supabase_jwt_audience: str = "authenticated"
@@ -95,19 +163,99 @@ class Settings(BaseSettings):
         if self.dev_auth_enabled and self.environment not in {"development", "test"}:
             raise ValueError("DEV_AUTH_ENABLED is allowed only in development or test")
         if self.agora_avatar_vendor not in {"liveavatar", "generic", "akool", "anam"}:
-            raise ValueError("AGORA_AVATAR_VENDOR must be liveavatar, generic, akool, or anam")
+            raise ValueError(
+                "AGORA_AVATAR_VENDOR must be liveavatar, generic, akool, or anam"
+            )
         if self.agora_avatar_quality not in {"low", "medium", "high"}:
             raise ValueError("AGORA_AVATAR_QUALITY must be low, medium, or high")
+        if self.environment == "production":
+            api_url = _public_https_url(self.api_base_url, "API_BASE_URL", origin_only=True)
+            web_url = _public_https_url(self.web_base_url, "WEB_BASE_URL", origin_only=True)
+            supabase_url = _public_https_url(self.supabase_url, "SUPABASE_URL", origin_only=True)
+            custom_llm_url = _public_https_url(
+                self.agora_custom_llm_url, "AGORA_CUSTOM_LLM_URL"
+            )
+            groq_url = _public_https_url(self.llm_base_url, "LLM_BASE_URL")
+
+            if not re.match(r"^postgres(?:ql)?(?:\+asyncpg)?://", self.database_url):
+                raise ValueError("DATABASE_URL must use PostgreSQL in production")
+            try:
+                database_host = urlsplit(self.database_url).hostname
+                if not database_host or PLACEHOLDER_PATTERN.search(database_host):
+                    raise ValueError("DATABASE_URL must include a PostgreSQL host")
+            except ValueError as exc:
+                raise ValueError("DATABASE_URL must be a valid PostgreSQL URL") from exc
+            if not re.fullmatch(r"[a-fA-F0-9]{7,40}", self.release_sha):
+                raise ValueError("RENDER_GIT_COMMIT must identify the production release commit")
+
+            if not re.fullmatch(r"[a-fA-F0-9]{32}", self.agora_app_id) or self.agora_app_id == "0" * 32:
+                raise ValueError("AGORA_APP_ID must be a valid 32-character Agora App ID")
+            if (
+                not re.fullmatch(r"[a-fA-F0-9]{32}", self.agora_app_certificate)
+                or self.agora_app_certificate == "0" * 32
+            ):
+                raise ValueError(
+                    "AGORA_APP_CERTIFICATE must be a valid 32-character Agora App Certificate"
+                )
+            _required_secret(self.agora_llm_bearer_secret, "AGORA_LLM_BEARER_SECRET", minimum_length=24)
+            _required_secret(self.agora_webhook_secret, "AGORA_WEBHOOK_SECRET")
+
+            if custom_llm_url.path.rstrip("/") != "/llm/chat/completions":
+                raise ValueError("AGORA_CUSTOM_LLM_URL must end with /llm/chat/completions")
+            if custom_llm_url.query or custom_llm_url.fragment:
+                raise ValueError("AGORA_CUSTOM_LLM_URL must not contain a query or fragment")
+            if _url_origin(custom_llm_url) != _url_origin(api_url):
+                raise ValueError("AGORA_CUSTOM_LLM_URL must use the API_BASE_URL origin")
+
+            supabase_secret = _required_secret(
+                self.supabase_service_role_key, "SUPABASE_SECRET_KEY", minimum_length=20
+            )
+            if not (
+                supabase_secret.startswith("sb_secret_")
+                or (supabase_secret.startswith("eyJ") and supabase_secret.count(".") == 2)
+            ):
+                raise ValueError("SUPABASE_SECRET_KEY must be a Supabase secret or service-role key")
+            if _url_origin(supabase_url)[0] != "https":
+                raise ValueError("SUPABASE_URL must use HTTPS")
+
+            if groq_url.hostname != "api.groq.com" or groq_url.path.rstrip("/") != "/openai/v1":
+                raise ValueError("LLM_BASE_URL must be the Groq OpenAI-compatible API base URL")
+            if groq_url.query or groq_url.fragment:
+                raise ValueError("LLM_BASE_URL must not contain a query or fragment")
+            if not _required_secret(self.llm_api_key, "LLM_API_KEY", minimum_length=20).startswith("gsk_"):
+                raise ValueError("LLM_API_KEY must be a Groq API key")
+            if (
+                not self.llm_model.strip()
+                or self.llm_model == "gpt-4o-mini"
+                or PLACEHOLDER_PATTERN.search(self.llm_model)
+            ):
+                raise ValueError("LLM_MODEL must name a non-placeholder Groq model")
+
+            origins = self.allowed_origins
+            if not origins or "*" in origins:
+                raise ValueError("CORS_ORIGINS must list explicit production HTTPS origins")
+            parsed_origins = [
+                _public_https_url(origin, "CORS_ORIGINS", origin_only=True)
+                for origin in origins
+            ]
+            if _url_origin(web_url) not in {_url_origin(origin) for origin in parsed_origins}:
+                raise ValueError("CORS_ORIGINS must include WEB_BASE_URL")
         return self
 
     @property
     def allowed_origins(self) -> list[str]:
         if self.cors_origins.strip().startswith("["):
             decoded = json.loads(self.cors_origins)
-            if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
-                raise ValueError("CORS_ORIGINS must be a JSON string array or comma-separated string")
+            if not isinstance(decoded, list) or not all(
+                isinstance(item, str) for item in decoded
+            ):
+                raise ValueError(
+                    "CORS_ORIGINS must be a JSON string array or comma-separated string"
+                )
             return [origin.strip() for origin in decoded if origin.strip()]
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        return [
+            origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
+        ]
 
     @property
     def resolved_jwks_url(self) -> str:

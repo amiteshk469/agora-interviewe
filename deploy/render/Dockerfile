@@ -17,10 +17,10 @@ WORKDIR /app
 COPY --from=builder --chown=roundcraft:roundcraft /app /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PORT=8080 \
+    PORT=10000 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 USER roundcraft
-EXPOSE 8080
+EXPOSE 10000
 
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

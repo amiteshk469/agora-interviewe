@@ -13,7 +13,7 @@ DEFAULT_PANEL: list[dict[str, Any]] = [
         "mood": "professional",
         "behavior": "evidence-seeking",
         "interruption_style": "contextual",
-        "allowed_tools": ["knowledge_search", "evidence_bookmark", "replay"],
+        "allowed_tools": ["knowledge_search"],
     },
     {
         "id": "product-sense",
@@ -24,7 +24,7 @@ DEFAULT_PANEL: list[dict[str, Any]] = [
         "mood": "curious",
         "behavior": "probing",
         "interruption_style": "clarifying",
-        "allowed_tools": ["knowledge_search", "web_search", "evidence_bookmark", "replay"],
+        "allowed_tools": ["knowledge_search", "web_search"],
     },
     {
         "id": "analytics",
@@ -35,7 +35,7 @@ DEFAULT_PANEL: list[dict[str, Any]] = [
         "mood": "focused",
         "behavior": "challenging",
         "interruption_style": "evidence-gap",
-        "allowed_tools": ["knowledge_search", "calculator", "evidence_bookmark", "replay"],
+        "allowed_tools": ["knowledge_search", "calculator"],
     },
 ]
 
@@ -93,15 +93,31 @@ class PanelDirector:
         scored: list[tuple[float, PanelistInput]] = []
         for panelist in panel:
             score = -1.5 * counts[panelist.id]
-            score += 3 if any(term.lower() in text for term in panelist.expertise) else 0
-            score += 2 if panelist.id == state.current_speaker_id and any(
-                cue in text for cue in ("because", "result", "metric", "tradeoff")
-            ) else 0
-            score += 1 if counts[panelist.id] == min((counts[item.id] for item in panel), default=0) else 0
+            score += (
+                3 if any(term.lower() in text for term in panelist.expertise) else 0
+            )
+            score += (
+                2
+                if panelist.id == state.current_speaker_id
+                and any(
+                    cue in text for cue in ("because", "result", "metric", "tradeoff")
+                )
+                else 0
+            )
+            score += (
+                1
+                if counts[panelist.id]
+                == min((counts[item.id] for item in panel), default=0)
+                else 0
+            )
             scored.append((score, panelist))
         selected = max(scored, key=lambda item: (item[0], item[1].id))[1]
-        has_evidence = any(cue in text for cue in ("%", "metric", "result", "measured", "users"))
-        action: Literal["probe", "challenge"] = "probe" if not has_evidence else "challenge"
+        has_evidence = any(
+            cue in text for cue in ("%", "metric", "result", "measured", "users")
+        )
+        action: Literal["probe", "challenge"] = (
+            "probe" if not has_evidence else "challenge"
+        )
         question = (
             "What evidence would let us verify that claim?"
             if not has_evidence
@@ -118,10 +134,18 @@ class PanelDirector:
 def jd_recommendations(text: str) -> dict[str, Any]:
     lowered = text.lower()
     signals = {
-        "analytics": sum(word in lowered for word in ("metric", "sql", "experiment", "data")),
-        "growth": sum(word in lowered for word in ("growth", "acquisition", "retention", "funnel")),
-        "technical": sum(word in lowered for word in ("api", "platform", "technical", "engineering")),
-        "leadership": sum(word in lowered for word in ("lead", "stakeholder", "influence", "strategy")),
+        "analytics": sum(
+            word in lowered for word in ("metric", "sql", "experiment", "data")
+        ),
+        "growth": sum(
+            word in lowered for word in ("growth", "acquisition", "retention", "funnel")
+        ),
+        "technical": sum(
+            word in lowered for word in ("api", "platform", "technical", "engineering")
+        ),
+        "leadership": sum(
+            word in lowered for word in ("lead", "stakeholder", "influence", "strategy")
+        ),
     }
     ranked = sorted(signals, key=lambda key: (-signals[key], key))
     selected = [key for key in ranked if signals[key] > 0][:2]
@@ -140,8 +164,6 @@ def jd_recommendations(text: str) -> dict[str, Any]:
                 "knowledge_search",
                 "calculator",
                 "web_search",
-                "evidence_bookmark",
-                "replay",
             ],
         }
     if "technical" in selected:
@@ -160,8 +182,6 @@ def jd_recommendations(text: str) -> dict[str, Any]:
                     "knowledge_search",
                     "calculator",
                     "web_search",
-                    "evidence_bookmark",
-                    "replay",
                 ],
             },
         )
@@ -179,7 +199,8 @@ def _extract_role_title(text: str) -> str:
     for line in text.splitlines():
         candidate = line.strip(" #:-\t")
         if 3 <= len(candidate) <= 120 and any(
-            word in candidate.lower() for word in ("product manager", "product lead", "product owner")
+            word in candidate.lower()
+            for word in ("product manager", "product lead", "product owner")
         ):
             return candidate
     return "Product Manager"

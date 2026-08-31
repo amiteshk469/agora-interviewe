@@ -38,7 +38,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, loading = false, children, disabled, ...props }, ref) => {
     const styles = cn(buttonVariants({ variant, size }), className);
     if (asChild) return <Slot className={styles} ref={ref} {...props}>{children}</Slot>;
-    return <button className={styles} ref={ref} disabled={disabled || loading} {...props}>{loading ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}{children}</button>;
+    return (
+      <button className={styles} ref={ref} disabled={disabled || loading} {...props} aria-busy={loading || props["aria-busy"] || undefined}>
+        {loading ? <><LoaderCircle className="animate-spin" aria-hidden="true" /><span className="sr-only" role="status">Loading…</span></> : null}
+        {children}
+      </button>
+    );
   },
 );
 Button.displayName = "Button";
@@ -86,14 +91,14 @@ export function Input({ className, autoComplete = "off", ...props }: React.Input
   return <input autoComplete={autoComplete} className={cn("h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", className)} {...props} />;
 }
 
-export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cn("min-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", className)} {...props} />;
+export function Textarea({ className, autoComplete = "off", ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea autoComplete={autoComplete} className={cn("min-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", className)} {...props} />;
 }
 
 export function Select({ className, children, autoComplete = "off", ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <span className="relative block">
-      <select autoComplete={autoComplete} className={cn("h-10 w-full appearance-none rounded-md border border-input bg-background px-3 pe-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", className)} {...props}>{children}</select>
+      <select autoComplete={autoComplete} className={cn("h-10 w-full appearance-none rounded-md border border-input bg-background px-3 pe-9 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", className)} {...props}>{children}</select>
       <ChevronDown className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     </span>
   );

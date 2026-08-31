@@ -1,112 +1,79 @@
 # Deployment and operations
 
-## Environments
+## Production topology
 
-Use three isolated environments:
+| Component | Platform | Release gate |
+|---|---|---|
+| Next.js frontend | Vercel | GitHub `CI` succeeds, then the staged production deployment is smoke-tested and promoted |
+| FastAPI backend | Render (`roundcraft-api.onrender.com`) | Render's `checksPass` trigger waits for GitHub `CI`, then `/health/ready` must pass its database and catalog checks |
+| Auth, Postgres, Storage | Supabase | Migrations are applied before dependent API changes merge; readiness fails closed when the required prompt catalog is absent |
+| Voice and video agents | Agora | Real staging-channel verification before production credentials are enabled |
 
-| Environment | Frontend | API | Supabase | Agora |
-|---|---|---|---|---|
-| Local | Next.js dev server | FastAPI/uvicorn | local Supabase or dev project | demo mode or a dev App ID |
-| Preview | Vercel Preview | shared non-production Cloud Run service | non-production project | dev App ID; mocked in pull-request CI |
-| Production | promoted Vercel deployment | promoted Cloud Run revision in `asia-south1` | production project | production App ID |
-
-Do not share Supabase service-role keys, Agora App Certificates, or provider keys across environments.
+Production must use an always-on Render plan. A sleeping API adds cold-start delay to Agora callbacks and live interviews.
 
 ## GitHub configuration
 
-Create a protected GitHub Environment named `production`. Require approval if the team wants a manual production gate.
+Protect `main` with the single `CI / Required` check. CI detects changed paths and runs only the applicable web, API, shared-package, and database jobs. Pull requests use demo mode and dummy Agora credentials; they never consume production quota or secrets.
 
-### Secrets
+Create a protected GitHub Environment named `production` for Vercel releases:
 
-| Name | Used by |
-|---|---|
-| `VERCEL_TOKEN` | Vercel CLI deployment and rollback |
-| `SUPABASE_DB_URL` | migration dry-run and push; use a direct Postgres URI |
+| Kind | Name | Purpose |
+|---|---|---|
+| Secret | `VERCEL_TOKEN` | Vercel CLI deployment and rollback |
+| Variable | `VERCEL_ORG_ID` | Vercel account/team selection |
+| Variable | `VERCEL_PROJECT_ID` | Vercel project selection |
 
-### Variables
+Render deployment needs no GitHub secret, deploy hook, GCP identity, or service-account key. Render reads the linked `main` branch and deploys only after checks pass.
+Changes to `render.yaml` also run a secret-free schema check against Render's official Blueprint schema inside the required API CI job.
 
-| Name | Example |
-|---|---|
-| `GCP_PROJECT_ID` | `roundcraft-prod` |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/123/locations/global/workloadIdentityPools/github/providers/roundcraft` |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | `github-deploy@roundcraft-prod.iam.gserviceaccount.com` |
-| `GAR_REPOSITORY` | `roundcraft` |
-| `CLOUD_RUN_SERVICE` | `roundcraft-api` |
-| `VERCEL_ORG_ID` | Vercel team or account ID |
-| `VERCEL_PROJECT_ID` | Vercel project ID |
+## Frontend release
 
-GitHub authenticates to Google Cloud through Workload Identity Federation. Do not create or store a Google service-account JSON key.
+`.github/workflows/deploy-web.yml` runs after successful `main` CI or by a manual dispatch pinned to the current `main` tip. A dispatch from another branch or tag fails before release tests:
 
-Grant the GitHub deploy service account only Artifact Registry Writer, Cloud Run Admin on `roundcraft-api`, and Service Account User on the runtime service account. Bind the GitHub repository principal to that deploy account with Workload Identity User. The separate runtime account needs Secret Manager Secret Accessor only for the `roundcraft-*` secrets referenced by the service template.
+1. Re-check shared packages and the web application at the exact release commit.
+2. Pull Vercel Production settings.
+3. Reject missing values, demo mode, non-public or placeholder URLs and Agora IDs, privileged credentials in browser variables, URL paths such as `/v1`, and a mismatch between `NEXT_PUBLIC_API_BASE_URL` and `AGENT_BACKEND_URL`.
+4. Build a staged Production deployment with pinned Vercel CLI `59.10.0`.
+5. Smoke test the candidate, then wait for the configured backend `/health/ready` endpoint to report the same release commit.
+6. Promote that exact deployment without rebuilding only after both checks pass.
 
-## Required check
+The required Vercel values and project settings are documented in `deploy/vercel/README.md`.
 
-Protect `main` with the single `CI / Required` check. The workflow detects changed paths and runs only the applicable web, API, shared-package, and database jobs. The aggregator succeeds for intentionally skipped jobs and fails if any selected job fails or is cancelled.
+## Backend release
 
-Automated production workflows listen to the completed `CI` workflow on `main`, not directly to `push`. They run only when CI succeeds, check out the exact successful commit, and refuse an automated release if that commit is no longer the tip of `main`. Manual dispatch remains available, but it runs the same release verification before accessing production.
+`render.yaml` and `deploy/render/Dockerfile` are the backend deployment contract:
 
-Pull-request checks set `NEXT_PUBLIC_DEMO_MODE=true` and dummy Agora credentials. They test application behavior without spending Agora quota or exposing production secrets. A real Agora voice smoke test belongs in a controlled non-production environment after merge.
+1. Render watches API and Render configuration paths only.
+2. `autoDeployTrigger: checksPass` waits for GitHub CI on the linked branch; the required API job also validates the Blueprint schema.
+3. Render builds the locked Python 3.12 image and starts Uvicorn on the injected `PORT`.
+4. Render sends `/health/ready` checks to the new instance. Production readiness verifies Postgres connectivity and all 12 active built-in templates from migration `202609010001`; traffic is not routed when the schema or catalog is missing.
+5. The previous successful deploy remains available for rollback in Render's Events page.
 
-Avatar deployments additionally require `AGORA_AVATAR_ENABLED`,
-`AGORA_AVATAR_VENDOR`, a shared or vendor-specific avatar API key, and any provider-specific
-avatar IDs/base URL. Keep every avatar key in Secret Manager. If it is absent or incomplete, the API safely
-returns static-portrait/audio-only participants instead of sending an invalid avatar block.
+Before connecting the Blueprint to an existing service, match its exact service name. The Blueprint intentionally omits region, plan, and instance count so the existing Render settings remain authoritative. Secrets use `sync: false` and are supplied only in the Render dashboard. The canonical Render and Vercel origins, Agora callback, and matching CORS allowlist are fixed in the Blueprint; update them together when a domain changes. Production startup validates public HTTPS API, web, Supabase, Agora callback, and Groq URLs; a PostgreSQL database; Agora App ID, certificate, callback bearer, and webhook secret; Supabase server secret; Groq key and model; and explicit HTTPS CORS origins containing `WEB_BASE_URL`.
 
-## Release flow
+## Database migrations
 
-### Web
+Render does not receive a Supabase management credential. Apply backward-compatible migrations before merging an API change that needs them:
 
-`.github/workflows/deploy-web.yml` runs after successful `main` CI or by manual dispatch:
+```bash
+supabase db push --dry-run --db-url "$SUPABASE_DB_URL"
+supabase db push --db-url "$SUPABASE_DB_URL"
+```
 
-1. Re-run shared and web lint, type, and test checks against the release commit.
-2. Install the locked workspace, pull Vercel Production settings, and fail if a required variable is absent or demo mode is enabled.
-3. Build with pinned Vercel CLI `59.10.0`.
-4. Deploy the prebuilt Production output with `--skip-domain`, creating a staged production candidate without changing the live alias.
-5. Smoke test the candidate URL.
-6. Promote that exact staged production deployment without rebuilding it.
-
-Vercel project settings are documented in `deploy/vercel/README.md`.
-
-The Vercel project requires `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AGORA_APP_ID`, `NEXT_PUBLIC_DEMO_MODE`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and server-only `AGENT_BACKEND_URL`. Set each independently for Preview and Production. The two Supabase public values are safe to expose only with RLS enabled; never use a service-role key in Vercel browser configuration.
-
-### API and database
-
-`.github/workflows/deploy-api.yml` runs after successful `main` CI or by manual dispatch:
-
-1. Re-run API lint, type, and test checks against the release commit.
-2. Exchange GitHub's OIDC token for a short-lived Google credential and validate the deployed `AGORA_CUSTOM_LLM_URL`.
-3. Build the API image from `deploy/cloud-run/Dockerfile` and publish the immutable release-SHA tag to Artifact Registry.
-4. Deploy a tagged Cloud Run revision with zero production traffic and verify `/health/live` before changing the database.
-5. Preview Supabase migrations with `db push --dry-run`, then push them.
-6. Check `/health/live` and `/health/ready` through the candidate URL against the migrated schema.
-7. Move 100 percent of traffic to the verified candidate tag.
-
-Migrations must be backward-compatible with the currently serving API because the previous revision continues serving traffic while schema changes are applied. Use additive columns/tables first; remove old schema only after all serving revisions no longer depend on it.
+Use additive changes first. Remove old columns or tables only after the previous Render deploy no longer needs them. Rollbacks never reverse database migrations automatically. The readiness gate limits blast radius but does not apply migrations: a missing catalog intentionally leaves the new Render revision unhealthy until the migration is applied.
 
 ## Rollback
 
-Run `Roll back production` manually and type `ROLLBACK`:
+- Web: run `Roll back web production`, type `ROLLBACK`, and optionally provide a Vercel deployment URL/ID.
+- API: in the Render service's Events page, choose a recent successful deploy and select **Rollback**. Dashboard rollback also disables auto-deploy until the incident is resolved; re-enable `checksPass` afterward.
 
-- For web, optionally provide a known Vercel deployment URL/ID. Leaving it blank selects Vercel's previous production deployment.
-- For API, provide an existing Cloud Run revision name. The workflow moves all traffic to it.
+## Release verification
 
-Rollback never reverses database migrations. Apply a forward corrective migration when schema repair is required; automatic down migrations risk data loss and may be incompatible with revisions that are still available.
-
-## Local secrets
-
-Copy `.env.example` to a local ignored file. The repository tracks only placeholders. Vercel Production/Preview variables live in Vercel, API runtime secrets live in Google Secret Manager, and deployment credentials live in the GitHub `production` environment.
-
-Before release, verify:
+Run locally:
 
 ```bash
 pnpm verify
-docker build --file deploy/cloud-run/Dockerfile apps/api
+docker build --file deploy/render/Dockerfile apps/api
 ```
 
-Then confirm the actual Agora flow in non-production with both a two-person and five-person
-panel: every agent and avatar publisher joins with a distinct UID, all video tiles appear,
-only the selected interviewer is audible, 1 → 3 → 1 selection works, candidate interruption
-stops the current TTS/avatar, RTM transcripts and signed webhooks map to the right participant,
-group stop removes every agent, and evidence appears in the final report. Repeat with the
-avatar key intentionally absent to verify static/audio fallback. This live check is also where
-Agora PCU limits and the chosen avatar vendor's concurrent-session limits must be validated.
+Then verify two-role and five-role staging panels: one physical Agora agent, one audible interviewer, non-linear 1 → 3 → 1 role selection, interruption, RTM transcript correlation, single-agent cleanup, and evidence-linked reporting. Repeat without an avatar key to verify animated identity-tile and audio fallback.

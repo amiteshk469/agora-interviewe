@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -29,7 +30,10 @@ class TimestampMixin:
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -37,6 +41,23 @@ class PromptTemplate(TimestampMixin, Base):
     __tablename__ = "prompt_templates"
     __table_args__ = (
         CheckConstraint("version > 0", name="prompt_templates_version_positive"),
+        Index(
+            "prompt_templates_builtin_slug_version_key",
+            "slug",
+            "version",
+            unique=True,
+            postgresql_where=text("owner_id is null"),
+            sqlite_where=text("owner_id is null"),
+        ),
+        Index(
+            "prompt_templates_owner_slug_version_key",
+            "owner_id",
+            "slug",
+            "version",
+            unique=True,
+            postgresql_where=text("owner_id is not null"),
+            sqlite_where=text("owner_id is not null"),
+        ),
         Index("prompt_templates_owner_role_idx", "owner_id", "role"),
     )
 
@@ -81,7 +102,8 @@ class InterviewConfig(TimestampMixin, Base):
     __tablename__ = "interview_configs"
     __table_args__ = (
         CheckConstraint(
-            "duration_minutes between 10 and 120", name="interview_configs_duration_range"
+            "duration_minutes between 10 and 120",
+            name="interview_configs_duration_range",
         ),
         Index("interview_configs_user_status_idx", "user_id", "status"),
     )
@@ -105,7 +127,9 @@ class InterviewSession(TimestampMixin, Base):
     __tablename__ = "interview_sessions"
     __table_args__ = (
         Index("interview_sessions_user_status_idx", "user_id", "status"),
-        Index("interview_sessions_config_created_idx", "interview_config_id", "created_at"),
+        Index(
+            "interview_sessions_config_created_idx", "interview_config_id", "created_at"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -127,9 +151,15 @@ class InterviewSession(TimestampMixin, Base):
 class PanelParticipant(Base):
     __tablename__ = "panel_participants"
     __table_args__ = (
-        UniqueConstraint("session_id", "panelist_id", name="panel_participants_panelist_key"),
-        UniqueConstraint("session_id", "agent_uid", name="panel_participants_agent_uid_key"),
-        UniqueConstraint("session_id", "avatar_uid", name="panel_participants_avatar_uid_key"),
+        UniqueConstraint(
+            "session_id", "panelist_id", name="panel_participants_panelist_key"
+        ),
+        UniqueConstraint(
+            "session_id", "agent_uid", name="panel_participants_agent_uid_key"
+        ),
+        UniqueConstraint(
+            "session_id", "avatar_uid", name="panel_participants_avatar_uid_key"
+        ),
         Index("panel_participants_session_status_idx", "session_id", "status"),
     )
 
@@ -142,7 +172,9 @@ class PanelParticipant(Base):
     role: Mapped[str] = mapped_column(String(80))
     agent_uid: Mapped[int] = mapped_column(Integer)
     avatar_uid: Mapped[int] = mapped_column(Integer)
-    agora_agent_id: Mapped[str | None] = mapped_column(String(128), unique=True, index=True)
+    agora_agent_id: Mapped[str | None] = mapped_column(
+        String(128), unique=True, index=True
+    )
     avatar_vendor: Mapped[str | None] = mapped_column(String(32))
     avatar_id: Mapped[str | None] = mapped_column(String(200))
     avatar_image: Mapped[str | None] = mapped_column(Text)
@@ -157,9 +189,13 @@ class PanelParticipant(Base):
 class TranscriptTurn(Base):
     __tablename__ = "transcript_turns"
     __table_args__ = (
-        UniqueConstraint("session_id", "sequence", name="transcript_turns_session_sequence_key"),
         UniqueConstraint(
-            "session_id", "agora_turn_id", name="transcript_turns_session_agora_turn_key"
+            "session_id", "sequence", name="transcript_turns_session_sequence_key"
+        ),
+        UniqueConstraint(
+            "session_id",
+            "agora_turn_id",
+            name="transcript_turns_session_agora_turn_key",
         ),
         Index("transcript_turns_session_sequence_idx", "session_id", "sequence"),
     )
@@ -177,7 +213,9 @@ class TranscriptTurn(Base):
     confidence: Mapped[float | None] = mapped_column(Float)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    turn_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    turn_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -212,7 +250,9 @@ class EvidenceItem(Base):
 
 class ToolRun(Base):
     __tablename__ = "tool_runs"
-    __table_args__ = (Index("tool_runs_session_created_idx", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("tool_runs_session_created_idx", "session_id", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     session_id: Mapped[UUID] = mapped_column(
@@ -255,7 +295,9 @@ class AssessmentReport(Base):
 
 class ReplayDrill(Base):
     __tablename__ = "replay_drills"
-    __table_args__ = (Index("replay_drills_session_created_idx", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("replay_drills_session_created_idx", "session_id", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     session_id: Mapped[UUID] = mapped_column(

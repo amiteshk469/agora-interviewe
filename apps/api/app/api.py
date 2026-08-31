@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -35,6 +36,7 @@ from app.models import (
     TranscriptTurn,
 )
 from app.schemas import (
+    INTERVIEWER_TOOL_NAMES,
     AgoraWebhookOut,
     AssessmentReportOut,
     ConnectionConfig,
@@ -52,8 +54,11 @@ from app.schemas import (
     PanelistInput,
     PanelParticipantOut,
     PanelState,
+    PromptRubricCriterion,
+    PromptTemplateBehavior,
     PromptTemplateCreate,
     PromptTemplateFork,
+    PromptTemplateKnowledge,
     PromptTemplateOut,
     ReplayDrillOut,
     RubricCriterion,
@@ -70,7 +75,11 @@ from app.schemas import (
 from app.services.agora import AgoraDep
 from app.services.agora_events import map_agora_event, reconcile_agora_history
 from app.services.assessment import build_assessment, build_replay_drills
-from app.services.documents import SUPPORTED_DOCUMENT_TYPES, StorageDep, extract_document
+from app.services.documents import (
+    SUPPORTED_DOCUMENT_TYPES,
+    StorageDep,
+    extract_document,
+)
 from app.services.evidence import persist_candidate_turn, persist_inferred_evidence
 from app.services.tools import DEFINITIONS, execute_tool
 
@@ -78,7 +87,9 @@ router = APIRouter(prefix="/v1")
 
 
 async def _owned(db: Db, model: Any, object_id: UUID, user_id: UUID) -> Any:
-    result = await db.execute(select(model).where(model.id == object_id, model.user_id == user_id))
+    result = await db.execute(
+        select(model).where(model.id == object_id, model.user_id == user_id)
+    )
     value = result.scalar_one_or_none()
     if value is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Resource not found")
@@ -87,23 +98,39 @@ async def _owned(db: Db, model: Any, object_id: UUID, user_id: UUID) -> Any:
 
 def _default_role_tools(member: PanelistInput) -> list[str]:
     descriptor = " ".join((member.role, *member.expertise)).lower()
-    tools = ["knowledge_search", "evidence_bookmark", "replay"]
-    if any(cue in descriptor for cue in ("analytic", "metric", "growth", "technical", "estimat")):
+    tools = ["knowledge_search"]
+    if any(
+        cue in descriptor
+        for cue in ("analytic", "metric", "growth", "technical", "estimat")
+    ):
         tools.append("calculator")
-    if any(cue in descriptor for cue in ("product", "market", "growth", "technical", "strategy")):
+    if any(
+        cue in descriptor
+        for cue in ("product", "market", "growth", "technical", "strategy")
+    ):
         tools.append("web_search")
     return tools
 
 
-@router.get("/prompt-templates", response_model=list[PromptTemplateOut], tags=["Prompts"])
+def _focus_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+@router.get(
+    "/prompt-templates", response_model=list[PromptTemplateOut], tags=["Prompts"]
+)
 async def list_prompt_templates(db: Db, user: CurrentUser) -> list[PromptTemplate]:
     result = await db.execute(
         select(PromptTemplate)
         .where(
             PromptTemplate.is_active.is_(True),
-            or_(PromptTemplate.is_builtin.is_(True), PromptTemplate.owner_id == user.id),
+            or_(
+                PromptTemplate.is_builtin.is_(True), PromptTemplate.owner_id == user.id
+            ),
         )
-        .order_by(PromptTemplate.role, PromptTemplate.name, PromptTemplate.version.desc())
+        .order_by(
+            PromptTemplate.role, PromptTemplate.name, PromptTemplate.version.desc()
+        )
     )
     return list(result.scalars())
 
@@ -117,9 +144,20 @@ async def list_prompt_templates(db: Db, user: CurrentUser) -> list[PromptTemplat
 async def create_prompt_template(
     payload: PromptTemplateCreate, db: Db, user: CurrentUser
 ) -> PromptTemplate:
-    template = PromptTemplate(owner_id=user.id, version=1, is_builtin=False, **payload.model_dump())
+    template = PromptTemplate(
+        owner_id=user.id,
+        version=1,
+        is_builtin=False,
+        **payload.model_dump(mode="json", exclude_none=True),
+    )
     db.add(template)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A prompt with this slug already exists. Create a revision from the existing prompt instead.",
+        ) from exc
     return template
 
 
@@ -138,20 +176,37 @@ async def fork_prompt_template(
     result = await db.execute(
         select(PromptTemplate).where(
             PromptTemplate.id == template_id,
-            or_(PromptTemplate.is_builtin.is_(True), PromptTemplate.owner_id == user.id),
+            PromptTemplate.is_active.is_(True),
+            or_(
+                PromptTemplate.is_builtin.is_(True), PromptTemplate.owner_id == user.id
+            ),
         )
     )
     source = result.scalar_one_or_none()
     if source is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prompt template not found")
+    try:
+        source_knowledge = PromptTemplateKnowledge.model_validate(source.knowledge)
+        source_behavior = PromptTemplateBehavior.model_validate(source.behavior)
+    except ValidationError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Source prompt template metadata is invalid",
+        ) from exc
     values = {
         "slug": payload.slug or source.slug,
         "name": payload.name or source.name,
         "role": source.role,
-        "description": payload.description if payload.description is not None else source.description,
+        "description": payload.description
+        if payload.description is not None
+        else source.description,
         "prompt": payload.prompt or source.prompt,
-        "knowledge": payload.knowledge if payload.knowledge is not None else source.knowledge,
-        "behavior": payload.behavior if payload.behavior is not None else source.behavior,
+        "knowledge": (
+            payload.knowledge if payload.knowledge is not None else source_knowledge
+        ).model_dump(mode="json", exclude_none=True),
+        "behavior": (
+            payload.behavior if payload.behavior is not None else source_behavior
+        ).model_dump(mode="json", exclude_none=True),
     }
     max_version = await db.scalar(
         select(func.max(PromptTemplate.version)).where(
@@ -166,7 +221,13 @@ async def fork_prompt_template(
         **values,
     )
     db.add(template)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This prompt changed while the revision was being created. Reload and try again.",
+        ) from exc
     return template
 
 
@@ -185,21 +246,29 @@ async def upload_job_description(
 ) -> JobDescription:
     filename = Path(file.filename or "job-description.txt").name
     mime_type = file.content_type or "application/octet-stream"
-    if mime_type not in SUPPORTED_DOCUMENT_TYPES and Path(filename).suffix.lower() not in {
+    if mime_type not in SUPPORTED_DOCUMENT_TYPES and Path(
+        filename
+    ).suffix.lower() not in {
         ".pdf",
         ".docx",
         ".txt",
         ".md",
     }:
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Use PDF, DOCX, TXT, or Markdown")
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Use PDF, DOCX, TXT, or Markdown"
+        )
     data = await file.read(settings.jd_max_upload_bytes + 1)
     if len(data) > settings.jd_max_upload_bytes:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Job description is too large")
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Job description is too large"
+        )
     text = await extract_document(data, mime_type, filename)
     document_id = uuid4()
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", filename)[:160]
     storage_path = f"{user.id}/job-descriptions/{document_id}/{safe_name}"
-    await storage.upload(settings.supabase_documents_bucket, storage_path, data, mime_type)
+    await storage.upload(
+        settings.supabase_documents_bucket, storage_path, data, mime_type
+    )
     recommendations = jd_recommendations(text)
     document = JobDescription(
         id=document_id,
@@ -227,9 +296,7 @@ async def upload_job_description(
     response_model=list[JobDescriptionOut],
     tags=["Job descriptions"],
 )
-async def list_job_descriptions(
-    db: Db, user: CurrentUser
-) -> list[JobDescription]:
+async def list_job_descriptions(db: Db, user: CurrentUser) -> list[JobDescription]:
     result = await db.execute(
         select(JobDescription)
         .where(JobDescription.user_id == user.id)
@@ -243,7 +310,9 @@ async def list_job_descriptions(
     response_model=JobDescriptionOut,
     tags=["Job descriptions"],
 )
-async def get_job_description(document_id: UUID, db: Db, user: CurrentUser) -> JobDescription:
+async def get_job_description(
+    document_id: UUID, db: Db, user: CurrentUser
+) -> JobDescription:
     return cast(JobDescription, await _owned(db, JobDescription, document_id, user.id))
 
 
@@ -255,7 +324,9 @@ async def get_job_description(document_id: UUID, db: Db, user: CurrentUser) -> J
 async def refresh_job_recommendations(
     document_id: UUID, db: Db, user: CurrentUser
 ) -> JobDescription:
-    document = cast(JobDescription, await _owned(db, JobDescription, document_id, user.id))
+    document = cast(
+        JobDescription, await _owned(db, JobDescription, document_id, user.id)
+    )
     document.recommendations = jd_recommendations(document.raw_text)
     document.extracted = {
         **document.extracted,
@@ -270,33 +341,106 @@ async def _resolve_panel(
     user_id: UUID,
     panel: list[PanelistInput],
     enabled_tools: list[str],
+    rubric: list[RubricCriterion],
 ) -> list[dict[str, Any]]:
     resolved: list[dict[str, Any]] = []
     for member in panel:
         values = member.model_dump(mode="json")
+        template_knowledge = PromptTemplateKnowledge()
+        template_behavior = PromptTemplateBehavior()
+        values["prompt_template_version"] = None
+        values["template_knowledge"] = template_knowledge.model_dump(mode="json")
+        values["template_behavior"] = template_behavior.model_dump(
+            mode="json", exclude_none=True
+        )
+        values["role_rubric"] = []
         if member.prompt_template_id is not None:
             result = await db.execute(
                 select(PromptTemplate).where(
                     PromptTemplate.id == member.prompt_template_id,
-                    or_(PromptTemplate.is_builtin.is_(True), PromptTemplate.owner_id == user_id),
+                    PromptTemplate.is_active.is_(True),
+                    or_(
+                        PromptTemplate.is_builtin.is_(True),
+                        PromptTemplate.owner_id == user_id,
+                    ),
                 )
             )
             template = result.scalar_one_or_none()
             if template is None:
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Prompt template not found")
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "Prompt template not found"
+                )
+            try:
+                template_knowledge = PromptTemplateKnowledge.model_validate(
+                    template.knowledge
+                )
+                template_behavior = PromptTemplateBehavior.model_validate(
+                    template.behavior
+                )
+            except ValidationError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "Prompt template metadata is invalid",
+                ) from exc
             values["custom_prompt"] = member.custom_prompt or template.prompt
             values["prompt_template_version"] = template.version
-        requested_tools = member.allowed_tools or _default_role_tools(member)
-        unknown_tools = sorted(set(requested_tools) - {item.name for item in DEFINITIONS})
+            values["template_knowledge"] = template_knowledge.model_dump(mode="json")
+            values["template_behavior"] = template_behavior.model_dump(
+                mode="json", exclude_none=True
+            )
+            values["expertise"] = list(
+                dict.fromkeys([*member.expertise, *template_knowledge.domains])
+            )[:12]
+            values["mood"] = template_behavior.mood or member.mood
+            values["behavior"] = template_behavior.style or member.behavior
+            values["interruption_style"] = (
+                template_behavior.interruption or member.interruption_style
+            )
+            if template_knowledge.rubric:
+                values["role_rubric"] = [
+                    criterion.model_dump(mode="json")
+                    for criterion in template_knowledge.rubric
+                ]
+            else:
+                focus_keys = {
+                    _focus_key(item) for item in template_knowledge.scoring_focus
+                }
+                values["role_rubric"] = [
+                    PromptRubricCriterion(
+                        key=criterion.key,
+                        label=criterion.label,
+                        evidence=criterion.description
+                        or f"Evidence for {criterion.label}",
+                    ).model_dump(mode="json")
+                    for criterion in rubric
+                    if criterion.key in focus_keys
+                    or _focus_key(criterion.label) in focus_keys
+                ]
+        requested_tools = (
+            member.allowed_tools
+            if member.allowed_tools is not None
+            else template_behavior.allowed_tools or _default_role_tools(member)
+        )
+        unknown_tools = sorted(set(requested_tools) - INTERVIEWER_TOOL_NAMES)
         if unknown_tools:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"Unsupported panelist tools: {', '.join(unknown_tools)}",
             )
         values["allowed_tools"] = [
-            tool for tool in enabled_tools if tool in requested_tools
+            tool
+            for tool in enabled_tools
+            if tool in requested_tools and tool in INTERVIEWER_TOOL_NAMES
         ]
-        resolved.append(values)
+        try:
+            resolved.append(
+                PanelistInput.model_validate(values).model_dump(mode="json")
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Resolved prompt template configuration is invalid",
+            ) from exc
     return resolved
 
 
@@ -318,12 +462,15 @@ async def create_interview_config(
         for item in recommendations.get("panel", DEFAULT_PANEL)
     ]
     if not 2 <= len(panel_models) <= 5:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Panel must contain 2 to 5 interviewers")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Panel must contain 2 to 5 interviewers",
+        )
     rubric_models = payload.rubric or [
-        RubricCriterion.model_validate(item) for item in recommendations.get("rubric", DEFAULT_RUBRIC)
+        RubricCriterion.model_validate(item)
+        for item in recommendations.get("rubric", DEFAULT_RUBRIC)
     ]
-    allowed_tools = {item.name for item in DEFINITIONS}
-    unknown_tools = sorted(set(payload.enabled_tools) - allowed_tools)
+    unknown_tools = sorted(set(payload.enabled_tools) - INTERVIEWER_TOOL_NAMES)
     if unknown_tools:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -340,7 +487,13 @@ async def create_interview_config(
             else str(recommendations.get("difficulty", "balanced"))
         ),
         duration_minutes=payload.duration_minutes,
-        panel=await _resolve_panel(db, user.id, panel_models, payload.enabled_tools),
+        panel=await _resolve_panel(
+            db,
+            user.id,
+            panel_models,
+            payload.enabled_tools,
+            rubric_models,
+        ),
         rubric=[item.model_dump() for item in rubric_models],
         enabled_tools=payload.enabled_tools,
         status="ready",
@@ -355,9 +508,7 @@ async def create_interview_config(
     response_model=list[InterviewConfigOut],
     tags=["Interview setup"],
 )
-async def list_interview_configs(
-    db: Db, user: CurrentUser
-) -> list[InterviewConfig]:
+async def list_interview_configs(db: Db, user: CurrentUser) -> list[InterviewConfig]:
     result = await db.execute(
         select(InterviewConfig)
         .where(InterviewConfig.user_id == user.id)
@@ -367,9 +518,13 @@ async def list_interview_configs(
 
 
 @router.get(
-    "/interview-configs/{config_id}", response_model=InterviewConfigOut, tags=["Interview setup"]
+    "/interview-configs/{config_id}",
+    response_model=InterviewConfigOut,
+    tags=["Interview setup"],
 )
-async def get_interview_config(config_id: UUID, db: Db, user: CurrentUser) -> InterviewConfig:
+async def get_interview_config(
+    config_id: UUID, db: Db, user: CurrentUser
+) -> InterviewConfig:
     return cast(InterviewConfig, await _owned(db, InterviewConfig, config_id, user.id))
 
 
@@ -379,7 +534,9 @@ async def get_interview_config(config_id: UUID, db: Db, user: CurrentUser) -> In
     status_code=status.HTTP_201_CREATED,
     tags=["Interview sessions"],
 )
-async def create_session(payload: SessionCreate, db: Db, user: CurrentUser) -> InterviewSession:
+async def create_session(
+    payload: SessionCreate, db: Db, user: CurrentUser
+) -> InterviewSession:
     config = await _owned(db, InterviewConfig, payload.interview_config_id, user.id)
     job_context: dict[str, Any] | None = None
     if config.job_description_id is not None:
@@ -427,7 +584,9 @@ async def list_sessions(db: Db, user: CurrentUser) -> list[InterviewSession]:
 
 
 @router.post(
-    "/sessions/{session_id}/start", response_model=SessionStartOut, tags=["Interview sessions"]
+    "/sessions/{session_id}/start",
+    response_model=SessionStartOut,
+    tags=["Interview sessions"],
 )
 async def start_session(
     session_id: UUID,
@@ -455,7 +614,9 @@ async def start_session(
         )
         if existing is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Resource not found")
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only a configured session can start")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Only a configured session can start"
+        )
     await db.commit()
     session = await db.get(InterviewSession, claimed)
     if session is None:
@@ -486,19 +647,27 @@ async def start_session(
             instructions=compile_agent_prompt(session.config_snapshot),
             roundcraft_session_id=str(session.id),
         )
-        result_by_panelist = {item["panelist_id"]: item for item in started_results}
-        for participant in participants:
-            participant.agora_agent_id = result_by_panelist[participant.panelist_id]["agent_id"]
+        if not started_results:
+            raise RuntimeError("Agora did not return the shared panel agent")
+        shared_agent_id = str(started_results[0]["agent_id"])
+        for index, participant in enumerate(participants):
+            # The database keeps one canonical physical-agent mapping while every row
+            # remains a selectable logical interviewer in the shared panel session.
+            participant.agora_agent_id = shared_agent_id if index == 0 else None
             participant.status = "running"
         session.status = "live"
-        session.agora_agent_id = started_results[0]["agent_id"]
+        session.agora_agent_id = shared_agent_id
         session.started_at = datetime.now(UTC)
         await db.commit()
     except Exception:
         await db.rollback()
         if started_results:
             try:
-                await agora.stop_panel([str(item["agent_id"]) for item in started_results])
+                await agora.stop_panel(
+                    list(
+                        dict.fromkeys(str(item["agent_id"]) for item in started_results)
+                    )
+                )
             except Exception:
                 pass
         failed = await db.get(InterviewSession, session_id)
@@ -527,7 +696,9 @@ async def start_session(
     "/sessions/{session_id}", response_model=SessionOut, tags=["Interview sessions"]
 )
 async def get_session(session_id: UUID, db: Db, user: CurrentUser) -> InterviewSession:
-    return cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
+    return cast(
+        InterviewSession, await _owned(db, InterviewSession, session_id, user.id)
+    )
 
 
 @router.post(
@@ -543,9 +714,17 @@ async def renew_session_token(
 ) -> ConnectionConfig:
     session = await _owned(db, InterviewSession, session_id, user.id)
     if session.status != "live":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only a live session can renew its token")
-    if session.channel_name is None or session.user_uid is None or session.agent_uid is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Live session connection is incomplete")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Only a live session can renew its token"
+        )
+    if (
+        session.channel_name is None
+        or session.user_uid is None
+        or session.agent_uid is None
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Live session connection is incomplete"
+        )
     connection = agora.generate_connection(
         channel=session.channel_name,
         uid=session.user_uid,
@@ -603,8 +782,12 @@ async def dispatch_panel_turn(
 ) -> PanelDispatchOut:
     session = await _owned(db, InterviewSession, session_id, user.id)
     if session.status != "live":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only a live panel can dispatch a turn")
-    panel = [PanelistInput.model_validate(item) for item in session.config_snapshot["panel"]]
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Only a live panel can dispatch a turn"
+        )
+    panel = [
+        PanelistInput.model_validate(item) for item in session.config_snapshot["panel"]
+    ]
     state = PanelState.model_validate(session.memory_state)
     if payload.force_panelist_id:
         selected = next(
@@ -612,7 +795,9 @@ async def dispatch_panel_turn(
             None,
         )
         if selected is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Panelist not found")
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Panelist not found"
+            )
         decision = PanelDecision(
             next_speaker_id=selected.id,
             action="ask",
@@ -628,8 +813,15 @@ async def dispatch_panel_turn(
             PanelParticipant.status == "running",
         )
     )
-    if participant is None or participant.agora_agent_id is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Selected Agora panel agent is not running")
+    if participant is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Selected logical panelist is not running"
+        )
+    shared_agent_id = session.agora_agent_id or participant.agora_agent_id
+    if shared_agent_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Shared Agora panel agent is not running"
+        )
     candidate_turn = await persist_candidate_turn(
         db,
         session,
@@ -644,20 +836,22 @@ async def dispatch_panel_turn(
     )
     state.last_question = decision.suggested_question
     session.memory_state = state.model_dump()
-    other_agent_ids = [
-        str(agent_id)
-        for agent_id in (
-            await db.execute(
-                select(PanelParticipant.agora_agent_id).where(
-                    PanelParticipant.session_id == session_id,
-                    PanelParticipant.status == "running",
-                    PanelParticipant.panelist_id != decision.next_speaker_id,
-                    PanelParticipant.agora_agent_id.is_not(None),
+    other_agent_ids = list(
+        dict.fromkeys(
+            str(agent_id)
+            for agent_id in (
+                await db.execute(
+                    select(PanelParticipant.agora_agent_id).where(
+                        PanelParticipant.session_id == session_id,
+                        PanelParticipant.status == "running",
+                        PanelParticipant.panelist_id != decision.next_speaker_id,
+                        PanelParticipant.agora_agent_id.is_not(None),
+                    )
                 )
-            )
-        ).scalars()
-        if agent_id
-    ]
+            ).scalars()
+            if agent_id and str(agent_id) != shared_agent_id
+        )
+    )
     db.add(
         ToolRun(
             session_id=session_id,
@@ -665,7 +859,7 @@ async def dispatch_panel_turn(
             panelist_id=participant.panelist_id,
             tool_name="panel.dispatch",
             arguments={"candidate_turn": payload.candidate_text[-4000:]},
-            result={"decision": decision.model_dump(), "agent_id": participant.agora_agent_id},
+            result={"decision": decision.model_dump(), "agent_id": shared_agent_id},
             status="completed",
         )
     )
@@ -673,18 +867,18 @@ async def dispatch_panel_turn(
     if other_agent_ids:
         await agora.interrupt_panel(other_agent_ids)
     dispatch_mode = await agora.dispatch_turn(
-        participant.agora_agent_id,
+        shared_agent_id,
         payload.candidate_text,
         participant.panelist_id,
         channel_name=session.channel_name,
-        agent_uid=participant.agent_uid,
+        agent_uid=session.agent_uid or participant.agent_uid,
     )
     return PanelDispatchOut.model_validate(
         {
             "decision": decision,
             "participant": participant,
             "manual_turn": {
-                "agent_user_id": str(participant.agent_uid),
+                "agent_user_id": str(session.agent_uid or participant.agent_uid),
                 "server_dispatch": dispatch_mode,
             },
         }
@@ -705,22 +899,37 @@ async def interrupt_panel(
 ) -> PanelInterruptOut:
     session = await _owned(db, InterviewSession, session_id, user.id)
     if session.status != "live":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only a live panel can be interrupted")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Only a live panel can be interrupted"
+        )
     current = PanelState.model_validate(session.memory_state).current_speaker_id
     target_panelist = payload.panelist_id or current
     query = select(PanelParticipant).where(
         PanelParticipant.session_id == session_id,
         PanelParticipant.status == "running",
-        PanelParticipant.agora_agent_id.is_not(None),
     )
     if target_panelist:
         query = query.where(PanelParticipant.panelist_id == target_panelist)
     participants = list((await db.execute(query)).scalars())
     if not participants:
-        raise HTTPException(status.HTTP_409_CONFLICT, "No running panel agent to interrupt")
-    await agora.interrupt_panel(
-        [item.agora_agent_id for item in participants if item.agora_agent_id]
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "No running logical panelist to interrupt"
+        )
+    agent_ids = list(
+        dict.fromkeys(
+            str(agent_id)
+            for agent_id in (
+                session.agora_agent_id,
+                *(item.agora_agent_id for item in participants),
+            )
+            if agent_id
+        )
     )
+    if not agent_ids:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Shared Agora panel agent is not running"
+        )
+    await agora.interrupt_panel(agent_ids)
     db.add(
         ToolRun(
             session_id=session_id,
@@ -780,11 +989,16 @@ async def end_session(
                 )
             ).scalars()
         )
-        agent_ids = [
-            str(participant.agora_agent_id)
-            for participant in participants
-            if participant.agora_agent_id
-        ]
+        agent_ids = list(
+            dict.fromkeys(
+                str(agent_id)
+                for agent_id in (
+                    session.agora_agent_id,
+                    *(participant.agora_agent_id for participant in participants),
+                )
+                if agent_id
+            )
+        )
         for participant in participants:
             participant.status = "stopping"
         await db.commit()
@@ -873,11 +1087,14 @@ async def append_transcript_turn(
                 return synthetic
     exists = await db.scalar(
         select(TranscriptTurn.id).where(
-            TranscriptTurn.session_id == session_id, TranscriptTurn.sequence == payload.sequence
+            TranscriptTurn.session_id == session_id,
+            TranscriptTurn.sequence == payload.sequence,
         )
     )
     if exists:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Transcript sequence already exists")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Transcript sequence already exists"
+        )
     values = payload.model_dump(exclude={"metadata"})
     turn = TranscriptTurn(
         session_id=session_id,
@@ -925,10 +1142,14 @@ async def bookmark_evidence(
         )
     )
     if turn is None or turn.speaker_type != "candidate":
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Transcript turn not found")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Transcript turn not found"
+        )
     rubric_keys = {str(item["key"]) for item in session.config_snapshot["rubric"]}
     if payload.competency not in rubric_keys:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown rubric competency")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown rubric competency"
+        )
     existing = await db.scalar(
         select(EvidenceItem).where(
             EvidenceItem.session_id == session_id,
@@ -974,7 +1195,10 @@ async def choose_next_panelist(
 ) -> PanelDecision:
     session = await _owned(db, InterviewSession, session_id, user.id)
     state = PanelState.model_validate(session.memory_state)
-    panel = [PanelistInput.model_validate(member) for member in session.config_snapshot["panel"]]
+    panel = [
+        PanelistInput.model_validate(member)
+        for member in session.config_snapshot["panel"]
+    ]
     decision = PanelDirector.choose_next(panel, state, payload.last_candidate_turn)
     state.current_speaker_id = decision.next_speaker_id
     state.panelist_question_counts[decision.next_speaker_id] = (
@@ -989,7 +1213,7 @@ async def choose_next_panelist(
 @router.get("/tools", response_model=list[ToolDefinition], tags=["Tools"])
 async def list_tools(user: CurrentUser) -> list[ToolDefinition]:
     del user
-    return DEFINITIONS
+    return [item for item in DEFINITIONS if item.name in INTERVIEWER_TOOL_NAMES]
 
 
 @router.post(
@@ -1008,10 +1232,13 @@ async def run_tool(
 ) -> ToolRun:
     session = await _owned(db, InterviewSession, session_id, user.id)
     if tool_name not in session.config_snapshot["enabled_tools"]:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tool is not enabled for this interview")
-    panelist_id = payload.panelist_id or PanelState.model_validate(
-        session.memory_state
-    ).current_speaker_id
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Tool is not enabled for this interview"
+        )
+    panelist_id = (
+        payload.panelist_id
+        or PanelState.model_validate(session.memory_state).current_speaker_id
+    )
     panelist = next(
         (
             member
@@ -1026,7 +1253,9 @@ async def run_tool(
             "A valid panelist_id or active panel speaker is required",
         )
     if tool_name not in panelist.get("allowed_tools", []):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tool is not enabled for this panelist")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Tool is not enabled for this panelist"
+        )
 
     linked_turn: TranscriptTurn | None = None
     if payload.transcript_turn_id is not None:
@@ -1037,26 +1266,33 @@ async def run_tool(
             )
         )
         if linked_turn is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Transcript turn not found")
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Transcript turn not found"
+            )
     turns_result = await db.execute(
         select(TranscriptTurn).where(TranscriptTurn.session_id == session_id)
     )
     turns = list(turns_result.scalars())
     corpus = [
-        {"source": f"transcript:{turn.id}", "text": turn.content}
-        for turn in turns
+        {"source": f"transcript:{turn.id}", "text": turn.content} for turn in turns
     ]
     config = await _owned(db, InterviewConfig, session.interview_config_id, user.id)
     if config.job_description_id:
         document = await _owned(db, JobDescription, config.job_description_id, user.id)
-        corpus.append({"source": f"job-description:{document.id}", "text": document.raw_text})
+        corpus.append(
+            {"source": f"job-description:{document.id}", "text": document.raw_text}
+        )
     result: dict[str, Any]
     try:
         if tool_name == "evidence_bookmark":
             if linked_turn is None or linked_turn.speaker_type != "candidate":
-                raise ValueError("evidence_bookmark requires a candidate transcript turn")
+                raise ValueError(
+                    "evidence_bookmark requires a candidate transcript turn"
+                )
             competency = str(payload.arguments.get("competency", ""))
-            rubric_keys = {str(item["key"]) for item in session.config_snapshot["rubric"]}
+            rubric_keys = {
+                str(item["key"]) for item in session.config_snapshot["rubric"]
+            }
             if competency not in rubric_keys:
                 raise ValueError("competency must match this interview's rubric")
             evidence = await db.scalar(
@@ -1069,7 +1305,9 @@ async def run_tool(
             if evidence is None:
                 strength = str(payload.arguments.get("strength", "supports"))
                 if strength not in {"supports", "contradicts", "neutral"}:
-                    raise ValueError("strength must be supports, contradicts, or neutral")
+                    raise ValueError(
+                        "strength must be supports, contradicts, or neutral"
+                    )
                 evidence = EvidenceItem(
                     session_id=session_id,
                     transcript_turn_id=linked_turn.id,
@@ -1079,7 +1317,10 @@ async def run_tool(
                 )
                 db.add(evidence)
                 await db.flush()
-            result = {"evidence_id": str(evidence.id), "transcript_turn_id": str(linked_turn.id)}
+            result = {
+                "evidence_id": str(evidence.id),
+                "transcript_turn_id": str(linked_turn.id),
+            }
         elif tool_name == "replay":
             competency = str(payload.arguments.get("competency", ""))
             rubric = {
@@ -1107,18 +1348,26 @@ async def run_tool(
                     ).scalars()
                 )
                 if valid_sources != set(source_ids):
-                    raise ValueError("replay sources must be candidate turns in this session")
+                    raise ValueError(
+                        "replay sources must be candidate turns in this session"
+                    )
             drill = ReplayDrill(
                 session_id=session_id,
                 competency=competency,
-                prompt=str(payload.arguments.get("prompt") or (
-                    f"Replay {rubric[competency]} with a specific example, tradeoff, and measurable outcome."
-                ))[:20_000],
+                prompt=str(
+                    payload.arguments.get("prompt")
+                    or (
+                        f"Replay {rubric[competency]} with a specific example, tradeoff, and measurable outcome."
+                    )
+                )[:20_000],
                 source_turn_ids=[str(value) for value in source_ids],
             )
             db.add(drill)
             await db.flush()
-            result = {"replay_drill_id": str(drill.id), "source_turn_ids": drill.source_turn_ids}
+            result = {
+                "replay_drill_id": str(drill.id),
+                "source_turn_ids": drill.source_turn_ids,
+            }
         else:
             result = await execute_tool(tool_name, payload.arguments, corpus, settings)
     except HTTPException:
@@ -1144,9 +1393,7 @@ async def run_tool(
     response_model=list[ToolRunOut],
     tags=["Tools"],
 )
-async def list_tool_runs(
-    session_id: UUID, db: Db, user: CurrentUser
-) -> list[ToolRun]:
+async def list_tool_runs(session_id: UUID, db: Db, user: CurrentUser) -> list[ToolRun]:
     await _owned(db, InterviewSession, session_id, user.id)
     result = await db.execute(
         select(ToolRun)
@@ -1163,13 +1410,18 @@ async def list_tool_runs(
     tags=["Assessment"],
 )
 async def generate_report(
-    session_id: UUID, db: Db, user: CurrentUser
+    session_id: UUID, db: Db, user: CurrentUser, settings: SettingsDep
 ) -> AssessmentReport:
     session = await _owned(db, InterviewSession, session_id, user.id)
     if session.status != "ended":
-        raise HTTPException(status.HTTP_409_CONFLICT, "End the interview before generating a report")
-    existing = await db.scalar(
-        select(AssessmentReport).where(AssessmentReport.session_id == session_id)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "End the interview before generating a report"
+        )
+    existing = cast(
+        AssessmentReport | None,
+        await db.scalar(
+            select(AssessmentReport).where(AssessmentReport.session_id == session_id)
+        ),
     )
     if existing is not None:
         return existing
@@ -1177,23 +1429,49 @@ async def generate_report(
         (
             await db.execute(
                 select(TranscriptTurn)
-                .where(TranscriptTurn.session_id == session_id)
+                .where(
+                    TranscriptTurn.session_id == session_id,
+                    TranscriptTurn.speaker_type == "candidate",
+                    TranscriptTurn.interrupted.is_(False),
+                )
                 .order_by(TranscriptTurn.sequence)
             )
         ).scalars()
     )
-    evidence = list(
-        (await db.execute(select(EvidenceItem).where(EvidenceItem.session_id == session_id))).scalars()
+    snapshot = session.config_snapshot
+    # Do not hold a database transaction or connection while awaiting the model.
+    await db.commit()
+    result = await build_assessment(snapshot, turns, settings)
+    existing = cast(
+        AssessmentReport | None,
+        await db.scalar(
+            select(AssessmentReport).where(AssessmentReport.session_id == session_id)
+        ),
     )
-    result = build_assessment(session.config_snapshot, turns, evidence)
+    if existing is not None:
+        return existing
     report = AssessmentReport(session_id=session_id, **result)
     db.add(report)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        existing = cast(
+            AssessmentReport | None,
+            await db.scalar(
+                select(AssessmentReport).where(AssessmentReport.session_id == session_id)
+            ),
+        )
+        if existing is not None:
+            return existing
+        raise
     return report
 
 
 @router.get(
-    "/sessions/{session_id}/report", response_model=AssessmentReportOut, tags=["Assessment"]
+    "/sessions/{session_id}/report",
+    response_model=AssessmentReportOut,
+    tags=["Assessment"],
 )
 async def get_report(session_id: UUID, db: Db, user: CurrentUser) -> AssessmentReport:
     await _owned(db, InterviewSession, session_id, user.id)
@@ -1221,14 +1499,21 @@ async def generate_replay_drills(
     if report is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Generate the report first")
     existing = list(
-        (await db.execute(select(ReplayDrill).where(ReplayDrill.session_id == session_id))).scalars()
+        (
+            await db.execute(
+                select(ReplayDrill).where(ReplayDrill.session_id == session_id)
+            )
+        ).scalars()
     )
     if existing:
         return existing
     report_data = {
         "competencies": report.competencies,
     }
-    drills = [ReplayDrill(session_id=session_id, **item) for item in build_replay_drills(report_data)]
+    drills = [
+        ReplayDrill(session_id=session_id, **item)
+        for item in build_replay_drills(report_data)
+    ]
     db.add_all(drills)
     await db.flush()
     return drills
@@ -1256,10 +1541,14 @@ async def receive_agora_webhook(
     request: Request,
     db: Db,
     settings: SettingsDep,
-    agora_signature_v2: Annotated[str | None, Header(alias="Agora-Signature-V2")] = None,
+    agora_signature_v2: Annotated[
+        str | None, Header(alias="Agora-Signature-V2")
+    ] = None,
 ) -> AgoraWebhookOut:
     if not settings.agora_webhook_secret:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Webhook secret is not configured")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Webhook secret is not configured"
+        )
     raw = await request.body()
     expected_signature = hmac.new(
         settings.agora_webhook_secret.encode(), raw, digestmod="sha256"
@@ -1267,13 +1556,19 @@ async def receive_agora_webhook(
     if not agora_signature_v2 or not hmac.compare_digest(
         agora_signature_v2.lower(), expected_signature
     ):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid Agora webhook signature")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Invalid Agora webhook signature"
+        )
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid JSON payload") from exc
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Invalid JSON payload"
+        ) from exc
     if not isinstance(payload, dict):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook payload must be an object")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Webhook payload must be an object"
+        )
     event_key = str(
         payload.get("noticeId")
         or payload.get("notice_id")

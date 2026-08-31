@@ -25,14 +25,18 @@ jobs:
       NEXT_PUBLIC_DEMO_MODE: "true"
       NEXT_PUBLIC_SUPABASE_ANON_KEY: mock-anon-key
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      RELEASE_EVENT: ${{ github.event_name }}
+      RELEASE_REF: ${{ github.ref }}
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_SHA }}
-      - name: Reject a stale automated release
-        if: github.event_name == 'workflow_run'
+      - name: Require the current main release
         run: |
+          if [ "$RELEASE_EVENT" = "workflow_dispatch" ]; then
+            test "$RELEASE_REF" = "refs/heads/main"
+          fi
           git fetch origin main:refs/remotes/origin/main --depth=1
           test "$RELEASE_SHA" = "$(git rev-parse origin/main)"
       - uses: pnpm/action-setup@v4
@@ -82,13 +86,7 @@ jobs:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
       - name: Validate required production variables
-        run: |
-          env_file=.vercel/.env.production.local
-          test -s "$env_file"
-          for key in NEXT_PUBLIC_API_BASE_URL NEXT_PUBLIC_AGORA_APP_ID NEXT_PUBLIC_DEMO_MODE NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY AGENT_BACKEND_URL; do
-            grep -Eq "^${key}=.+" "$env_file" || { echo "Missing Vercel Production variable: $key" >&2; exit 1; }
-          done
-          grep -Eq '^NEXT_PUBLIC_DEMO_MODE="?false"?$' "$env_file" || { echo "NEXT_PUBLIC_DEMO_MODE must be false in Production" >&2; exit 1; }
+        run: node --experimental-strip-types ../../packages/config/src/validate-production-env.ts .vercel/.env.production.local
       - name: Build production candidate
         run: vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
         env:
@@ -109,6 +107,55 @@ jobs:
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      - name: Smoke test backend readiness
+        timeout-minutes: 20
+        env:
+          EXPECTED_RELEASE_SHA: ${{ env.RELEASE_SHA }}
+        run: |
+          node --experimental-strip-types --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { resolve } from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const configModule = await import(
+            pathToFileURL(resolve("../../packages/config/src/index.ts")).href
+          );
+          const environment = configModule.parseEnvFile(
+            readFileSync(".vercel/.env.production.local", "utf8"),
+          );
+          const readyUrl = new URL("/health/ready", environment.AGENT_BACKEND_URL);
+          const expectedSha = process.env.EXPECTED_RELEASE_SHA?.toLowerCase();
+          if (!expectedSha || !/^[a-f0-9]{40}$/.test(expectedSha)) {
+            throw new Error("Expected release SHA is unavailable");
+          }
+          let lastStatus = "unreachable";
+          for (let attempt = 1; attempt <= 90; attempt += 1) {
+            try {
+              const response = await fetch(readyUrl, {
+                headers: { accept: "application/json" },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (response.ok) {
+                const payload = await response.json();
+                const actualSha = String(payload.release_sha ?? "").toLowerCase();
+                const sameRelease =
+                  /^[a-f0-9]{7,40}$/.test(actualSha) &&
+                  (expectedSha.startsWith(actualSha) || actualSha.startsWith(expectedSha));
+                if (sameRelease) {
+                  console.log("Production backend is ready at the expected release");
+                  process.exit(0);
+                }
+                lastStatus = "ready at a different release";
+              } else {
+                lastStatus = `HTTP ${response.status}`;
+              }
+            } catch {
+              lastStatus = "unreachable";
+            }
+            if (attempt < 90) await new Promise((resolveDelay) => setTimeout(resolveDelay, 5000));
+          }
+          throw new Error(`Production backend readiness failed: ${lastStatus}`);
+          NODE
       - name: Promote verified candidate
         run: vercel promote "${{ steps.candidate.outputs.url }}" --yes --token="${{ secrets.VERCEL_TOKEN }}"
         env:

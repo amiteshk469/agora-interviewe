@@ -1,9 +1,37 @@
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+INTERVIEWER_TOOL_NAMES = frozenset({"knowledge_search", "calculator", "web_search"})
+
+
+def _validate_interviewer_prompt(value: str | None) -> str | None:
+    if value is None:
+        return None
+    lowered = value.lower()
+    if any(
+        term in lowered
+        for term in ("request_human_review", "evidence_bookmark", "replay tool")
+    ):
+        raise ValueError(
+            "interviewer prompts cannot claim internal or human-review tools"
+        )
+    for match in re.finditer(
+        r"\b(?:human reviewer|human review|human escalation|escalat(?:e|ion)(?: to)? (?:a )?human)\b",
+        lowered,
+    ):
+        prefix = lowered[max(0, match.start() - 60) : match.start()]
+        if not re.search(
+            r"(?:never|do not|don't|must not|cannot)\b[^.!?]{0,55}$", prefix
+        ):
+            raise ValueError(
+                "interviewer prompts cannot request human review or escalation"
+            )
+    return value
 
 
 class ApiModel(BaseModel):
@@ -17,23 +45,126 @@ class Difficulty(StrEnum):
     EXECUTIVE = "executive"
 
 
+class PromptRubricCriterion(ApiModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    key: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=2, max_length=100)
+    evidence: str = Field(min_length=2, max_length=1000)
+    anchors: dict[str, str] = Field(default_factory=dict, max_length=3)
+
+    @field_validator("anchors")
+    @classmethod
+    def validate_anchors(cls, values: dict[str, str]) -> dict[str, str]:
+        if values and set(values) != {"1", "3", "5"}:
+            raise ValueError("rubric anchors must define levels 1, 3, and 5")
+        if any(not 2 <= len(value.strip()) <= 1000 for value in values.values()):
+            raise ValueError("rubric anchors must contain 2 to 1000 characters")
+        return {key: value.strip() for key, value in values.items()}
+
+
+class PromptTemplateKnowledge(ApiModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    case_type: str | None = Field(default=None, max_length=120)
+    domains: list[str] = Field(default_factory=list, max_length=12)
+    scenario_seeds: list[str] = Field(default_factory=list, max_length=8)
+    scoring_focus: list[str] = Field(default_factory=list, max_length=8)
+    rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
+
+    @field_validator("domains", "scoring_focus")
+    @classmethod
+    def validate_terms(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            term = value.strip()
+            if not 2 <= len(term) <= 100:
+                raise ValueError("metadata terms must contain 2 to 100 characters")
+            if term not in cleaned:
+                cleaned.append(term)
+        return cleaned
+
+    @field_validator("scenario_seeds")
+    @classmethod
+    def validate_scenarios(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            scenario = value.strip()
+            if not 10 <= len(scenario) <= 1000:
+                raise ValueError("scenario seeds must contain 10 to 1000 characters")
+            if scenario not in cleaned:
+                cleaned.append(scenario)
+        return cleaned
+
+
+class PromptTemplateBehavior(ApiModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    mood: str | None = Field(default=None, max_length=40)
+    style: str | None = Field(default=None, max_length=60)
+    interruption: str | None = Field(default=None, max_length=60)
+    adaptive_probe: str | None = Field(default=None, max_length=500)
+    panel_selection: Literal["non_round_robin"] | None = None
+    evidence_policy: Literal["final_transcript_turn_ids_only"] | None = None
+    allowed_tools: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("adaptive_probe")
+    @classmethod
+    def reject_forbidden_directives(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        lowered = value.lower()
+        forbidden = (
+            "human review",
+            "human reviewer",
+            "human escalation",
+            "request_human_review",
+            "evidence_bookmark",
+            "replay tool",
+        )
+        if any(term in lowered for term in forbidden):
+            raise ValueError(
+                "adaptive_probe cannot request human review or internal tools"
+            )
+        return value
+
+    @field_validator("allowed_tools")
+    @classmethod
+    def interviewer_tools_only(cls, values: list[str]) -> list[str]:
+        return [
+            value for value in dict.fromkeys(values) if value in INTERVIEWER_TOOL_NAMES
+        ]
+
+
 class PromptTemplateCreate(ApiModel):
     slug: str = Field(min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$")
     name: str = Field(min_length=2, max_length=120)
     role: str = Field(min_length=2, max_length=80)
     description: str = Field(default="", max_length=1000)
     prompt: str = Field(min_length=40, max_length=20_000)
-    knowledge: dict[str, Any] = Field(default_factory=dict)
-    behavior: dict[str, Any] = Field(default_factory=dict)
+    knowledge: PromptTemplateKnowledge = Field(default_factory=PromptTemplateKnowledge)
+    behavior: PromptTemplateBehavior = Field(default_factory=PromptTemplateBehavior)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt_policy(cls, value: str) -> str:
+        return _validate_interviewer_prompt(value) or value
 
 
 class PromptTemplateFork(ApiModel):
-    slug: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$")
+    slug: str | None = Field(
+        default=None, min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$"
+    )
     name: str | None = Field(default=None, min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     prompt: str | None = Field(default=None, min_length=40, max_length=20_000)
-    knowledge: dict[str, Any] | None = None
-    behavior: dict[str, Any] | None = None
+    knowledge: PromptTemplateKnowledge | None = None
+    behavior: PromptTemplateBehavior | None = None
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt_policy(cls, value: str | None) -> str | None:
+        return _validate_interviewer_prompt(value)
 
 
 class PromptTemplateOut(ApiModel):
@@ -46,8 +177,8 @@ class PromptTemplateOut(ApiModel):
     role: str
     description: str
     prompt: str
-    knowledge: dict[str, Any]
-    behavior: dict[str, Any]
+    knowledge: PromptTemplateKnowledge
+    behavior: PromptTemplateBehavior
     is_builtin: bool
     is_active: bool
     created_at: datetime
@@ -65,12 +196,29 @@ class JobDescriptionOut(ApiModel):
     created_at: datetime
 
 
+class RubricCriterion(ApiModel):
+    key: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=2, max_length=100)
+    weight: float = Field(gt=0, le=1)
+    description: str = Field(default="", max_length=1000)
+
+
 class PanelistInput(ApiModel):
-    id: str = Field(default_factory=lambda: f"panelist-{uuid4().hex[:8]}", max_length=100)
+    id: str = Field(
+        default_factory=lambda: f"panelist-{uuid4().hex[:8]}", max_length=100
+    )
     display_name: str = Field(min_length=2, max_length=80)
     role: str = Field(min_length=2, max_length=80)
     expertise: list[str] = Field(default_factory=list, max_length=12)
     prompt_template_id: UUID | None = None
+    prompt_template_version: int | None = Field(default=None, ge=1)
+    template_knowledge: PromptTemplateKnowledge = Field(
+        default_factory=PromptTemplateKnowledge
+    )
+    template_behavior: PromptTemplateBehavior = Field(
+        default_factory=PromptTemplateBehavior
+    )
+    role_rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
     custom_prompt: str | None = Field(default=None, max_length=20_000)
     knowledge_prompt: str | None = Field(default=None, max_length=10_000)
     voice: str = Field(default="clear-neutral", max_length=80)
@@ -82,16 +230,16 @@ class PanelistInput(ApiModel):
     avatar_vendor: Literal["liveavatar", "generic", "akool", "anam"] | None = None
     avatar_image: str | None = Field(default=None, max_length=2000)
 
-
-class RubricCriterion(ApiModel):
-    key: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9_]+$")
-    label: str = Field(min_length=2, max_length=100)
-    weight: float = Field(gt=0, le=1)
-    description: str = Field(default="", max_length=1000)
+    @field_validator("custom_prompt")
+    @classmethod
+    def validate_custom_prompt_policy(cls, value: str | None) -> str | None:
+        return _validate_interviewer_prompt(value)
 
 
 class InterviewConfigCreate(ApiModel):
-    title: str = Field(default="Product Management mock interview", min_length=2, max_length=160)
+    title: str = Field(
+        default="Product Management mock interview", min_length=2, max_length=160
+    )
     profession: Literal["product_management"] = "product_management"
     job_description_id: UUID | None = None
     # None means "use the JD recommendation, or balanced when no JD was uploaded".
@@ -100,7 +248,7 @@ class InterviewConfigCreate(ApiModel):
     panel: list[PanelistInput] | None = None
     rubric: list[RubricCriterion] | None = None
     enabled_tools: list[str] = Field(
-        default_factory=lambda: ["knowledge_search", "calculator", "evidence_bookmark", "replay"]
+        default_factory=lambda: ["knowledge_search", "calculator"]
     )
 
     @model_validator(mode="after")

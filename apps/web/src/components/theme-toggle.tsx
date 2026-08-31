@@ -1,7 +1,7 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
 
 type Theme = "light" | "dark";
@@ -9,10 +9,17 @@ type Theme = "light" | "dark";
 const storageKey = "roundcraft.theme";
 const themeEvent = "roundcraft-theme-change";
 
+function syncThemeColor() {
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--background").trim();
+  if (!color) return;
+  document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta) => meta.setAttribute("content", color));
+}
+
 function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
-  window.localStorage.setItem(storageKey, theme);
+  syncThemeColor();
+  try { window.localStorage.setItem(storageKey, theme); } catch {}
   window.dispatchEvent(new Event(themeEvent));
 }
 
@@ -32,6 +39,8 @@ function serverTheme(): Theme {
 export function ThemeToggle({ segmented = false, className }: { segmented?: boolean; className?: string }) {
   const theme = useSyncExternalStore(subscribeTheme, currentTheme, serverTheme);
 
+  useEffect(() => syncThemeColor(), [theme]);
+
   function choose(next: Theme) {
     applyTheme(next);
   }
@@ -39,10 +48,10 @@ export function ThemeToggle({ segmented = false, className }: { segmented?: bool
   if (segmented) {
     return (
       <div className={cn("grid grid-cols-2 rounded-lg border bg-secondary/70 p-1", className)} role="group" aria-label="Color theme">
-        <button type="button" onClick={() => choose("light")} aria-pressed={theme === "light"} className={cn("flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", theme === "light" && "bg-card text-foreground shadow-sm")}>
+        <button type="button" onClick={() => choose("light")} aria-pressed={theme === "light"} className={cn("flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", theme === "light" && "bg-card text-foreground shadow-sm")}>
           <Sun className="size-3.5" aria-hidden="true" />Light
         </button>
-        <button type="button" onClick={() => choose("dark")} aria-pressed={theme === "dark"} className={cn("flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", theme === "dark" && "bg-card text-foreground shadow-sm")}>
+        <button type="button" onClick={() => choose("dark")} aria-pressed={theme === "dark"} className={cn("flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", theme === "dark" && "bg-card text-foreground shadow-sm")}>
           <Moon className="size-3.5" aria-hidden="true" />Dark
         </button>
       </div>

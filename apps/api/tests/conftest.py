@@ -102,22 +102,22 @@ class FakeAgora:
         self.started.append(kwargs)
         return [
             {
-                "agent_id": f"agent-test-{index + 1}",
+                "agent_id": "agent-test-1",
                 "channel_name": kwargs["channel_name"],
                 "status": "started",
                 "panelist_id": item["panelist_id"],
             }
-            for index, item in enumerate(kwargs["participants"])
+            for item in kwargs["participants"]
         ]
 
     async def stop(self, agent_id: str) -> None:
         self.stopped.append(agent_id)
 
     async def stop_panel(self, agent_ids: list[str]) -> None:
-        self.stopped.extend(agent_ids)
+        self.stopped.extend(dict.fromkeys(agent_ids))
 
     async def interrupt_panel(self, agent_ids: list[str]) -> None:
-        self.interrupted.extend(agent_ids)
+        self.interrupted.extend(dict.fromkeys(agent_ids))
 
     async def dispatch_turn(
         self,

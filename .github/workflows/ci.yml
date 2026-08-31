@@ -32,6 +32,8 @@ jobs:
               - '.github/workflows/ci.yml'
             api:
               - 'apps/api/**'
+              - 'deploy/render/**'
+              - 'render.yaml'
               - '.github/workflows/ci.yml'
             database:
               - 'supabase/**'
@@ -115,6 +117,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      - name: Validate Render blueprint
+        run: uvx --from check-jsonschema==0.35.0 check-jsonschema --schemafile https://render.com/schema/render.yaml.json render.yaml
       - run: uv sync --locked --all-extras
         working-directory: apps/api
       - run: uv run ruff check .

@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROMPT = """You are a RoundCraft Product Management mock interviewer. Ask concise,
 adaptive questions, probe unsupported claims, and keep shared context. Do not request a human
 reviewer. When evidence is missing, ask another question or mark it insufficient."""
-DEFAULT_GREETING = "Welcome to RoundCraft. When you are ready, please introduce yourself."
+DEFAULT_GREETING = (
+    "Welcome to RoundCraft. When you are ready, please introduce yourself."
+)
 
 _VOICE_TYPES = {
     "clear-neutral": "English_CalmWoman",
@@ -77,11 +79,17 @@ class AgoraAgentService:
         agent_uid: int | None = None,
     ) -> dict[str, Any]:
         self._require_client()
-        user_uid = secrets.randbelow(9_998_999) + 1000 if uid is None or uid <= 0 else uid
-        resolved_agent_uid = str(
-            agent_uid if agent_uid is not None and agent_uid > 0 else secrets.randbelow(89_999_999) + 10_000_000
+        user_uid = (
+            secrets.randbelow(9_998_999) + 1000 if uid is None or uid <= 0 else uid
         )
-        channel_name = channel or f"roundcraft-{int(time.time())}-{secrets.randbelow(9000) + 1000}"
+        resolved_agent_uid = str(
+            agent_uid
+            if agent_uid is not None and agent_uid > 0
+            else secrets.randbelow(89_999_999) + 10_000_000
+        )
+        channel_name = (
+            channel or f"roundcraft-{int(time.time())}-{secrets.randbelow(9000) + 1000}"
+        )
         token = generate_convo_ai_token(
             app_id=self.settings.agora_app_id,
             app_certificate=self.settings.agora_app_certificate,
@@ -97,18 +105,23 @@ class AgoraAgentService:
             "agent_uid": resolved_agent_uid,
         }
 
-    def avatar_profile(self, panelist: dict[str, Any], avatar_uid: int) -> dict[str, Any]:
+    def avatar_profile(
+        self, panelist: dict[str, Any], avatar_uid: int
+    ) -> dict[str, Any]:
         vendor = str(panelist.get("avatar_vendor") or self.settings.agora_avatar_vendor)
         requested_avatar_id = str(panelist.get("avatar_id") or "")
         avatar_ids = self.settings.avatar_id_map
-        avatar_id = str(
-            avatar_ids.get(f"{vendor}:{requested_avatar_id}")
-            or avatar_ids.get(requested_avatar_id)
-            or avatar_ids.get(str(panelist["id"]))
-            or requested_avatar_id
-            or avatar_ids.get("default")
-            or ""
-        ) or None
+        avatar_id = (
+            str(
+                avatar_ids.get(f"{vendor}:{requested_avatar_id}")
+                or avatar_ids.get(requested_avatar_id)
+                or avatar_ids.get(str(panelist["id"]))
+                or requested_avatar_id
+                or avatar_ids.get("default")
+                or ""
+            )
+            or None
+        )
         avatar_image = str(panelist.get("avatar_image") or "") or None
         configured = bool(
             self.settings.agora_avatar_enabled and self._avatar_api_key(vendor)
@@ -122,7 +135,9 @@ class AgoraAgentService:
             "avatar_vendor": vendor if configured else None,
             "avatar_id": avatar_id,
             "avatar_image": avatar_image,
-            "video_mode": "avatar" if configured else ("static" if avatar_image else "audio"),
+            "video_mode": "avatar"
+            if configured
+            else ("static" if avatar_image else "audio"),
         }
 
     def generate_panel_connection(self, panel: list[dict[str, Any]]) -> dict[str, Any]:
@@ -133,7 +148,11 @@ class AgoraAgentService:
         participants: list[dict[str, Any]] = []
         used = {int(connection["uid"]), first_agent_uid}
         for index, member in enumerate(panel):
-            agent_uid = first_agent_uid if index == 0 else self._unique_uid(used, 10_000_000, 89_999_999)
+            agent_uid = (
+                first_agent_uid
+                if index == 0
+                else self._unique_uid(used, 10_000_000, 89_999_999)
+            )
             used.add(agent_uid)
             avatar_uid = self._unique_uid(used, 100_000_000, 899_999_999)
             used.add(avatar_uid)
@@ -242,9 +261,7 @@ class AgoraAgentService:
                 {
                     "X-RoundCraft-Session-Id": roundcraft_session_id,
                     **(
-                        {"X-RoundCraft-Panelist-Id": panelist_id}
-                        if panelist_id
-                        else {}
+                        {"X-RoundCraft-Panelist-Id": panelist_id} if panelist_id else {}
                     ),
                 }
                 if roundcraft_session_id
@@ -262,7 +279,10 @@ class AgoraAgentService:
                 temperature=0.7,
                 top_p=0.95,
             )
-        elif roundcraft_session_id and self.settings.environment not in {"development", "test"}:
+        elif roundcraft_session_id and self.settings.environment not in {
+            "development",
+            "test",
+        }:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "RoundCraft custom LLM is required for product sessions",
@@ -283,7 +303,9 @@ class AgoraAgentService:
         sample_rate = 16_000 if vendor == "akool" else 24_000
         tts = MiniMaxTTS(
             model="speech_2_6_turbo",
-            voice_id=_VOICE_TYPES.get(panelist_voice.lower(), "English_captivating_female1"),
+            voice_id=_VOICE_TYPES.get(
+                panelist_voice.lower(), "English_captivating_female1"
+            ),
             sample_rate=sample_rate if avatar is not None else None,
         )
         parameters: dict[str, Any] = {
@@ -308,7 +330,10 @@ class AgoraAgentService:
                     "speech_threshold": 0.5,
                     "start_of_speech": {
                         "mode": "vad",
-                        "vad_config": {"interrupt_duration_ms": 160, "prefix_padding_ms": 300},
+                        "vad_config": {
+                            "interrupt_duration_ms": 160,
+                            "prefix_padding_ms": 300,
+                        },
                     },
                     "end_of_speech": {
                         "mode": "vad",
@@ -347,7 +372,9 @@ class AgoraAgentService:
                 break
             except Exception as exc:
                 if attempt == 0 and getattr(exc, "status_code", None) == 409:
-                    logger.warning("Agora agent name collision; retrying with a fresh name")
+                    logger.warning(
+                        "Agora agent name collision; retrying with a fresh name"
+                    )
                     continue
                 raise
         if session is None or agent_id is None:
@@ -372,48 +399,56 @@ class AgoraAgentService:
         roundcraft_session_id: str,
         output_audio_codec: str | None = None,
     ) -> list[dict[str, Any]]:
-        panel_by_id = {str(item["id"]): item for item in panel}
-
-        async def start_one(index: int, participant: dict[str, Any]) -> dict[str, Any]:
-            member = panel_by_id[participant["panelist_id"]]
-            bound_instructions = (
-                f"{instructions}\nYou are exclusively panelist {member['id']}: "
-                f"{member['display_name']}, {member['role']}. Only respond when the director dispatches to you."
+        panelist_ids = {str(item["id"]) for item in panel}
+        participant_ids = {str(item["panelist_id"]) for item in participants}
+        if not 2 <= len(participants) <= 5 or panelist_ids != participant_ids:
+            raise ValueError(
+                "Agora panel participants must match two to five configured panelists"
             )
-            return await self.start(
+
+        started: dict[str, Any] | None = None
+        try:
+            # Logical panelists share one always-listening Agora session. The custom LLM
+            # chooses the audible role on every candidate turn and updates MiniMax voice
+            # parameters in first-packet metadata.
+            started = await self.start(
                 channel_name=channel_name,
-                agent_uid=int(participant["agent_uid"]),
+                agent_uid=int(participants[0]["agent_uid"]),
                 user_uid=user_uid,
                 output_audio_codec=output_audio_codec,
-                instructions=bound_instructions,
-                greeting=DEFAULT_GREETING if index == 0 else "",
+                instructions=instructions,
+                greeting=DEFAULT_GREETING,
                 roundcraft_session_id=roundcraft_session_id,
-                panelist_id=participant["panelist_id"],
-                panelist_voice=str(member.get("voice", "clear-neutral")),
-                avatar_profile=participant,
-                manual_turn_control=True,
+                panelist_id=None,
+                manual_turn_control=False,
             )
-
-        results = await asyncio.gather(
-            *(start_one(index, item) for index, item in enumerate(participants)),
-            return_exceptions=True,
-        )
-        started = [item for item in results if isinstance(item, dict)]
-        failures = [item for item in results if isinstance(item, BaseException)]
-        if failures:
-            await asyncio.gather(
-                *(self.stop(str(item["agent_id"])) for item in started),
-                return_exceptions=True,
-            )
+            return [
+                {**started, "panelist_id": str(participant["panelist_id"])}
+                for participant in participants
+            ]
+        except Exception as exc:
+            if started and started.get("agent_id"):
+                await asyncio.gather(
+                    self.stop(str(started["agent_id"])),
+                    return_exceptions=True,
+                )
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
-                "Agora panel failed to start; started agents were rolled back",
-            ) from failures[0]
-        return cast(list[dict[str, Any]], results)
+                "Agora panel failed to start; the shared agent was rolled back",
+            ) from exc
+
+    @staticmethod
+    def _unique_agent_ids(agent_ids: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(
+                agent_id.strip() for agent_id in agent_ids if agent_id.strip()
+            )
+        )
 
     async def stop_panel(self, agent_ids: list[str]) -> None:
+        unique_agent_ids = self._unique_agent_ids(agent_ids)
         results = await asyncio.gather(
-            *(self.stop(agent_id) for agent_id in agent_ids),
+            *(self.stop(agent_id) for agent_id in unique_agent_ids),
             return_exceptions=True,
         )
         if any(isinstance(item, BaseException) for item in results):
@@ -472,7 +507,10 @@ class AgoraAgentService:
                 await session.interrupt()
                 return
             except Exception:
-                logger.warning("Session interrupt failed, using stateless Agora interrupt", exc_info=True)
+                logger.warning(
+                    "Session interrupt failed, using stateless Agora interrupt",
+                    exc_info=True,
+                )
         token = generate_convo_ai_token(
             app_id=self.settings.agora_app_id,
             app_certificate=self.settings.agora_app_certificate,
@@ -488,12 +526,15 @@ class AgoraAgentService:
         )
 
     async def interrupt_panel(self, agent_ids: list[str]) -> None:
+        unique_agent_ids = self._unique_agent_ids(agent_ids)
         results = await asyncio.gather(
-            *(self.interrupt(agent_id) for agent_id in agent_ids),
+            *(self.interrupt(agent_id) for agent_id in unique_agent_ids),
             return_exceptions=True,
         )
         if any(isinstance(item, BaseException) for item in results):
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Agora panel interruption failed")
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "Agora panel interruption failed"
+            )
 
     async def stop(self, agent_id: str) -> None:
         client = self._require_client()
@@ -505,7 +546,9 @@ class AgoraAgentService:
                 await session.stop()
                 return
             except Exception:
-                logger.warning("Session stop failed, using stateless Agora stop", exc_info=True)
+                logger.warning(
+                    "Session stop failed, using stateless Agora stop", exc_info=True
+                )
         await client.stop_agent(agent_id)
 
 

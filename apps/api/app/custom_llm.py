@@ -26,7 +26,13 @@ from app.models import (
     ToolRun,
     TranscriptTurn,
 )
-from app.schemas import ChatCompletionRequest, PanelDecision, PanelistInput, PanelState
+from app.schemas import (
+    INTERVIEWER_TOOL_NAMES,
+    ChatCompletionRequest,
+    PanelDecision,
+    PanelistInput,
+    PanelState,
+)
 from app.services.evidence import persist_candidate_turn, persist_inferred_evidence
 from app.services.tools import execute_tool
 
@@ -47,7 +53,9 @@ def _latest_user_text(payload: ChatCompletionRequest) -> str:
             return message.content
         if isinstance(message.content, list):
             return " ".join(
-                str(item.get("text", "")) for item in message.content if item.get("type") == "text"
+                str(item.get("text", ""))
+                for item in message.content
+                if item.get("type") == "text"
             )
     return "Continue the interview."
 
@@ -57,7 +65,9 @@ def _upstream_url(base_url: str) -> str:
     return clean if clean.endswith("/chat/completions") else f"{clean}/chat/completions"
 
 
-_ARITHMETIC = re.compile(r"(?<!\w)([-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+)")
+_ARITHMETIC = re.compile(
+    r"(?<!\w)([-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+)"
+)
 _MINIMAX_VOICE_TYPES = {
     "clear-neutral": "English_CalmWoman",
     "warm-analytical": "English_Graceful_Lady",
@@ -92,7 +102,9 @@ async def _run_live_tools(
     corpus = [
         {"source": f"transcript:{turn.id}", "text": turn.content}
         for turn in (
-            await db.execute(select(TranscriptTurn).where(TranscriptTurn.session_id == session.id))
+            await db.execute(
+                select(TranscriptTurn).where(TranscriptTurn.session_id == session.id)
+            )
         ).scalars()
     ]
     config = await db.scalar(
@@ -105,7 +117,9 @@ async def _run_live_tools(
         )
         if document:
             has_jd = True
-            corpus.append({"source": f"job-description:{document.id}", "text": document.raw_text})
+            corpus.append(
+                {"source": f"job-description:{document.id}", "text": document.raw_text}
+            )
 
     plans: list[tuple[str, dict[str, Any]]] = []
     expression = _ARITHMETIC.search(candidate_text)
@@ -176,20 +190,30 @@ async def panel_chat_completions(
 ) -> JSONResponse | StreamingResponse:
     """OpenAI-compatible boundary used by Agora for non-linear panel arbitration."""
     if not settings.agora_llm_bearer_secret:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Custom LLM secret is not configured")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Custom LLM secret is not configured"
+        )
     if not hmac.compare_digest(
         _bearer_value(authorization), settings.agora_llm_bearer_secret
     ):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid custom LLM credential")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "Invalid custom LLM credential"
+        )
     if not settings.llm_base_url or not settings.llm_api_key:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Upstream LLM is not configured")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Upstream LLM is not configured"
+        )
 
     if not x_roundcraft_session_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "RoundCraft session id is required")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "RoundCraft session id is required"
+        )
     try:
         session_id = UUID(x_roundcraft_session_id)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid RoundCraft session id") from exc
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Invalid RoundCraft session id"
+        ) from exc
     session = await db.scalar(
         select(InterviewSession)
         .where(InterviewSession.id == session_id)
@@ -204,44 +228,81 @@ async def panel_chat_completions(
     state = PanelState.model_validate(session.memory_state)
     panel = [PanelistInput.model_validate(item) for item in snapshot["panel"]]
     candidate_text = _latest_user_text(payload)
-    if x_roundcraft_panelist_id:
-        selected = next(
-            (item for item in panel if item.id == x_roundcraft_panelist_id),
-            None,
-        )
-        participant = await db.scalar(
-            select(PanelParticipant).where(
-                PanelParticipant.session_id == session.id,
-                PanelParticipant.panelist_id == x_roundcraft_panelist_id,
-                PanelParticipant.status == "running",
-            )
-        )
-        if selected is None or participant is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Bound panel agent is not running")
-        if state.pending_panelist_id != selected.id:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Panel agent does not hold the floor")
-        decision = PanelDecision(
-            next_speaker_id=selected.id,
-            action="ask",
-            rationale="The silent director dispatched this bound Agora panel agent.",
-            suggested_question=state.last_question or "Ask an adaptive evidence-grounded follow-up.",
-        )
-        state.pending_panelist_id = None
-    else:
-        decision = PanelDirector.choose_next(panel, state, candidate_text)
-        selected = next(item for item in panel if item.id == decision.next_speaker_id)
-        state.panelist_question_counts[selected.id] = (
-            state.panelist_question_counts.get(selected.id, 0) + 1
-        )
-    state.current_speaker_id = selected.id
-    state.last_question = decision.suggested_question
-
     candidate_turn = await persist_candidate_turn(
         db,
         session,
         candidate_text,
         source="agora-custom-llm",
     )
+
+    forced_panelist_id = state.pending_panelist_id
+    if x_roundcraft_panelist_id:
+        if forced_panelist_id != x_roundcraft_panelist_id:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Panel agent does not hold the floor"
+            )
+        forced_panelist_id = x_roundcraft_panelist_id
+
+    replayed_bid: ToolRun | None = None
+    if forced_panelist_id:
+        selected = next(
+            (item for item in panel if item.id == forced_panelist_id),
+            None,
+        )
+        participant = await db.scalar(
+            select(PanelParticipant).where(
+                PanelParticipant.session_id == session.id,
+                PanelParticipant.panelist_id == forced_panelist_id,
+                PanelParticipant.status == "running",
+            )
+        )
+        if selected is None or participant is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Selected logical panelist is not running"
+            )
+        decision = PanelDecision(
+            next_speaker_id=selected.id,
+            action="ask",
+            rationale="Explicit panel floor selection for the shared Agora session.",
+            suggested_question=state.last_question
+            or "Ask an adaptive evidence-grounded follow-up.",
+        )
+        state.pending_panelist_id = None
+    else:
+        replayed_bid = await db.scalar(
+            select(ToolRun)
+            .where(
+                ToolRun.session_id == session.id,
+                ToolRun.transcript_turn_id == candidate_turn.id,
+                ToolRun.tool_name == "panel.bid",
+                ToolRun.status == "completed",
+            )
+            .order_by(ToolRun.created_at.desc())
+            .limit(1)
+        )
+        if replayed_bid is not None:
+            try:
+                decision = PanelDecision.model_validate(replayed_bid.result["director"])
+                selected = next(
+                    item for item in panel if item.id == decision.next_speaker_id
+                )
+            except (KeyError, StopIteration, TypeError, ValueError):
+                replayed_bid = None
+        if replayed_bid is None:
+            decision = PanelDirector.choose_next(panel, state, candidate_text)
+            selected = next(
+                item for item in panel if item.id == decision.next_speaker_id
+            )
+            state.panelist_question_counts[selected.id] = (
+                state.panelist_question_counts.get(selected.id, 0) + 1
+            )
+    if selected is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Selected logical panelist is unavailable"
+        )
+    state.current_speaker_id = selected.id
+    state.last_question = decision.suggested_question
+
     inferred_evidence = await persist_inferred_evidence(db, session, candidate_turn)
     if not inferred_evidence:
         inferred_evidence = list(
@@ -257,17 +318,26 @@ async def panel_chat_completions(
     role_tools = [
         tool
         for tool in snapshot["enabled_tools"]
-        if tool in (selected.allowed_tools or [])
+        if tool in (selected.allowed_tools or []) and tool in INTERVIEWER_TOOL_NAMES
     ]
-    tool_audits, tool_context = await _run_live_tools(
-        db,
-        settings,
-        session,
-        candidate_turn.id,
-        selected.id,
-        candidate_text,
-        role_tools,
-    )
+    if replayed_bid is None:
+        tool_audits, tool_context = await _run_live_tools(
+            db,
+            settings,
+            session,
+            candidate_turn.id,
+            selected.id,
+            candidate_text,
+            role_tools,
+        )
+    else:
+        raw_audits = replayed_bid.result.get("tool_audits", [])
+        tool_audits = [item for item in raw_audits if isinstance(item, dict)]
+        tool_context = [
+            delimit_untrusted(f"tool:{item['name']}", json.dumps(item["result"]))
+            for item in tool_audits
+            if item.get("status") == "completed" and "name" in item and "result" in item
+        ]
     metadata = {
         "session_id": str(session.id),
         "selected_panelist": {
@@ -276,10 +346,18 @@ async def panel_chat_completions(
             "role": selected.role,
             "voice": selected.voice,
             "mood": selected.mood,
+            "template_knowledge": selected.template_knowledge.model_dump(mode="json"),
+            "template_behavior": selected.template_behavior.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "role_rubric": [
+                item.model_dump(mode="json") for item in selected.role_rubric
+            ],
         },
         "director": decision.model_dump(),
         "enabled_tools": role_tools,
         "tool_audits": tool_audits,
+        "replayed_candidate_turn": replayed_bid is not None,
         "evidence_bookmarks": [
             {
                 "id": str(item.id),
@@ -290,30 +368,52 @@ async def panel_chat_completions(
         ],
     }
     session.memory_state = state.model_dump()
-    db.add(
-        ToolRun(
-            session_id=session.id,
-            transcript_turn_id=candidate_turn.id,
-            panelist_id=selected.id,
-            tool_name="panel.bid",
-            arguments={"candidate_turn": candidate_text[-4000:]},
-            result=metadata,
-            status="completed",
+    if replayed_bid is None:
+        db.add(
+            ToolRun(
+                session_id=session.id,
+                transcript_turn_id=candidate_turn.id,
+                panelist_id=selected.id,
+                tool_name="panel.bid",
+                arguments={"candidate_turn": candidate_text[-4000:]},
+                result=metadata,
+                status="completed",
+            )
         )
-    )
     # Release the session lock before waiting on the upstream model or streaming audio.
     await db.commit()
 
+    template_behavior = selected.template_behavior
+    scoring_focus = [criterion.label for criterion in selected.role_rubric]
+    if not scoring_focus:
+        scoring_focus = selected.template_knowledge.scoring_focus
+    role_profile = "\n".join(
+        (
+            "Validated role profile (bounded by PLATFORM_INVARIANTS):",
+            f"- Style: {template_behavior.style or selected.behavior}",
+            f"- Interruption policy: {template_behavior.interruption or selected.interruption_style}",
+            (
+                f"- Adaptive probe: {template_behavior.adaptive_probe}"
+                if template_behavior.adaptive_probe
+                else "- Adaptive probe: follow the strongest unresolved evidence gap"
+            ),
+            f"- Scoring focus: {', '.join(scoring_focus) or 'session rubric coverage'}",
+            f"- Live interviewer tools: {', '.join(role_tools) or 'none'}",
+        )
+    )
     selected_instruction = "\n".join(
         value
         for value in (
             compile_agent_prompt(snapshot),
             f"Speak now as {selected.display_name}, the {selected.role}.",
-            f"Director action: {decision.action}. Objective: {decision.suggested_question}",
             (
-                "<STUDENT_CUSTOMIZATION>\n"
-                f"{selected.custom_prompt}\n"
-                "</STUDENT_CUSTOMIZATION>"
+                f"Director action: {decision.action}. Objective: {decision.suggested_question} "
+                f"Apply this role's adaptive probe: "
+                f"{template_behavior.adaptive_probe or 'follow the strongest unresolved evidence gap'}."
+            ),
+            role_profile,
+            (
+                f"<STUDENT_CUSTOMIZATION>\n{selected.custom_prompt}\n</STUDENT_CUSTOMIZATION>"
                 if selected.custom_prompt
                 else None
             ),
@@ -329,7 +429,11 @@ async def panel_chat_completions(
     upstream_body["model"] = settings.llm_model
     upstream_body["messages"] = [
         {"role": "system", "content": selected_instruction},
-        *(message for message in upstream_body["messages"] if message["role"] != "system"),
+        *(
+            message
+            for message in upstream_body["messages"]
+            if message["role"] != "system"
+        ),
     ]
     upstream_headers = {
         "Authorization": f"Bearer {settings.llm_api_key}",
@@ -339,15 +443,21 @@ async def panel_chat_completions(
 
     if not payload.stream:
         async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(upstream_url, headers=upstream_headers, json=upstream_body)
+            response = await client.post(
+                upstream_url, headers=upstream_headers, json=upstream_body
+            )
         if response.status_code >= 400:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Upstream LLM request failed")
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "Upstream LLM request failed"
+            )
         body = response.json()
         body["roundcraft"] = metadata
         return JSONResponse(body)
 
     client = httpx.AsyncClient(timeout=45)
-    request = client.build_request("POST", upstream_url, headers=upstream_headers, json=upstream_body)
+    request = client.build_request(
+        "POST", upstream_url, headers=upstream_headers, json=upstream_body
+    )
     response = await client.send(request, stream=True)
     if response.status_code >= 400:
         await response.aclose()
@@ -358,7 +468,9 @@ async def panel_chat_completions(
     voice_type = (
         requested_voice
         if requested_voice in _MINIMAX_VOICE_WHITELIST
-        else _MINIMAX_VOICE_TYPES.get(requested_voice.lower(), "English_captivating_female1")
+        else _MINIMAX_VOICE_TYPES.get(
+            requested_voice.lower(), "English_captivating_female1"
+        )
     )
     rate = 1.05 if selected.behavior in {"challenging", "tradeoff-seeking"} else 1.0
     first_chunk = {

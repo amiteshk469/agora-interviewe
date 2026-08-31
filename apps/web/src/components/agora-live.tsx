@@ -22,7 +22,11 @@ type RtmStatusListener = (event: RtmStatusEvent) => void;
 
 const AgoraVoiceClient = dynamic(() => import("@/components/agora-voice-client"), {
   ssr: false,
-  loading: () => <div className="h-12 w-56 animate-pulse rounded-md bg-muted" aria-label="Loading Agora voice controls" />,
+  loading: () => (
+    <div className="h-12 w-56 animate-pulse rounded-md bg-muted motion-reduce:animate-none" role="status" aria-live="polite" aria-label="Loading Agora voice controls">
+      <span className="sr-only">Loading Agora voice controls…</span>
+    </div>
+  ),
 });
 
 function waitForRtmConnected(client: RTMClient, timeoutMs = 800) {
@@ -118,17 +122,34 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
     return <AgoraVoiceClient config={config} sessionId={prepared?.demo ? undefined : prepared?.sessionId} rtmClient={rtm} onTranscript={onTranscript} onAgentState={onAgentState} onMediaState={onMediaState} />;
   }
 
+  const status = phase === "connecting"
+    ? "Connecting to Agora…"
+    : prepared?.connection
+      ? "Configured audio ready"
+      : demoModeEnabled
+        ? "Interactive demo"
+        : "Waiting for session";
+  const buttonLabel = phase === "connecting"
+    ? "Connecting…"
+    : phase === "error"
+      ? "Retry Agora"
+      : prepared?.connection
+        ? "Join Configured Audio"
+        : demoModeEnabled
+          ? "Connect Live Audio"
+          : "Session Required";
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" aria-busy={phase === "connecting"}>
       {phase === "error" ? (
-        <Alert title="Live connection unavailable" variant="destructive">
-          <span>{error}. {demoModeEnabled ? "You can keep exploring the complete demo or retry when the backend is configured." : "Return to the lobby and start the configured session again."}</span>
+        <Alert title="Live Connection Unavailable" variant="destructive">
+          <span className="break-words">{error}. {demoModeEnabled ? "Keep exploring the demo or retry when the backend is configured." : "Return to the lobby and start the configured session again."}</span>
         </Alert>
       ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border bg-card px-3 py-2.5 shadow-xl">
-        <Badge variant={phase === "connecting" ? "default" : "secondary"}>{phase === "connecting" ? <Radio className="size-3 animate-pulse" aria-hidden="true" /> : <AudioLines className="size-3" aria-hidden="true" />}{phase === "connecting" ? "Connecting to Agora" : prepared?.connection ? "Configured audio ready" : demoModeEnabled ? "Interactive demo" : "Waiting for session"}</Badge>
-        <Button size="sm" variant="secondary" onClick={prepared?.connection ? connectPrepared : connect} loading={phase === "connecting"} disabled={!prepared?.connection && !demoModeEnabled}>{phase === "error" ? <RotateCcw aria-hidden="true" /> : <Radio aria-hidden="true" />}{phase === "error" ? "Retry Agora" : prepared?.connection ? "Join configured audio" : demoModeEnabled ? "Connect live audio" : "Session required"}</Button>
-        {phase === "error" && demoModeEnabled ? <Button size="sm" variant="ghost" onClick={() => setPhase("demo")}><AlertCircle aria-hidden="true" />Use demo</Button> : null}
+        <Badge variant={phase === "connecting" ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true">{phase === "connecting" ? <Radio className="size-3 animate-pulse motion-reduce:animate-none" aria-hidden="true" /> : <AudioLines className="size-3" aria-hidden="true" />}{status}</Badge>
+        <Button size="sm" variant="secondary" onClick={prepared?.connection ? connectPrepared : connect} loading={phase === "connecting"} disabled={!prepared?.connection && !demoModeEnabled}>{phase === "error" ? <RotateCcw aria-hidden="true" /> : <Radio aria-hidden="true" />}{buttonLabel}</Button>
+        {phase === "error" && demoModeEnabled ? <Button size="sm" variant="ghost" onClick={() => setPhase("demo")}><AlertCircle aria-hidden="true" />Use Demo</Button> : null}
       </div>
     </div>
   );

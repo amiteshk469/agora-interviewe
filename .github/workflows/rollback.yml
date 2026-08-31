@@ -1,15 +1,10 @@
-name: Roll back production
+name: Roll back web production
 
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: Deployment to roll back
-        required: true
-        type: choice
-        options: [web, api]
       artifact:
-        description: Vercel deployment URL/ID or Cloud Run revision; leave empty to use Vercel's previous production deployment
+        description: Vercel deployment URL/ID; leave empty to use the previous production deployment
         required: false
         type: string
       confirm:
@@ -19,10 +14,9 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: production-${{ inputs.target }}
+  group: production-web
   cancel-in-progress: false
 
 jobs:
@@ -31,16 +25,11 @@ jobs:
     steps:
       - name: Validate confirmation and inputs
         env:
-          ARTIFACT: ${{ inputs.artifact }}
           CONFIRM: ${{ inputs.confirm }}
-          TARGET: ${{ inputs.target }}
-        run: |
-          test "$CONFIRM" = "ROLLBACK"
-          if [ "$TARGET" = "api" ]; then test -n "$ARTIFACT"; fi
+        run: test "$CONFIRM" = "ROLLBACK"
 
   web:
     needs: validate
-    if: inputs.target == 'web'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -60,22 +49,3 @@ jobs:
           else
             vercel rollback --yes --token="$VERCEL_TOKEN"
           fi
-
-  api:
-    needs: validate
-    if: inputs.target == 'api'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: google-github-actions/auth@v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - name: Move all traffic to the selected revision
-        env:
-          CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-          GCP_REGION: asia-south1
-          REVISION: ${{ inputs.artifact }}
-        run: gcloud run services update-traffic "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --to-revisions "$REVISION=100" --quiet

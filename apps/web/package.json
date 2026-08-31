@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
+    "@supabase/supabase-js": "^2.112.4",
     "agora-agent-client-toolkit": "1.2.0",
     "agora-agent-uikit": "1.1.0",
     "agora-rtc-react": "^2.5.1",

@@ -16,7 +16,7 @@ owner-bound token-renewal responses also return `connection.panelists` with
 `panelist_id`, `agent_uid`, `avatar_uid`, and `video_mode`. The silent director selects a
 speaker through `POST /v1/sessions/{session_id}/panel/dispatch`; all other agents are
 interrupted before the selected agent receives an Agora `agent_think` instruction. The
-stateless `agent_think` path works across Cloud Run instances when the in-process session
+stateless `agent_think` path works across Render instances when the in-process session
 handle is unavailable. Candidate barge-in uses `POST /v1/sessions/{session_id}/interrupt`.
 
 Manual start/end-of-speech detection is configured for every panel agent so floor control

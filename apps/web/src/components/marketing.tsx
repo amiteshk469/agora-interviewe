@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   AudioLines,
@@ -16,10 +15,8 @@ import {
 import { Brand } from "@/components/app-shell";
 import { Avatar, Badge, Button, Card, CheckRow, Separator } from "@/components/ui";
 import { defaultPanelists, featureSignals } from "@/data/demo";
-import { authenticateUser, demoModeEnabled } from "@/lib/api";
-import { useState } from "react";
 
-function PanelSequence() {
+export function PanelSequence() {
   return (
     <div className="relative mx-auto w-full max-w-xl overflow-hidden rounded-xl border bg-card shadow-2xl shadow-black/30">
       <div className="flex items-center justify-between border-b px-4 py-3">
@@ -43,11 +40,11 @@ function PanelSequence() {
             </div>
           </div>
           <div className="mt-7 flex items-center gap-3 border-t pt-4">
-            <button type="button" className="grid size-10 place-items-center rounded-full bg-primary text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Mute microphone"><Mic2 className="size-4" aria-hidden="true" /></button>
-            <div className="flex h-8 flex-1 items-center justify-center gap-1" aria-label="Candidate audio activity">
-              {[12, 20, 8, 26, 16, 30, 10, 22, 14, 18].map((height, index) => <span key={`${height}-${index}`} className="wave-bar w-0.5 rounded-full bg-primary" style={{ height }} />)}
+            <span className="grid size-10 place-items-center rounded-full bg-primary text-primary-foreground" aria-hidden="true"><Mic2 className="size-4" /></span>
+            <div className="flex h-8 flex-1 items-center justify-center gap-1" aria-hidden="true">
+              {[12, 20, 8, 26, 16, 30, 10, 22, 14, 18].map((height, index) => <span key={`${height}-${index}`} className="w-0.5 rounded-full bg-primary" style={{ height }} />)}
             </div>
-            <button type="button" className="grid size-10 place-items-center rounded-full border bg-secondary text-muted-foreground" aria-label="End interview"><CircleStop className="size-4" aria-hidden="true" /></button>
+            <span className="grid size-10 place-items-center rounded-full border bg-secondary text-muted-foreground" aria-hidden="true"><CircleStop className="size-4" /></span>
           </div>
         </div>
       </div>
@@ -58,15 +55,16 @@ function PanelSequence() {
 export function MarketingPage() {
   return (
     <div className="min-h-[100dvh] overflow-hidden bg-background">
+      <a href="#marketing-main" className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:start-4 focus:top-4">Skip to content</a>
       <header className="fixed inset-x-0 top-0 z-40 border-b bg-background/82 backdrop-blur-xl">
         <nav className="mx-auto flex h-16 max-w-7xl items-center gap-7 px-4 sm:px-6" aria-label="Main navigation">
-          <Brand />
-          <div className="hidden items-center gap-6 text-sm text-muted-foreground md:flex"><a href="#how-it-works" className="hover:text-foreground">How it works</a><a href="#assessment" className="hover:text-foreground">Assessment</a><a href="#panel" className="hover:text-foreground">Panel</a></div>
-          <div className="ms-auto flex items-center gap-2"><Button variant="ghost" asChild className="hidden sm:inline-flex"><Link href="/auth/sign-in">Sign in</Link></Button><Button asChild><Link href="/auth/sign-up">Start practicing<ArrowRight aria-hidden="true" /></Link></Button></div>
+          <Brand href="/" />
+          <div className="hidden items-center gap-6 text-sm text-muted-foreground md:flex"><a href="#how-it-works" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">How it works</a><a href="#assessment" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Assessment</a><a href="#panel" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Panel</a></div>
+          <div className="ms-auto flex items-center gap-2"><Button variant="ghost" asChild className="hidden sm:inline-flex"><Link href="/auth/sign-in">Sign in</Link></Button><Button asChild><Link href="/auth/sign-up?next=%2Fsetup">Start practicing<ArrowRight aria-hidden="true" /></Link></Button></div>
         </nav>
       </header>
 
-      <main>
+      <main id="marketing-main">
         <section className="relative min-h-[100dvh] pt-16">
           <div className="surface-grid pointer-events-none absolute inset-0 opacity-70" aria-hidden="true" />
           <div className="relative mx-auto grid min-h-[calc(100dvh-4rem)] max-w-7xl items-center gap-14 px-4 py-16 sm:px-6 lg:grid-cols-[0.82fr_1.18fr] lg:py-20">
@@ -74,7 +72,7 @@ export function MarketingPage() {
               <Badge variant="outline"><Sparkles className="size-3" aria-hidden="true" />AI panel interviews, built for practice</Badge>
               <h1 className="mt-6 text-balance text-4xl font-semibold leading-[1.06] tracking-[-0.045em] sm:text-5xl lg:text-6xl">Practice the interview that will not follow a script.</h1>
               <p className="mt-5 max-w-lg text-pretty text-base leading-7 text-muted-foreground sm:text-lg">A configurable panel that interrupts, remembers, challenges, and shows the exact evidence behind every assessment.</p>
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href="/setup">Build your panel<ArrowRight aria-hidden="true" /></Link></Button><Button size="lg" variant="secondary" asChild><Link href="/reports/demo">View an evidence report</Link></Button></div>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href="/auth/sign-up?next=%2Fsetup">Build your panel<ArrowRight aria-hidden="true" /></Link></Button><Button size="lg" variant="secondary" asChild><Link href="/reports/demo">View an evidence report</Link></Button></div>
             </div>
             <div className="enter [animation-delay:100ms]"><PanelSequence /></div>
           </div>
@@ -134,58 +132,11 @@ export function MarketingPage() {
         </section>
 
         <section className="px-4 pb-24 sm:px-6 lg:pb-32">
-          <div className="mx-auto max-w-7xl rounded-xl border bg-card px-6 py-12 text-center sm:px-10 sm:py-16"><h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Make the real interview feel familiar.</h2><p className="mx-auto mt-3 max-w-xl text-muted-foreground">Build a panel in minutes, then practice until your evidence is sharper than the pressure.</p><Button size="lg" asChild className="mt-7"><Link href="/setup">Start a mock interview<ArrowRight aria-hidden="true" /></Link></Button></div>
+          <div className="mx-auto max-w-7xl rounded-xl border bg-card px-6 py-12 text-center sm:px-10 sm:py-16"><h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Make the real interview feel familiar.</h2><p className="mx-auto mt-3 max-w-xl text-muted-foreground">Build a panel in minutes, then practice until your evidence is sharper than the pressure.</p><Button size="lg" asChild className="mt-7"><Link href="/auth/sign-up?next=%2Fsetup">Start a mock interview<ArrowRight aria-hidden="true" /></Link></Button></div>
         </section>
       </main>
 
-      <footer className="border-t"><div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:px-6"><Brand /><p>Adaptive mock interviews powered by Agora.</p><div className="sm:ms-auto flex gap-5"><a href="#how-it-works" className="hover:text-foreground">Product</a><Link href="/settings" className="hover:text-foreground">Privacy</Link></div></div></footer>
+      <footer className="border-t"><div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:px-6"><Brand href="/" /><p>Adaptive mock interviews powered by Agora.</p><div className="sm:ms-auto flex gap-5"><a href="#how-it-works" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Product</a><Link href="/auth/sign-up?next=%2Fsettings" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Privacy</Link></div></div></footer>
     </div>
-  );
-}
-
-export function AuthScreen({ mode }: { mode: "sign-in" | "sign-up" }) {
-  const router = useRouter();
-  const signup = mode === "sign-up";
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLoading(true);
-    setError("");
-    setMessage("");
-    const form = new FormData(event.currentTarget);
-    try {
-      const result = await authenticateUser(mode, String(form.get("email")), String(form.get("password")));
-      if (result.confirmationRequired) setMessage("Check your email to confirm the account, then sign in.");
-      else router.push("/dashboard");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Authentication failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-  return (
-    <main className="grid min-h-[100dvh] lg:grid-cols-[0.9fr_1.1fr]">
-      <section className="flex flex-col p-5 sm:p-8">
-        <Brand />
-        <div className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center py-12">
-          <h1 className="text-3xl font-semibold tracking-tight">{signup ? "Create your workspace" : "Welcome back"}</h1>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{signup ? "Start with the complete demo. Connect your account when you are ready." : "Continue your interview practice and replay drills."}</p>
-          <form className="mt-8 space-y-4" onSubmit={submit}>
-            {signup ? <div className="space-y-2"><label htmlFor="name" className="text-sm font-medium">Full name</label><input id="name" name="name" autoComplete="name" required className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="Your name" /></div> : null}
-            <div className="space-y-2"><label htmlFor="email" className="text-sm font-medium">Email</label><input id="email" name="email" type="email" autoComplete="email" required className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="you@example.com" /></div>
-            <div className="space-y-2"><div className="flex justify-between"><label htmlFor="password" className="text-sm font-medium">Password</label>{signup ? null : <button type="button" className="text-xs text-primary hover:underline">Forgot password?</button>}</div><input id="password" name="password" type="password" autoComplete={signup ? "new-password" : "current-password"} required minLength={8} className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="At least 8 characters" /></div>
-            {error ? <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</div> : null}
-            {message ? <div className="rounded-md border bg-secondary p-3 text-sm" role="status">{message}</div> : null}
-            <Button type="submit" loading={loading} className="mt-2 w-full">{signup ? "Create workspace" : "Sign in"}</Button>
-          </form>
-          {demoModeEnabled ? <><div className="my-6 flex items-center gap-3"><Separator /><span className="text-xs text-muted-foreground">or</span><Separator /></div><Button variant="secondary" asChild><Link href="/dashboard">Continue in demo mode</Link></Button></> : null}
-          <p className="mt-7 text-center text-sm text-muted-foreground">{signup ? "Already have an account?" : "New to RoundCraft?"} <Link className="text-foreground hover:underline" href={signup ? "/auth/sign-in" : "/auth/sign-up"}>{signup ? "Sign in" : "Create an account"}</Link></p>
-        </div>
-      </section>
-      <section className="relative hidden overflow-hidden border-s bg-card lg:grid lg:place-items-center" aria-label="RoundCraft product preview"><div className="surface-grid absolute inset-0" aria-hidden="true" /><div className="relative w-full max-w-xl p-10"><PanelSequence /><p className="mt-6 text-center text-sm text-muted-foreground">Your practice history, prompt library, and reports stay together.</p></div></section>
-    </main>
   );
 }

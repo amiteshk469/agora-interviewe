@@ -108,7 +108,7 @@ def test_avatar_configuration_falls_back_without_exposing_partial_vendor_state()
     assert anam["avatar_vendor"] == "anam"
 
 
-async def test_group_start_binds_every_agent_and_rolls_back_partial_failure(
+async def test_panel_start_uses_one_unbound_auto_vad_agent_and_rolls_back_mapping_failure(
     monkeypatch: Any,
 ) -> None:
     service = _service(Settings(environment="test"))
@@ -132,7 +132,7 @@ async def test_group_start_binds_every_agent_and_rolls_back_partial_failure(
     async def start(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
         return {
-            "agent_id": f"agent-{kwargs['panelist_id']}",
+            "agent_id": "agent-shared",
             "panelist_id": kwargs["panelist_id"],
         }
 
@@ -150,32 +150,38 @@ async def test_group_start_binds_every_agent_and_rolls_back_partial_failure(
         roundcraft_session_id="session-1",
     )
     assert len(result) == 3
-    assert {item["agent_uid"] for item in calls} == {111, 112, 113}
-    assert all(item["channel_name"] == "one-shared-channel" for item in calls)
-    assert all(item["manual_turn_control"] is True for item in calls)
-    assert {item["panelist_id"] for item in calls} == {"panel-0", "panel-1", "panel-2"}
-    assert sum(bool(item["greeting"]) for item in calls) == 1
+    assert {item["agent_id"] for item in result} == {"agent-shared"}
+    assert [item["panelist_id"] for item in result] == ["panel-0", "panel-1", "panel-2"]
+    assert len(calls) == 1
+    assert calls[0]["agent_uid"] == 111
+    assert calls[0]["channel_name"] == "one-shared-channel"
+    assert calls[0]["manual_turn_control"] is False
+    assert calls[0]["panelist_id"] is None
+    assert "avatar_profile" not in calls[0]
+    assert calls[0]["instructions"] == "Shared invariant prompt"
 
-    async def partially_fail(**kwargs: Any) -> dict[str, Any]:
-        if kwargs["panelist_id"] == "panel-1":
-            raise RuntimeError("provider start failed")
-        return {
-            "agent_id": f"agent-{kwargs['panelist_id']}",
-            "panelist_id": kwargs["panelist_id"],
-        }
+    class FailingParticipant(dict[str, Any]):
+        panelist_id_reads = 0
 
-    monkeypatch.setattr(service, "start", partially_fail)
+        def __getitem__(self, key: str) -> Any:
+            if key == "panelist_id":
+                self.panelist_id_reads += 1
+                if self.panelist_id_reads > 1:
+                    raise RuntimeError("logical result mapping failed")
+            return super().__getitem__(key)
+
+    rollback_participants = [*participants[:-1], FailingParticipant(participants[-1])]
     with pytest.raises(HTTPException) as error:
         await service.start_panel(
             channel_name="rollback-channel",
             user_uid=222,
-            participants=participants,
+            participants=rollback_participants,
             panel=_panel(3),
             instructions="Shared invariant prompt",
             roundcraft_session_id="session-2",
         )
     assert error.value.status_code == 502
-    assert set(stopped) == {"agent-panel-0", "agent-panel-2"}
+    assert stopped == ["agent-shared"]
 
 
 async def test_stateless_interrupt_fallback_signs_request_and_group_cleanup_attempts_all(
@@ -267,7 +273,13 @@ async def test_stateless_interrupt_fallback_signs_request_and_group_cleanup_atte
     monkeypatch.setattr(service, "stop", flaky_stop)
     with pytest.raises(HTTPException) as error:
         await service.stop_panel(
-            ["runtime-agent-1", "runtime-agent-2", "runtime-agent-3"]
+            [
+                "runtime-agent-1",
+                "runtime-agent-2",
+                "runtime-agent-1",
+                "runtime-agent-3",
+                "runtime-agent-2",
+            ]
         )
     assert error.value.status_code == 502
     assert set(attempted) == {
@@ -308,6 +320,8 @@ async def test_api_roster_dispatch_interrupt_and_webhook_mapping(
     )
     assert roster.status_code == 200
     assert all(item["status"] == "running" for item in roster.json())
+    assert [item["agora_agent_id"] for item in roster.json()].count("agent-test-1") == 1
+    assert sum(item["agora_agent_id"] is not None for item in roster.json()) == 1
 
     dispatched = await client.post(
         f"/v1/sessions/{session['id']}/panel/dispatch",
@@ -321,13 +335,14 @@ async def test_api_roster_dispatch_interrupt_and_webhook_mapping(
     assert dispatched.json()["participant"]["panelist_id"] == "panel-3"
     assert dispatched.json()["manual_turn"] == {
         "mode": "manual_sos_eos",
-        "agent_user_id": "114",
+        "agent_user_id": "111",
         "send_manual_sos": True,
         "send_manual_eos": True,
         "server_dispatch": "think_injected",
     }
     assert client.fake_agora.dispatched[-1]["panelist_id"] == "panel-3"  # type: ignore[attr-defined]
-    assert len(client.fake_agora.interrupted) == 4  # type: ignore[attr-defined]
+    assert client.fake_agora.dispatched[-1]["agent_id"] == "agent-test-1"  # type: ignore[attr-defined]
+    assert client.fake_agora.interrupted == []  # type: ignore[attr-defined]
 
     interrupted = await client.post(
         f"/v1/sessions/{session['id']}/interrupt",
@@ -339,7 +354,7 @@ async def test_api_roster_dispatch_interrupt_and_webhook_mapping(
     webhook_payload = {
         "noticeId": "avatar-left-1",
         "eventType": 102,
-        "payload": {"agentId": "agent-test-2"},
+        "payload": {"agentId": "agent-test-1"},
     }
     body = json.dumps(webhook_payload).encode()
     signature = hmac.new(b"test-webhook-secret", body, hashlib.sha256).hexdigest()
@@ -354,7 +369,7 @@ async def test_api_roster_dispatch_interrupt_and_webhook_mapping(
             f"/v1/sessions/{session['id']}/participants", headers=auth_headers
         )
     ).json()
-    mapped = next(item for item in updated_roster if item["agora_agent_id"] == "agent-test-2")
+    mapped = next(item for item in updated_roster if item["agora_agent_id"] == "agent-test-1")
     assert mapped["status"] == "stopped"
     assert mapped["last_event_type"] == "102"
 
@@ -363,13 +378,7 @@ async def test_api_roster_dispatch_interrupt_and_webhook_mapping(
     )
     assert ended.status_code == 200, ended.text
     assert ended.json()["status"] == "ended"
-    assert set(client.fake_agora.stopped) == {  # type: ignore[attr-defined]
-        "agent-test-1",
-        "agent-test-2",
-        "agent-test-3",
-        "agent-test-4",
-        "agent-test-5",
-    }
+    assert client.fake_agora.stopped == ["agent-test-1"]  # type: ignore[attr-defined]
     final_roster = (
         await client.get(
             f"/v1/sessions/{session['id']}/participants", headers=auth_headers
