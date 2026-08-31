@@ -9,6 +9,7 @@ Create one Vercel project with these settings:
 | Node.js | 22 |
 | Install Command | `pnpm install --frozen-lockfile` |
 | Build Command | `pnpm build` |
+| Production Branch | `main` |
 
 Configure the required rows separately for Preview and Production:
 
@@ -22,10 +23,8 @@ Configure the required rows separately for Preview and Production:
 | `AGENT_BACKEND_URL` | `https://roundcraft-api.onrender.com` | Required; server/build only; used by Next.js rewrites |
 | `NEXT_PUBLIC_DEV_AUTH_USER_ID` | Same UUID as API `DEV_AUTH_USER_ID` | Optional local/demo only; browser-visible, omit from Production |
 
-Never put Agora certificates, Supabase secret/service-role credentials, provider keys, or other secrets in a `NEXT_PUBLIC_*` variable. The release validator rejects `sb_secret_`, privileged Supabase JWTs, obvious provider/server-key formats, placeholders, malformed Agora App IDs, and non-public Production URLs before the build.
+Never put Agora certificates, Supabase secret/service-role credentials, provider keys, or other secrets in a `NEXT_PUBLIC_*` variable. Production values must use public HTTPS origins, a valid Agora App ID, `NEXT_PUBLIC_DEMO_MODE=false`, matching API origins, and a browser-safe Supabase publishable or anon key.
 
-After changing a build-time variable, create and promote a new deployment. Existing Next.js bundles keep the values present at build time.
+Connect the Git repository to the Vercel project and leave automatic deployments enabled. Vercel creates Preview deployments for non-production branches and deploys commits that reach `main` to Production. GitHub's `CI / Required` check remains the merge gate; GitHub Actions does not need a Vercel token, organization ID, or project ID.
 
-Use the GitHub workflow as the production release authority. If the Vercel project is also connected directly to Git, disable automatic Production-branch deployments so a push cannot bypass candidate verification and promotion.
-
-The GitHub deployment starts after the `CI` workflow succeeds on `main`. A manual dispatch is accepted only from the current `main` tip. In either case it re-runs the exact release tests, validates all required Production variables, uses the pinned Vercel CLI to create a prebuilt candidate deployment, checks the candidate, waits for Render `/health/ready` to report the same Git commit, and promotes the exact candidate. Add `VERCEL_TOKEN` as a GitHub Environment secret, and add `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` as GitHub Environment variables.
+After changing a build-time variable, redeploy the latest `main` commit from the Vercel dashboard because existing Next.js bundles keep the values present at build time. Use the project's Production Deployments page for status and Instant Rollback.

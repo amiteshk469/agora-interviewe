@@ -11,7 +11,7 @@ packages/contracts  Shared API and live-session contracts
 packages/config     Browser-safe configuration helpers
 supabase            Postgres migrations, RLS, storage policies, and seed data
 config              Human-readable service map with environment references
-.github/workflows   CI, preview, and production release pipelines
+.github/workflows   CI checks for web, API, shared packages, and migrations
 ```
 
 The frontend deploys to Vercel. The backend deploys independently to Render. Supabase provides Auth, Postgres, pgvector, Realtime, and private Storage.

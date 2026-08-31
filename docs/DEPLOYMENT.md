@@ -4,7 +4,7 @@
 
 | Component | Platform | Release gate |
 |---|---|---|
-| Next.js frontend | Vercel | GitHub `CI` succeeds, then the staged production deployment is smoke-tested and promoted |
+| Next.js frontend | Vercel | Vercel's Git integration deploys `main`; GitHub `CI / Required` remains the merge gate |
 | FastAPI backend | Render (`roundcraft-api.onrender.com`) | Render's `checksPass` trigger waits for GitHub `CI`, then `/health/ready` must pass its database and catalog checks |
 | Auth, Postgres, Storage | Supabase | Migrations are applied before dependent API changes merge; readiness fails closed when the required prompt catalog is absent |
 | Voice and video agents | Agora | Real staging-channel verification before production credentials are enabled |
@@ -15,36 +15,18 @@ Production must use an always-on Render plan. A sleeping API adds cold-start del
 
 Protect `main` with the single `CI / Required` check. CI detects changed paths and runs only the applicable web, API, shared-package, and database jobs. Pull requests use demo mode and dummy Agora credentials; they never consume production quota or secrets.
 
-Create a protected GitHub Environment named `production` for Vercel releases:
-
-| Kind | Name | Purpose |
-|---|---|---|
-| Secret | `VERCEL_TOKEN` | Vercel CLI deployment and rollback |
-| Variable | `VERCEL_ORG_ID` | Vercel account/team selection |
-| Variable | `VERCEL_PROJECT_ID` | Vercel project selection |
-
-Render deployment needs no GitHub secret, deploy hook, GCP identity, or service-account key. Render reads the linked `main` branch and deploys only after checks pass.
-Changes to `render.yaml` also run a secret-free schema check against Render's official Blueprint schema inside the required API CI job.
+Vercel and Render use their native GitHub integrations. GitHub Actions does not store a Vercel access token and does not deploy or promote production builds. Render deployment needs no GitHub secret, deploy hook, GCP identity, or service-account key. Changes to Render deployment files are validated against Render's official Blueprint schema in the API CI job.
 
 ## Frontend release
 
-`.github/workflows/deploy-web.yml` runs after successful `main` CI or by a manual dispatch pinned to the current `main` tip. A dispatch from another branch or tag fails before release tests:
-
-1. Re-check shared packages and the web application at the exact release commit.
-2. Pull Vercel Production settings.
-3. Reject missing values, demo mode, non-public or placeholder URLs and Agora IDs, privileged credentials in browser variables, URL paths such as `/v1`, and a mismatch between `NEXT_PUBLIC_API_BASE_URL` and `AGENT_BACKEND_URL`.
-4. Build a staged Production deployment with pinned Vercel CLI `59.10.0`.
-5. Smoke test the candidate, then wait for the configured backend `/health/ready` endpoint to report the same release commit.
-6. Promote that exact deployment without rebuilding only after both checks pass.
-
-The required Vercel values and project settings are documented in `deploy/vercel/README.md`.
+Vercel's connected Git repository deploys the configured production branch directly. The required Vercel values and project settings are documented in `deploy/vercel/README.md`. Keep production environment values in Vercel, not GitHub Actions.
 
 ## Backend release
 
 `render.yaml` and `deploy/render/Dockerfile` are the backend deployment contract:
 
-1. Render deploys every verified `main` commit so its reported release SHA stays coordinated with the Vercel candidate, including frontend-only releases.
-2. `autoDeployTrigger: checksPass` waits for GitHub CI on the linked branch; the required API job also validates the Blueprint schema.
+1. Render deploys verified `main` commits that change the API, Render Docker assets, or `render.yaml`; frontend-only commits do not rebuild the API.
+2. `autoDeployTrigger: checksPass` waits for GitHub CI on the linked branch; the API CI job also validates the Blueprint schema.
 3. Render builds the locked Python 3.12 image and starts Uvicorn on the injected `PORT`.
 4. Render sends `/health/ready` checks to the new instance. Production readiness verifies Postgres connectivity and all 12 active built-in templates from migration `202609010001`; traffic is not routed when the schema or catalog is missing.
 5. The previous successful deploy remains available for rollback in Render's Events page.
@@ -64,7 +46,7 @@ Use additive changes first. Remove old columns or tables only after the previous
 
 ## Rollback
 
-- Web: run `Roll back web production`, type `ROLLBACK`, and optionally provide a Vercel deployment URL/ID.
+- Web: use **Instant Rollback** from the Vercel project's production deployment page.
 - API: in the Render service's Events page, choose a recent successful deploy and select **Rollback**. Dashboard rollback also disables auto-deploy until the incident is resolved; re-enable `checksPass` afterward.
 
 ## Release verification
