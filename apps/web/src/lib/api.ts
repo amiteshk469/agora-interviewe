@@ -75,11 +75,11 @@ function productBase() {
 }
 
 async function productToken() {
-  if (demoModeEnabled) return `dev:${demoUserId}`;
   if (process.env.NODE_ENV === "test") {
     const testToken = typeof window === "undefined" ? null : window.localStorage.getItem("roundcraft.supabase_access_token");
     if (testToken && !testToken.startsWith("dev:")) return testToken;
   }
+  if (demoModeEnabled) return `dev:${demoUserId}`;
   const session = await getSupabaseBrowserClient().auth.getSession();
   if (session.error) throw session.error;
   if (session.data.session?.access_token) return session.data.session.access_token;

@@ -27,7 +27,7 @@ describe("configured interview flow", () => {
       profession: "product_management",
       difficulty: "challenging",
       duration_minutes: 35,
-      enabled_tools: ["knowledge_search", "calculator", "evidence_bookmark", "replay"],
+      enabled_tools: ["knowledge_search", "calculator", "web_search"],
     });
     const session = await createInterviewSession(config.id);
     const live = await startInterviewSession(session.id);
@@ -71,7 +71,7 @@ describe("configured interview flow", () => {
       description: "Product judgment",
       prompt: "Ask adaptive product questions and require linked final transcript evidence for each assessment claim.",
       knowledge: { domains: ["product judgment"] },
-      behavior: { allowed_tools: ["knowledge_search", "evidence_bookmark", "replay"] },
+      behavior: { allowed_tools: ["knowledge_search"] },
       is_builtin: true,
       is_active: true,
       created_at: "2026-09-01T00:00:00Z",
