@@ -10,13 +10,6 @@ services:
     healthCheckPath: /health/ready
     renderSubdomainPolicy: enabled
     maxShutdownDelaySeconds: 120
-    buildFilter:
-      paths:
-        - apps/api/**
-        - deploy/render/**
-        - render.yaml
-      ignoredPaths:
-        - apps/api/**/*.md
     envVars:
       - key: ENVIRONMENT
         value: production

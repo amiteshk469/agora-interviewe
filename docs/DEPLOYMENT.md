@@ -43,7 +43,7 @@ The required Vercel values and project settings are documented in `deploy/vercel
 
 `render.yaml` and `deploy/render/Dockerfile` are the backend deployment contract:
 
-1. Render watches API and Render configuration paths only.
+1. Render deploys every verified `main` commit so its reported release SHA stays coordinated with the Vercel candidate, including frontend-only releases.
 2. `autoDeployTrigger: checksPass` waits for GitHub CI on the linked branch; the required API job also validates the Blueprint schema.
 3. Render builds the locked Python 3.12 image and starts Uvicorn on the injected `PORT`.
 4. Render sends `/health/ready` checks to the new instance. Production readiness verifies Postgres connectivity and all 12 active built-in templates from migration `202609010001`; traffic is not routed when the schema or catalog is missing.
