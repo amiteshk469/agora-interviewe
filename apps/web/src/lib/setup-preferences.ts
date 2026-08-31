@@ -19,6 +19,7 @@ export type PromptTemplateIdentity = {
 
 const DURATIONS = [20, 35, 45, 60] as const;
 const DIFFICULTIES: SetupDifficulty[] = ["supportive", "balanced", "challenging", "executive"];
+const INTERVIEWER_CALLABLE_TOOLS = new Set<string>(["knowledge_search", "calculator", "web_search"]);
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -67,11 +68,15 @@ export function selectBuiltInTemplate<T extends PromptTemplateIdentity>(template
   }, undefined);
 }
 
+export function interviewerCallableTools(enabledTools: readonly string[]): string[] {
+  return [...new Set(enabledTools.filter((tool) => INTERVIEWER_CALLABLE_TOOLS.has(tool)))];
+}
+
 export function roleScopedTools(enabledTools: readonly string[], role: string, behavior = ""): string[] {
   const descriptor = `${role} ${behavior}`.toLowerCase();
   const canCalculate = /(analytic|metric|data|growth|strategy|technical|engineering|estimat)/.test(descriptor);
   const canSearchWeb = /(strategy|market|growth|business|platform|api|technical|engineering)/.test(descriptor);
-  return enabledTools.filter((tool) => (
+  return interviewerCallableTools(enabledTools).filter((tool) => (
     tool === "knowledge_search"
     || (tool === "calculator" && canCalculate)
     || (tool === "web_search" && canSearchWeb)

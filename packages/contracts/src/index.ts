@@ -6,11 +6,11 @@ export const interviewerTools = [
   "knowledge_search",
   "calculator",
   "web_search",
-  "evidence_bookmark",
-  "replay",
 ] as const;
 
 export type InterviewerTool = (typeof interviewerTools)[number];
+export const platformWorkflowCapabilities = ["evidence_bookmark", "replay"] as const;
+export type PlatformWorkflowCapability = (typeof platformWorkflowCapabilities)[number];
 export type Difficulty = "supportive" | "balanced" | "challenging" | "executive";
 export type TranscriptTurnStatus = "in_progress" | "completed" | "interrupted";
 export type DocumentStatus = "uploaded" | "processing" | "ready" | "failed";

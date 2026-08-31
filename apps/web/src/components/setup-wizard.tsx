@@ -38,16 +38,18 @@ import {
   type JobDescriptionResponse,
   type PromptTemplateRecord,
 } from "@/lib/api";
-import { interruptionStyle, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata, type SetupDifficulty, type TargetLevel } from "@/lib/setup-preferences";
+import { interruptionStyle, interviewerCallableTools, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata, type SetupDifficulty, type TargetLevel } from "@/lib/setup-preferences";
 import { cn } from "@/lib/utils";
 
 const steps = ["Role", "Documents", "Panel", "Prompts", "Review"];
-const toolOptions = [
+const interviewerToolOptions = [
   { id: "knowledge_search", label: "Knowledge search", detail: "JD and uploaded context", roles: "All panelists", safe: true },
   { id: "calculator", label: "Calculator", detail: "Allowlisted product metrics", roles: "Analytics and strategy", safe: true },
   { id: "web_search", label: "Web search", detail: "Fresh public facts", roles: "Strategy, optional", safe: false },
-  { id: "evidence_bookmark", label: "Evidence bookmark", detail: "Link transcript turns", roles: "Evidence pipeline", safe: true },
-  { id: "replay", label: "Replay drill", detail: "Create focused practice", roles: "Post-session coach", safe: true },
+];
+const platformCapabilities = [
+  { id: "evidence_bookmark", label: "Evidence linking", detail: "RoundCraft links final transcript turns to assessment claims." },
+  { id: "replay", label: "Replay drills", detail: "RoundCraft creates focused practice from post-session evidence gaps." },
 ];
 const availablePanelists: Panelist[] = [
   ...defaultPanelists,
@@ -159,7 +161,7 @@ export function SetupWizard() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [enabledTools, setEnabledTools] = useState(["knowledge_search", "calculator", "evidence_bookmark", "replay"]);
+  const [enabledTools, setEnabledTools] = useState(["knowledge_search", "calculator"]);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileFeedbackRef = useRef<HTMLDivElement>(null);
   const preferencesAppliedFor = useRef<string | null>(user?.id ?? null);
@@ -592,7 +594,7 @@ export function SetupWizard() {
         difficulty,
         duration_minutes: Number(duration),
         panel: mappedPanel,
-        enabled_tools: enabledTools,
+        enabled_tools: interviewerCallableTools(enabledTools),
       });
       const session = await createInterviewSession(config.id);
       saveLiveSession({ sessionId: session.id, agentId: "", configSnapshot: session.config_snapshot, demo: false });
@@ -678,9 +680,18 @@ export function SetupWizard() {
               </div>
               <Button variant="secondary" onClick={addPanelist} disabled={!canAdd}><Plus aria-hidden="true" />Add interviewer</Button>
               <Card>
-                <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle className="text-base">Session tool policy</CardTitle><CardDescription>Interviewer-callable tools are role-scoped. Evidence and replay actions run in their labeled session stages. Every use is logged.</CardDescription></div><Badge variant="outline">{enabledTools.length} enabled</Badge></div></CardHeader>
-                <CardContent className="grid gap-2 sm:grid-cols-2">
-                  {toolOptions.map((tool) => <label key={tool.id} className="flex items-start gap-3 rounded-lg border bg-background p-3"><input name={`tool_${tool.id}`} type="checkbox" className="mt-1 size-4 accent-[var(--primary)]" checked={enabledTools.includes(tool.id)} onChange={() => toggleTool(tool.id)} /><span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium">{tool.label}{tool.safe ? null : <Badge variant="secondary">Optional</Badge>}</span><span className="mt-1 block text-xs text-muted-foreground">{tool.detail} · {tool.roles}</span></span></label>)}
+                <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle className="text-base">Session tool policy</CardTitle><CardDescription>Choose what interviewers may call. Evidence linking and replay remain protected RoundCraft workflow stages.</CardDescription></div><Badge variant="outline">{enabledTools.length} interviewer tools</Badge></div></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {interviewerToolOptions.map((tool) => <label key={tool.id} className="flex items-start gap-3 rounded-lg border bg-background p-3"><input name={`tool_${tool.id}`} type="checkbox" className="mt-1 size-4 accent-[var(--primary)]" checked={enabledTools.includes(tool.id)} onChange={() => toggleTool(tool.id)} /><span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium">{tool.label}{tool.safe ? null : <Badge variant="secondary">Optional</Badge>}</span><span className="mt-1 block text-xs text-muted-foreground">{tool.detail} · {tool.roles}</span></span></label>)}
+                  </div>
+                  <Separator />
+                  <div>
+                    <p className="mb-2 text-xs font-medium text-muted-foreground">Always-on platform workflow</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {platformCapabilities.map((capability) => <div key={capability.id} className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary/10 text-primary"><Check className="size-3" aria-hidden="true" /></span><span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium">{capability.label}<Badge variant="outline">Platform</Badge></span><span className="mt-1 block text-xs text-muted-foreground">{capability.detail}</span></span></div>)}
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -742,7 +753,8 @@ export function SetupWizard() {
                   <div><p className="mb-3 text-xs text-muted-foreground">Panel sequence is decided live</p><div className="flex flex-wrap gap-2">{panel.map((person) => <div key={person.id} className="flex items-center gap-2 rounded-md border bg-background p-2 pe-3"><Avatar initials={person.initials} src={person.avatarImage} className="size-7" /><span><span className="block text-xs font-medium">{person.name}</span><span className="block text-[10px] capitalize text-muted-foreground">{person.role} · {panelDifficulty[person.id] ?? difficulty}</span></span></div>)}</div></div>
                   <Separator />
                   <div className="grid gap-3 sm:grid-cols-2"><CheckRow>{allowInterruption ? "Candidate barge-in and interruption enabled" : "Panelists finish the current turn before the candidate responds"}</CheckRow><CheckRow>Shared context memory enabled</CheckRow><CheckRow>Transcript evidence required for scores</CheckRow><CheckRow>Tools logged in the session timeline</CheckRow></div>
-                  <div><p className="mb-3 text-xs text-muted-foreground">Enabled session tools</p><div className="flex flex-wrap gap-2">{toolOptions.filter((tool) => enabledTools.includes(tool.id)).map((tool) => <Badge key={tool.id} variant="secondary">{tool.label}</Badge>)}</div></div>
+                  <div><p className="mb-3 text-xs text-muted-foreground">Enabled interviewer tools</p><div className="flex flex-wrap gap-2">{interviewerToolOptions.filter((tool) => enabledTools.includes(tool.id)).map((tool) => <Badge key={tool.id} variant="secondary">{tool.label}</Badge>)}</div></div>
+                  <div><p className="mb-3 text-xs text-muted-foreground">Protected platform workflow</p><div className="flex flex-wrap gap-2">{platformCapabilities.map((capability) => <Badge key={capability.id} variant="outline"><Check className="size-3" aria-hidden="true" />{capability.label}</Badge>)}</div></div>
                 </CardContent>
               </Card>
               {saveError ? <Alert title="Configuration could not be saved" variant="destructive"><span>{saveError}</span></Alert> : null}

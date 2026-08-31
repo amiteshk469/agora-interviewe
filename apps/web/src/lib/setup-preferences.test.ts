@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { interruptionStyle, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata } from "./setup-preferences";
+import { interruptionStyle, interviewerCallableTools, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata } from "./setup-preferences";
 
 describe("setupDefaultsFromMetadata", () => {
   it("maps authenticated candidate preferences into supported wizard values", () => {
@@ -66,6 +66,17 @@ describe("setup prompt policy", () => {
     expect(roleScopedTools(["knowledge_search", "evidence_bookmark"], "Analytics Interviewer")).toEqual([
       "knowledge_search",
     ]);
+  });
+
+  it("never serializes platform workflow actions as interviewer-callable tools", () => {
+    expect(interviewerCallableTools([
+      "knowledge_search",
+      "evidence_bookmark",
+      "calculator",
+      "replay",
+      "web_search",
+      "knowledge_search",
+    ])).toEqual(["knowledge_search", "calculator", "web_search"]);
   });
 
   it("uses the runtime's literal uninterruptible value when barge-in is disabled", () => {
