@@ -67,8 +67,8 @@ spec:
               value: https://api.openai.com/v1
             - name: EMBEDDING_MODEL
               value: text-embedding-3-small
-            - name: WEB_SEARCH_BASE_URL
-              value: https://api.search.brave.com/res/v1
+            - name: FIRECRAWL_BASE_URL
+              value: https://api.firecrawl.dev/v2
             - name: WEB_SEARCH_ENABLED
               value: "false"
             - name: RECORDING_ENABLED

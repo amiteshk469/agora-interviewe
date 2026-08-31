@@ -117,31 +117,46 @@ async def execute_tool(
             ]
         }
     if name == "web_search":
-        if not settings.web_search_enabled or not settings.web_search_base_url:
+        if (
+            not settings.web_search_enabled
+            or not settings.web_search_base_url.strip()
+            or not settings.web_search_api_key.strip()
+        ):
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Web search is not configured")
         query = str(arguments.get("query", "")).strip()
         if not query:
             raise ValueError("query is required")
+        if len(query) > 500:
+            raise ValueError("query must contain at most 500 characters")
         base_url = settings.web_search_base_url.rstrip("/")
-        url = f"{base_url}/web/search" if base_url.endswith("/res/v1") else base_url
-        headers = {"X-Subscription-Token": settings.web_search_api_key}
+        url = base_url if base_url.endswith("/search") else f"{base_url}/search"
+        headers = {"Authorization": f"Bearer {settings.web_search_api_key.strip()}"}
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
+            response = await client.post(
                 url,
-                params={"q": query, "count": 5, "safesearch": "strict"},
                 headers=headers,
+                json={
+                    "query": query,
+                    "limit": 5,
+                    "sources": ["web"],
+                    "ignoreInvalidURLs": True,
+                    "timeout": 8_000,
+                },
             )
             response.raise_for_status()
-        items = response.json().get("web", {}).get("results", [])
+        payload = response.json()
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        items = data.get("web", []) if isinstance(data, dict) else []
         return {
             "results": [
                 {
                     "title": str(item.get("title", ""))[:300],
                     "url": str(item.get("url", ""))[:2000],
                     "description": str(item.get("description", ""))[:1000],
-                    "age": item.get("age"),
+                    "age": None,
                 }
                 for item in items[:5]
+                if isinstance(item, dict)
             ]
         }
     if name == "evidence_bookmark":

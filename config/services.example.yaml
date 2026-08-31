@@ -39,5 +39,6 @@ models:
   embedding_key_env: EMBEDDING_API_KEY
 
 search:
-  base_url_env: WEB_SEARCH_BASE_URL
-  api_key_env: WEB_SEARCH_API_KEY
+  provider: firecrawl
+  base_url_env: FIRECRAWL_BASE_URL
+  api_key_env: FIRECRAWL_API_KEY

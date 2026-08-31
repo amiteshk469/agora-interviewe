@@ -63,7 +63,7 @@ network boundaries. They cover 2/5-person UID allocation, one-avatar-per-agent S
 group rollback/cleanup, unique-name retry, owner-scoped roster and token renewal, manual
 dispatch, stateless dispatch/interruption, floor authorization, and webhook correlation.
 They do not claim a real RTC/avatar media round trip, cloud object upload, or model response.
-Brave Search is also adapter-tested rather than called with a live key. PDF and DOCX
+Firecrawl Search is also adapter-tested rather than called with a live key. PDF and DOCX
 extraction are implemented, while the fast test suite uploads TXT. Run the Supabase CLI
 migration checks and an Agora staging-channel panel test before production promotion.
 

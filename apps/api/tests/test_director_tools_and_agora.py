@@ -52,7 +52,7 @@ def test_safe_calculator() -> None:
             raise AssertionError(f"unsafe expression accepted: {unsafe}")
 
 
-async def test_brave_web_search_adapter_is_bounded(monkeypatch: Any) -> None:
+async def test_firecrawl_web_search_adapter_is_bounded(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 
     class Response:
@@ -61,13 +61,13 @@ async def test_brave_web_search_adapter_is_bounded(monkeypatch: Any) -> None:
 
         def json(self) -> dict[str, Any]:
             return {
-                "web": {
-                    "results": [
+                "success": True,
+                "data": {
+                    "web": [
                         {
                             "title": "Current market source",
                             "url": "https://example.test/source",
                             "description": "Bounded provider snippet",
-                            "age": "1 day ago",
                         }
                     ]
                 }
@@ -83,7 +83,7 @@ async def test_brave_web_search_adapter_is_bounded(monkeypatch: Any) -> None:
         async def __aexit__(self, *args: Any) -> None:
             pass
 
-        async def get(self, url: str, **kwargs: Any) -> Response:
+        async def post(self, url: str, **kwargs: Any) -> Response:
             captured.update({"url": url, **kwargs})
             return Response()
 
@@ -94,18 +94,42 @@ async def test_brave_web_search_adapter_is_bounded(monkeypatch: Any) -> None:
         [],
         Settings(
             web_search_enabled=True,
-            web_search_base_url="https://api.search.brave.com/res/v1",
+            web_search_base_url="https://api.firecrawl.dev/v2",
             web_search_api_key="search-key",
         ),
     )
-    assert captured["url"].endswith("/res/v1/web/search")
-    assert captured["headers"] == {"X-Subscription-Token": "search-key"}
-    assert captured["params"] == {
-        "q": "current product management hiring market",
-        "count": 5,
-        "safesearch": "strict",
+    assert captured["url"] == "https://api.firecrawl.dev/v2/search"
+    assert captured["headers"] == {"Authorization": "Bearer search-key"}
+    assert captured["json"] == {
+        "query": "current product management hiring market",
+        "limit": 5,
+        "sources": ["web"],
+        "ignoreInvalidURLs": True,
+        "timeout": 8_000,
     }
     assert result["results"][0]["url"] == "https://example.test/source"
+    assert result["results"][0]["age"] is None
+
+
+async def test_firecrawl_web_search_requires_key() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await execute_tool(
+            "web_search",
+            {"query": "current product management hiring market"},
+            [],
+            Settings(web_search_enabled=True, web_search_api_key=""),
+        )
+    assert exc_info.value.status_code == 503
+
+
+async def test_firecrawl_web_search_rejects_oversized_query() -> None:
+    with pytest.raises(ValueError, match="at most 500"):
+        await execute_tool(
+            "web_search",
+            {"query": "x" * 501},
+            [],
+            Settings(web_search_enabled=True, web_search_api_key="search-key"),
+        )
 
 
 async def _create_session(client: AsyncClient, headers: dict[str, str]) -> dict[str, Any]:

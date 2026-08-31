@@ -114,7 +114,7 @@ The prompt library must support `use as is`, `duplicate and edit`, `create new`,
 
 ## Recommended search and calculation implementation
 
-- Implement `web.search` through a replaceable adapter. Brave Search is a good first provider because its official API returns URLs/snippets, supports freshness and country/language filtering, and offers an LLM-context path. Never expose the API key in the browser.
+- Implement `web.search` through a replaceable adapter. Firecrawl Search is the selected provider because its official API returns bounded URLs and snippets and can later add full-page extraction without changing the internal tool contract. Never expose the API key in the browser.
 - Implement `calculator.evaluate` locally with a strict expression parser and decimal arithmetic. This is faster, deterministic, and more auditable than asking an LLM or a general search API to calculate.
 - Add sandboxed Python only after deterministic calculation and case-data queries work. A managed isolated runtime such as E2B is an option, but is not necessary for the core judged flow.
 - Implement tools behind an authenticated server-side tool gateway. Because the Panel Director lives in our custom LLM endpoint, it executes the tool loop and returns only the selected spoken response to Agora. Agora does not see these internal calls, so RoundCraft must log and display them. The tools may use MCP internally for portability, but this is not required for the judged path.
@@ -174,5 +174,5 @@ Before expanding UI breadth, prove these with real Agora credentials:
 - [Cross-session memory recipe](https://recipes.agora.io/recipes/cross-session-memory)
 - [Official RAG recipe](https://recipes.agora.io/recipes/rag)
 - [Official Voice AI recipe catalog](https://recipes.agora.io/)
-- [Brave Search API documentation](https://api-dashboard.search.brave.com/app/documentation)
+- [Firecrawl Search API documentation](https://docs.firecrawl.dev/api-reference/endpoint/search)
 - [E2B isolated code interpreter documentation](https://e2b.dev/docs/sdk-reference/code-interpreter-js-sdk/v2.1.0/sandbox)

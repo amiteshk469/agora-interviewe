@@ -72,8 +72,18 @@ class Settings(BaseSettings):
 
     jd_max_upload_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     web_search_enabled: bool = False
-    web_search_base_url: str = ""
-    web_search_api_key: str = ""
+    web_search_base_url: str = Field(
+        default="https://api.firecrawl.dev/v2",
+        validation_alias=AliasChoices(
+            "FIRECRAWL_BASE_URL", "WEB_SEARCH_BASE_URL", "web_search_base_url"
+        ),
+    )
+    web_search_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "FIRECRAWL_API_KEY", "WEB_SEARCH_API_KEY", "web_search_api_key"
+        ),
+    )
 
     @field_validator("environment")
     @classmethod

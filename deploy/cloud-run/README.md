@@ -61,6 +61,6 @@ The FastAPI image is built from the `apps/api` context with `deploy/cloud-run/Do
 
 Public invocation is required because Agora calls the custom LLM and webhook endpoints over HTTPS. The application still authenticates those endpoints with their dedicated bearer/HMAC credentials.
 
-Web search is disabled in the template. When enabling it, add `WEB_SEARCH_API_KEY` as a Secret Manager-backed environment variable; do not render it as plain YAML.
+Web search is disabled in the template. When enabling it, add `FIRECRAWL_API_KEY` as a Secret Manager-backed environment variable; do not render it as plain YAML.
 
 The production workflow updates only the image. It leaves runtime configuration and Secret Manager bindings untouched, deploys a tagged zero-traffic revision, checks `/health/live` and `/health/ready`, then moves traffic to the verified tag.
