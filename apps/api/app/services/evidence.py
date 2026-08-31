@@ -1,6 +1,6 @@
 import re
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +48,17 @@ _COMPETENCY_CUES: dict[str, tuple[str, ...]] = {
 }
 
 
+async def lock_transcript_session(db: AsyncSession, session_id: UUID) -> None:
+    """Serialize every writer that allocates a transcript sequence for a session."""
+    locked_session_id = await db.scalar(
+        select(InterviewSession.id)
+        .where(InterviewSession.id == session_id)
+        .with_for_update()
+    )
+    if locked_session_id is None:
+        raise LookupError("Interview session not found while locking transcript")
+
+
 def infer_candidate_evidence(
     text: str, rubric: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
@@ -85,6 +96,7 @@ async def persist_candidate_turn(
     agora_turn_id: str | None = None,
 ) -> TranscriptTurn:
     """Idempotently reconcile a candidate turn from RTM, custom LLM, or history."""
+    await lock_transcript_session(db, session.id)
     if agora_turn_id:
         existing = await db.scalar(
             select(TranscriptTurn).where(

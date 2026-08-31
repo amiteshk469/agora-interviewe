@@ -29,6 +29,9 @@ reviewer. When evidence is missing, ask another question or mark it insufficient
 DEFAULT_GREETING = (
     "Welcome to RoundCraft. When you are ready, please introduce yourself."
 )
+FAILURE_MESSAGE = (
+    "I couldn't reach the interview service. Please return to the lobby and rejoin."
+)
 
 _VOICE_TYPES = {
     "clear-neutral": "English_CalmWoman",
@@ -273,7 +276,7 @@ class AgoraAgentService:
                 model="roundcraft-panel",
                 headers=headers,
                 greeting_message=greeting,
-                failure_message="Please wait a moment.",
+                failure_message=FAILURE_MESSAGE,
                 max_history=15,
                 max_tokens=1024,
                 temperature=0.7,
@@ -291,7 +294,7 @@ class AgoraAgentService:
             llm = OpenAI(
                 model="gpt-4o-mini",
                 greeting_message=greeting,
-                failure_message="Please wait a moment.",
+                failure_message=FAILURE_MESSAGE,
                 max_history=15,
                 max_tokens=1024,
                 temperature=0.7,
@@ -306,6 +309,8 @@ class AgoraAgentService:
             voice_id=_VOICE_TYPES.get(
                 panelist_voice.lower(), "English_captivating_female1"
             ),
+            speed=0.96,
+            english_normalization=True,
             sample_rate=sample_rate if avatar is not None else None,
         )
         parameters: dict[str, Any] = {
@@ -337,7 +342,7 @@ class AgoraAgentService:
                     },
                     "end_of_speech": {
                         "mode": "vad",
-                        "vad_config": {"silence_duration_ms": 480},
+                        "vad_config": {"silence_duration_ms": 900},
                     },
                 }
             }
@@ -346,7 +351,7 @@ class AgoraAgentService:
             client=client,
             instructions=instructions,
             greeting=greeting,
-            failure_message="Please wait a moment.",
+            failure_message=FAILURE_MESSAGE,
             max_history=50,
             turn_detection=turn_detection,
             advanced_features=cast(Any, {"enable_rtm": True, "enable_tools": True}),

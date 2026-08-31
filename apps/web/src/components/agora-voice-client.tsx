@@ -28,7 +28,7 @@ import {
 } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, CameraOff, Radio } from "lucide-react";
+import { Camera, CameraOff, Radio, Waves } from "lucide-react";
 import { Alert, Badge, Button } from "@/components/ui";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
@@ -43,7 +43,63 @@ type Props = {
 };
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object") {
+    const detail = error as Record<string, unknown>;
+    const message = [detail.message, detail.reason, detail.description].find(
+      (value): value is string => typeof value === "string" && Boolean(value.trim()),
+    );
+    const code = [detail.code, detail.type].find(
+      (value): value is string | number => typeof value === "string" || typeof value === "number",
+    );
+    if (message && code !== undefined) return `${message.trim()} (${String(code)})`;
+    if (message) return message.trim();
+    if (code !== undefined) return `${fallback} (${String(code)})`;
+  }
+  return fallback;
+}
+
+type RoomToneGraph = {
+  context: AudioContext;
+  source: AudioBufferSourceNode;
+};
+
+function createRoomTone(): RoomToneGraph {
+  const context = new AudioContext();
+  const seconds = 20;
+  const buffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
+  const samples = buffer.getChannelData(0);
+  let brown = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const white = Math.random() * 2 - 1;
+    brown = (brown + 0.02 * white) / 1.02;
+    samples[index] = brown * 3.5;
+  }
+
+  const source = context.createBufferSource();
+  const highpass = context.createBiquadFilter();
+  const lowpass = context.createBiquadFilter();
+  const gain = context.createGain();
+  source.buffer = buffer;
+  source.loop = true;
+  highpass.type = "highpass";
+  highpass.frequency.value = 70;
+  lowpass.type = "lowpass";
+  lowpass.frequency.value = 900;
+  gain.gain.setValueAtTime(0, context.currentTime);
+  gain.gain.linearRampToValueAtTime(0.018, context.currentTime + 0.8);
+  source.connect(highpass).connect(lowpass).connect(gain).connect(context.destination);
+  source.start();
+  return { context, source };
+}
+
+function disposeRoomTone(graph: RoomToneGraph | null) {
+  if (!graph) return;
+  try {
+    graph.source.stop();
+  } catch {}
+  void graph.context.close();
 }
 
 export default function AgoraVoiceClient(props: Props) {
@@ -63,6 +119,8 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   const [connectionState, setConnectionState] = useState("CONNECTING");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [voiceError, setVoiceError] = useState("");
+  const [roomToneEnabled, setRoomToneEnabled] = useState(false);
+  const roomToneRef = useRef<RoomToneGraph | null>(null);
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
@@ -133,6 +191,11 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     };
   }, [client, config.channel_name, config.uid, isConnected, onAgentState, onTranscript, rtmClient]);
 
+  useEffect(() => () => {
+    disposeRoomTone(roomToneRef.current);
+    roomToneRef.current = null;
+  }, []);
+
   useClientEvent(client, "connection-state-change", (current) => setConnectionState(current));
   useClientEvent(client, "token-privilege-will-expire", async () => {
     try {
@@ -196,6 +259,26 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     }
   }, [cameraEnabled, localCameraTrack]);
 
+  const toggleRoomTone = useCallback(async () => {
+    if (roomToneRef.current) {
+      disposeRoomTone(roomToneRef.current);
+      roomToneRef.current = null;
+      setRoomToneEnabled(false);
+      return;
+    }
+    let graph: RoomToneGraph | null = null;
+    try {
+      graph = createRoomTone();
+      await graph.context.resume();
+      roomToneRef.current = graph;
+      setRoomToneEnabled(true);
+    } catch (error) {
+      disposeRoomTone(graph);
+      console.warn("Local room tone could not start", error);
+      setRoomToneEnabled(false);
+    }
+  }, []);
+
   return (
     <div className="space-y-2">
       {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
@@ -207,6 +290,9 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
         </div>
         <Button size="icon" variant={cameraEnabled ? "outline" : "secondary"} onClick={toggleCamera} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}>
           {cameraEnabled ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}
+        </Button>
+        <Button size="sm" variant={roomToneEnabled ? "secondary" : "outline"} onClick={toggleRoomTone} aria-pressed={roomToneEnabled} title="Play subtle room ambience locally; it is never published to Agora">
+          <Waves aria-hidden="true" /><span className="hidden sm:inline">Room tone</span>
         </Button>
         {audioTracks.map((track) => <RemoteAudioTrack key={String(track.getUserId())} track={track} play />)}
       </div>

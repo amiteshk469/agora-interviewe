@@ -210,6 +210,46 @@ async def test_internal_evidence_and_replay_are_not_interviewer_tools(
     assert len(evidence.json()) == 1
 
 
+async def test_agora_rtm_turn_reallocates_a_stale_sequence_and_is_idempotent(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    session = await _create_session(client, auth_headers)
+    synthetic = await client.post(
+        f"/v1/sessions/{session['id']}/turns",
+        headers=auth_headers,
+        json={
+            "sequence": 1,
+            "speaker_type": "candidate",
+            "content": "A custom LLM candidate turn.",
+            "metadata": {"source": "agora-custom-llm"},
+        },
+    )
+    assert synthetic.status_code == 201, synthetic.text
+
+    rtm_payload = {
+        "sequence": 1,
+        "agora_turn_id": "agora-interviewer-turn-1",
+        "speaker_type": "interviewer",
+        "content": "What happened next?",
+        "metadata": {"source": "agora_rtm"},
+    }
+    rtm = await client.post(
+        f"/v1/sessions/{session['id']}/turns",
+        headers=auth_headers,
+        json=rtm_payload,
+    )
+    assert rtm.status_code == 201, rtm.text
+    assert rtm.json()["sequence"] == 2
+
+    duplicate = await client.post(
+        f"/v1/sessions/{session['id']}/turns",
+        headers=auth_headers,
+        json={**rtm_payload, "content": "A replayed delivery must not duplicate me."},
+    )
+    assert duplicate.status_code == 201, duplicate.text
+    assert duplicate.json()["id"] == rtm.json()["id"]
+
+
 async def test_official_quickstart_routes_keep_envelopes(client: AsyncClient) -> None:
     config = await client.get("/get_config", params={"uid": 0, "channel": "official-test"})
     assert config.status_code == 200
@@ -277,8 +317,15 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert started.status_code == 200, started.text
     payload = {
         "model": "roundcraft-panel",
-        "messages": [{"role": "user", "content": "For the metrics, calculate 20 * 3."}],
+        "messages": [
+            {
+                "role": "user",
+                "content": "For the metrics, calculate 20 * 3.",
+                "name": "agora-extension-that-groq-does-not-need",
+            }
+        ],
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     unauthorized = await client.post("/llm/chat/completions", json=payload)
     assert unauthorized.status_code == 401
@@ -299,6 +346,7 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert first["choices"] == []
     assert first["metadata"]["interruptable"] is True
     assert first["metadata"]["tts_params"]["params"]["voice_type"].startswith("English_")
+    assert first["metadata"]["tts_params"]["params"]["rate"] == 0.96
     assert first["metadata"]["roundcraft"]["selected_panelist"]["id"] == "analytics"
     assert first["metadata"]["roundcraft"]["replayed_candidate_turn"] is False
     audits = first["metadata"]["roundcraft"]["tool_audits"]
@@ -312,6 +360,11 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     upstream_system = FakeUpstreamClient.captured["json"]["messages"][0]["content"]
     assert "UNTRUSTED_DATA" in upstream_system
     assert upstream_system.endswith(PLATFORM_INVARIANTS)
+    assert "stream_options" not in FakeUpstreamClient.captured["json"]
+    assert FakeUpstreamClient.captured["json"]["messages"][-1] == {
+        "role": "user",
+        "content": "For the metrics, calculate 20 * 3.",
+    }
 
 
 async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_claims(
@@ -615,13 +668,15 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
             },
             "end_of_speech": {
                 "mode": "vad",
-                "vad_config": {"silence_duration_ms": 480},
+                "vad_config": {"silence_duration_ms": 900},
             },
         }
     }
     assert captured["agent"]["advanced_features"]["enable_rtm"] is True
     assert "avatar" not in captured
     assert captured["tts"]["sample_rate"] is None
+    assert captured["tts"]["speed"] == 0.96
+    assert captured["tts"]["english_normalization"] is True
     await service.stop("sdk-agent")
     assert captured["stopped"] is True
 

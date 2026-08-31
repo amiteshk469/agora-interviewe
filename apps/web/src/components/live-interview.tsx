@@ -249,7 +249,10 @@ export function LiveInterviewScreen() {
     setLiveTurns(turns);
     if (!storedSession || storedSession.demo) return;
     turns.forEach((turn, index) => {
-      if (!turn.final || !turn.text || persistedTurns.current.has(turn.id)) return;
+      // Candidate text is already committed at the custom-LLM boundary before a
+      // response is generated. RTM remains authoritative for interviewer output;
+      // reposting the local side creates duplicate sequence writers under load.
+      if (turn.isLocal || !turn.final || !turn.text || persistedTurns.current.has(turn.id)) return;
       persistedTurns.current.add(turn.id);
       const write = persistSessionTurn(storedSession.sessionId, {
         sequence: index + 1,

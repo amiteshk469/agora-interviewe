@@ -80,7 +80,11 @@ from app.services.documents import (
     StorageDep,
     extract_document,
 )
-from app.services.evidence import persist_candidate_turn, persist_inferred_evidence
+from app.services.evidence import (
+    lock_transcript_session,
+    persist_candidate_turn,
+    persist_inferred_evidence,
+)
 from app.services.tools import DEFINITIONS, execute_tool
 
 router = APIRouter(prefix="/v1")
@@ -1048,6 +1052,9 @@ async def append_transcript_turn(
     user: CurrentUser,
 ) -> TranscriptTurn:
     session = await _owned(db, InterviewSession, session_id, user.id)
+    # All transcript sources lock the parent first. This keeps the FK and sequence
+    # lock order consistent with the custom LLM and Agora webhook writers.
+    await lock_transcript_session(db, session_id)
     if payload.agora_turn_id:
         prior = await db.scalar(
             select(TranscriptTurn).where(
@@ -1092,10 +1099,20 @@ async def append_transcript_turn(
         )
     )
     if exists:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "Transcript sequence already exists"
+        if not payload.agora_turn_id:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Transcript sequence already exists"
+            )
+        max_sequence = await db.scalar(
+            select(func.max(TranscriptTurn.sequence)).where(
+                TranscriptTurn.session_id == session_id
+            )
         )
+        sequence = (max_sequence or 0) + 1
+    else:
+        sequence = payload.sequence
     values = payload.model_dump(exclude={"metadata"})
+    values["sequence"] = sequence
     turn = TranscriptTurn(
         session_id=session_id,
         turn_metadata=payload.metadata,

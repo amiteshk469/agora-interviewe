@@ -4,7 +4,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import InterviewSession, PanelParticipant, TranscriptTurn
-from app.services.evidence import persist_candidate_turn, persist_inferred_evidence
+from app.services.evidence import (
+    lock_transcript_session,
+    persist_candidate_turn,
+    persist_inferred_evidence,
+)
 
 
 def _find_value(value: Any, keys: set[str], depth: int = 0) -> Any:
@@ -56,6 +60,7 @@ async def reconcile_agora_history(
     session, _ = await map_agora_event(db, payload, event_type)
     if session is None:
         return 0
+    await lock_transcript_session(db, session.id)
 
     reconciled = 0
     for item in _history_items(payload):

@@ -1,5 +1,6 @@
 import hmac
 import json
+import logging
 import re
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -37,6 +38,7 @@ from app.services.evidence import persist_candidate_turn, persist_inferred_evide
 from app.services.tools import execute_tool
 
 router = APIRouter(tags=["Agora custom LLM"])
+logger = logging.getLogger(__name__)
 
 
 def _bearer_value(header: str | None) -> str:
@@ -58,6 +60,31 @@ def _latest_user_text(payload: ChatCompletionRequest) -> str:
                 if item.get("type") == "text"
             )
     return "Continue the interview."
+
+
+def _spoken_messages(payload: ChatCompletionRequest) -> list[dict[str, str]]:
+    """Keep only the OpenAI fields Groq needs from Agora's extensible envelope."""
+    messages: list[dict[str, str]] = []
+    for message in payload.messages:
+        if message.role not in {"user", "assistant"}:
+            continue
+        if isinstance(message.content, str):
+            content = message.content
+        elif isinstance(message.content, list):
+            content = " ".join(
+                str(item.get("text", ""))
+                for item in message.content
+                if item.get("type") == "text"
+            )
+        else:
+            content = ""
+        messages.append({"role": message.role, "content": content})
+    return messages
+
+
+def _upstream_error_preview(response: httpx.Response, api_key: str) -> str:
+    preview = re.sub(r"\s+", " ", response.text).strip()[:500]
+    return preview.replace(api_key, "[redacted]") if api_key else preview
 
 
 def _upstream_url(base_url: str) -> str:
@@ -425,16 +452,20 @@ async def panel_chat_completions(
         )
         if value
     )
-    upstream_body = payload.model_dump(mode="json", exclude_none=True)
-    upstream_body["model"] = settings.llm_model
-    upstream_body["messages"] = [
-        {"role": "system", "content": selected_instruction},
-        *(
-            message
-            for message in upstream_body["messages"]
-            if message["role"] != "system"
-        ),
-    ]
+    # Agora's custom-LLM request allows extension fields. Forwarding that envelope
+    # wholesale makes strict OpenAI-compatible providers reject otherwise valid
+    # requests, so this boundary deliberately sends a small Groq-safe allowlist.
+    upstream_body = {
+        "model": settings.llm_model,
+        "stream": payload.stream,
+        "max_tokens": 1024,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "messages": [
+            {"role": "system", "content": selected_instruction},
+            *_spoken_messages(payload),
+        ],
+    }
     upstream_headers = {
         "Authorization": f"Bearer {settings.llm_api_key}",
         "Content-Type": "application/json",
@@ -447,6 +478,12 @@ async def panel_chat_completions(
                 upstream_url, headers=upstream_headers, json=upstream_body
             )
         if response.status_code >= 400:
+            logger.error(
+                "Upstream LLM request rejected status=%s request_id=%s detail=%s",
+                response.status_code,
+                response.headers.get("x-request-id", "unavailable"),
+                _upstream_error_preview(response, settings.llm_api_key),
+            )
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, "Upstream LLM request failed"
             )
@@ -460,6 +497,13 @@ async def panel_chat_completions(
     )
     response = await client.send(request, stream=True)
     if response.status_code >= 400:
+        await response.aread()
+        logger.error(
+            "Upstream LLM stream rejected status=%s request_id=%s detail=%s",
+            response.status_code,
+            response.headers.get("x-request-id", "unavailable"),
+            _upstream_error_preview(response, settings.llm_api_key),
+        )
         await response.aclose()
         await client.aclose()
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Upstream LLM stream failed")
@@ -472,7 +516,7 @@ async def panel_chat_completions(
             requested_voice.lower(), "English_captivating_female1"
         )
     )
-    rate = 1.05 if selected.behavior in {"challenging", "tradeoff-seeking"} else 1.0
+    rate = 0.96
     first_chunk = {
         "id": f"roundcraft-{uuid4().hex}",
         "object": "chat.completion.custom_metadata",
