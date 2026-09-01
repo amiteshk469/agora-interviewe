@@ -26,7 +26,7 @@ import { CandidateVideoTile, PanelIdentity, PanelVideoTile, type PanelPresence }
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, presenceForPanelist } from "@/lib/live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   demoModeEnabled,
@@ -346,14 +346,15 @@ export function LiveInterviewScreen() {
       : "The director will choose the next interviewer from the shared session context.";
   const snapshotTitle = (storedSession?.configSnapshot as { title?: string } | undefined)?.title || "Senior Product Manager practice";
   const displayedTools = sessionIsDemo
-    ? toolActivity
-    : persistedTools.map((run) => ({
+    ? toolActivity.map((activity) => ({ ...activity, highlight: null as string | null }))
+    : interviewerToolRuns(persistedTools).map((run) => ({
         id: run.id,
         name: run.tool_name.replaceAll("_", " "),
-        detail: Object.keys(run.result).length ? JSON.stringify(run.result) : run.error || "No result",
+        ...describeToolRun(run),
         status: run.status,
         time: new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(new Date(run.created_at)),
       }));
+  const speakerTrail = useMemo(() => speakerSequence(persistedTools).slice(-6), [persistedTools]);
   const panelTurnCount = liveTurns.filter((turn) => !turn.isLocal && turn.final && turn.text).length
     || (sessionIsDemo ? displayedTranscript.filter((turn) => turn.kind === "panel").length : 0);
   const interruptionCount = displayedTranscript.filter((turn) => "interrupted" in turn && turn.interrupted).length;
@@ -402,6 +403,19 @@ export function LiveInterviewScreen() {
         <div className="mt-6 rounded-xl border bg-background/78 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="size-3.5 text-primary" aria-hidden="true" />Panel Director</div>
           <p className="mt-2 break-words text-[11px] leading-5 text-muted-foreground">{directorSummary}</p>
+          {speakerTrail.length > 1 ? (
+            <div className="mt-3 border-t pt-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Floor order</p>
+              <ol className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] leading-5">
+                {speakerTrail.map((turn, index) => (
+                  <li key={`${turn.panelistId}-${index}`} className="flex items-center gap-1">
+                    {index > 0 ? <span aria-hidden="true" className="text-muted-foreground/60">&rarr;</span> : null}
+                    <span className={cn("truncate", index === speakerTrail.length - 1 ? "font-medium text-foreground" : "text-muted-foreground")}>{turn.name.split(" ")[0]}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-auto border-t pt-4 text-[11px] leading-5 text-muted-foreground">
@@ -534,7 +548,7 @@ export function LiveInterviewScreen() {
                 <div key={activity.id} className="rounded-xl border bg-card p-3 [contain-intrinsic-size:auto_6rem] [content-visibility:auto]">
                   <div className="flex items-start gap-3">
                     <span className="grid size-8 place-items-center rounded-md bg-secondary">{index === 0 ? <FileSearch className="size-4 text-muted-foreground" aria-hidden="true" /> : index === 1 ? <Gauge className="size-4 text-muted-foreground" aria-hidden="true" /> : <BookOpen className="size-4 text-muted-foreground" aria-hidden="true" />}</span>
-                    <div className="min-w-0 flex-1"><p className="capitalize text-xs font-semibold">{activity.name}</p><p className="mt-1 line-clamp-3 break-words text-[11px] leading-5 text-muted-foreground">{activity.detail}</p></div>
+                    <div className="min-w-0 flex-1"><p className="capitalize text-xs font-semibold">{activity.name}</p>{activity.highlight ? <p className="mt-1 break-words text-[11px] font-semibold leading-5 text-primary">{activity.highlight}</p> : null}<p className="mt-1 line-clamp-3 break-words text-[11px] leading-5 text-muted-foreground">{activity.detail}</p></div>
                     <Check className="size-3.5 text-primary" aria-hidden="true" />
                   </div>
                   <div className="mt-2 flex justify-between font-mono text-[9px] text-muted-foreground"><span>{activity.status}</span><span>{activity.time}</span></div>

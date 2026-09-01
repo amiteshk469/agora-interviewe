@@ -32,6 +32,7 @@ import { AppShell } from "@/components/app-shell";
 import { useAuth } from "@/components/auth-provider";
 import { Alert, Avatar, Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Separator, Textarea } from "@/components/ui";
 import { competencies, transcript } from "@/data/demo";
+import { describeToolRun, interviewerToolRuns } from "@/lib/live-panel";
 import { cn } from "@/lib/utils";
 import { createPromptTemplate, forkPromptTemplate, generateSessionReplayDrills, generateSessionReport, getSessionReport, listInterviewSessions, listPromptTemplates, listSessionReplayDrills, listSessionToolRuns, listSessionTurns, type ProductSession, type PromptTemplateRecord, type SessionReplayDrill, type SessionReport, type SessionToolRun, type SessionTurn } from "@/lib/api";
 
@@ -830,10 +831,10 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
   const overallScore = report?.overall_score === null ? "N/A" : Math.round(report?.overall_score ?? 81);
   const readiness = report?.readiness || "Strong signal";
   const summary = report?.summary || "You showed clear product judgment and concise communication. Sharpen metric thresholds and collect more execution evidence.";
-  const reportToolRows = realSession ? realTools.map((run) => ({
+  const reportToolRows = realSession ? interviewerToolRuns(realTools).map((run) => ({
     id: run.id,
     tool: run.tool_name.replaceAll("_", " "),
-    result: Object.keys(run.result).length ? JSON.stringify(run.result) : run.error || "No result returned",
+    result: describeToolRun(run).detail,
     turn: run.transcript_turn_id || "session",
     time: new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(new Date(run.created_at)),
     status: run.status,
