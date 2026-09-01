@@ -13,24 +13,15 @@ def _validate_interviewer_prompt(value: str | None) -> str | None:
     if value is None:
         return None
     lowered = value.lower()
-    if any(
-        term in lowered
-        for term in ("request_human_review", "evidence_bookmark", "replay tool")
-    ):
-        raise ValueError(
-            "interviewer prompts cannot claim internal or human-review tools"
-        )
+    if any(term in lowered for term in ("request_human_review", "evidence_bookmark", "replay tool")):
+        raise ValueError("interviewer prompts cannot claim internal or human-review tools")
     for match in re.finditer(
         r"\b(?:human reviewer|human review|human escalation|escalat(?:e|ion)(?: to)? (?:a )?human)\b",
         lowered,
     ):
         prefix = lowered[max(0, match.start() - 60) : match.start()]
-        if not re.search(
-            r"(?:never|do not|don't|must not|cannot)\b[^.!?]{0,55}$", prefix
-        ):
-            raise ValueError(
-                "interviewer prompts cannot request human review or escalation"
-            )
+        if not re.search(r"(?:never|do not|don't|must not|cannot)\b[^.!?]{0,55}$", prefix):
+            raise ValueError("interviewer prompts cannot request human review or escalation")
     return value
 
 
@@ -123,17 +114,13 @@ class PromptTemplateBehavior(ApiModel):
             "replay tool",
         )
         if any(term in lowered for term in forbidden):
-            raise ValueError(
-                "adaptive_probe cannot request human review or internal tools"
-            )
+            raise ValueError("adaptive_probe cannot request human review or internal tools")
         return value
 
     @field_validator("allowed_tools")
     @classmethod
     def interviewer_tools_only(cls, values: list[str]) -> list[str]:
-        return [
-            value for value in dict.fromkeys(values) if value in INTERVIEWER_TOOL_NAMES
-        ]
+        return [value for value in dict.fromkeys(values) if value in INTERVIEWER_TOOL_NAMES]
 
 
 class PromptTemplateCreate(ApiModel):
@@ -152,9 +139,7 @@ class PromptTemplateCreate(ApiModel):
 
 
 class PromptTemplateFork(ApiModel):
-    slug: str | None = Field(
-        default=None, min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$"
-    )
+    slug: str | None = Field(default=None, min_length=2, max_length=100, pattern=r"^[a-z0-9-]+$")
     name: str | None = Field(default=None, min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     prompt: str | None = Field(default=None, min_length=40, max_length=20_000)
@@ -204,20 +189,14 @@ class RubricCriterion(ApiModel):
 
 
 class PanelistInput(ApiModel):
-    id: str = Field(
-        default_factory=lambda: f"panelist-{uuid4().hex[:8]}", max_length=100
-    )
+    id: str = Field(default_factory=lambda: f"panelist-{uuid4().hex[:8]}", max_length=100)
     display_name: str = Field(min_length=2, max_length=80)
     role: str = Field(min_length=2, max_length=80)
     expertise: list[str] = Field(default_factory=list, max_length=12)
     prompt_template_id: UUID | None = None
     prompt_template_version: int | None = Field(default=None, ge=1)
-    template_knowledge: PromptTemplateKnowledge = Field(
-        default_factory=PromptTemplateKnowledge
-    )
-    template_behavior: PromptTemplateBehavior = Field(
-        default_factory=PromptTemplateBehavior
-    )
+    template_knowledge: PromptTemplateKnowledge = Field(default_factory=PromptTemplateKnowledge)
+    template_behavior: PromptTemplateBehavior = Field(default_factory=PromptTemplateBehavior)
     role_rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
     custom_prompt: str | None = Field(default=None, max_length=20_000)
     knowledge_prompt: str | None = Field(default=None, max_length=10_000)
@@ -237,9 +216,7 @@ class PanelistInput(ApiModel):
 
 
 class InterviewConfigCreate(ApiModel):
-    title: str = Field(
-        default="Product Management mock interview", min_length=2, max_length=160
-    )
+    title: str = Field(default="Product Management mock interview", min_length=2, max_length=160)
     profession: Literal["product_management"] = "product_management"
     job_description_id: UUID | None = None
     # None means "use the JD recommendation, or balanced when no JD was uploaded".
@@ -247,9 +224,7 @@ class InterviewConfigCreate(ApiModel):
     duration_minutes: int = Field(default=45, ge=10, le=120)
     panel: list[PanelistInput] | None = None
     rubric: list[RubricCriterion] | None = None
-    enabled_tools: list[str] = Field(
-        default_factory=lambda: ["knowledge_search", "calculator"]
-    )
+    enabled_tools: list[str] = Field(default_factory=lambda: ["knowledge_search", "calculator"])
 
     @model_validator(mode="after")
     def validate_panel(self) -> Self:
@@ -334,7 +309,7 @@ class PanelParticipantOut(ApiModel):
 
 
 class PanelDispatchRequest(ApiModel):
-    candidate_text: str = Field(min_length=1, max_length=40_000)
+    candidate_text: str = Field(min_length=1, max_length=40_000, pattern=r"\S")
     force_panelist_id: str | None = Field(default=None, max_length=100)
 
 
@@ -419,6 +394,7 @@ class EvidenceOut(ApiModel):
 class PanelState(ApiModel):
     current_speaker_id: str | None = None
     pending_panelist_id: str | None = None
+    pending_candidate_turn_id: str | None = None
     candidate_claims: list[str] = Field(default_factory=list)
     open_threads: list[str] = Field(default_factory=list)
     competency_coverage: dict[str, int] = Field(default_factory=dict)

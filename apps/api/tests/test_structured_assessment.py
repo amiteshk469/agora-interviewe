@@ -6,16 +6,24 @@ import httpx
 import pytest
 from httpx import AsyncClient
 
+from app.models import TranscriptTurn
+from app.services.assessment import final_candidate_turns
+
 
 def _mock_assessment_client(
     monkeypatch: Any,
     result: dict[str, Any] | str | Exception,
+    *,
+    statuses: list[int] | None = None,
+    headers: dict[str, str] | None = None,
+    errors: list[Exception | None] | None = None,
 ) -> dict[str, Any]:
     captured: dict[str, Any] = {"calls": 0}
 
     class Response:
-        def raise_for_status(self) -> None:
-            pass
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+            self.headers = headers or {}
 
         def json(self) -> dict[str, Any]:
             content = result if isinstance(result, str) else json.dumps(result)
@@ -37,15 +45,67 @@ def _mock_assessment_client(
             captured.update(kwargs)
             if isinstance(result, Exception):
                 raise result
-            return Response()
+            index = min(captured["calls"] - 1, len(statuses or [200]) - 1)
+            if errors:
+                error = errors[min(captured["calls"] - 1, len(errors) - 1)]
+                if error is not None:
+                    raise error
+            return Response((statuses or [200])[index])
 
     monkeypatch.setattr("app.services.assessment.httpx.AsyncClient", Client)
     return captured
 
 
-async def _ended_anchored_session(
-    client: AsyncClient, auth_headers: dict[str, str]
-) -> tuple[str, list[str], str]:
+def test_final_candidate_turns_does_not_merge_distinct_prefix_answers() -> None:
+    fragment_id, complete_id, distinct_id = uuid4(), uuid4(), uuid4()
+    turns = [
+        TranscriptTurn(
+            id=fragment_id,
+            sequence=1,
+            speaker_type="candidate",
+            interrupted=False,
+            content="I chose new marketplace sellers",
+        ),
+        TranscriptTurn(
+            id=complete_id,
+            sequence=2,
+            speaker_type="candidate",
+            interrupted=False,
+            content=("I chose new marketplace sellers after research showed a sharp setup pain."),
+        ),
+        TranscriptTurn(
+            id=uuid4(),
+            sequence=3,
+            speaker_type="interviewer",
+            interrupted=False,
+            content="What did you measure?",
+        ),
+        TranscriptTurn(
+            id=distinct_id,
+            sequence=4,
+            speaker_type="candidate",
+            interrupted=False,
+            content="I chose activation and week-four retention as guardrails.",
+        ),
+    ]
+
+    assert final_candidate_turns(turns) == [
+        {
+            "id": str(fragment_id),
+            "text": "I chose new marketplace sellers",
+        },
+        {
+            "id": str(complete_id),
+            "text": ("I chose new marketplace sellers after research showed a sharp setup pain."),
+        },
+        {
+            "id": str(distinct_id),
+            "text": "I chose activation and week-four retention as guardrails.",
+        },
+    ]
+
+
+async def _ended_anchored_session(client: AsyncClient, auth_headers: dict[str, str]) -> tuple[str, list[str], str]:
     template = await client.post(
         "/v1/prompt-templates",
         headers=auth_headers,
@@ -60,9 +120,7 @@ async def _ended_anchored_session(
             "knowledge": {
                 "case_type": "Product decision case",
                 "domains": ["problem framing", "decision quality"],
-                "scenario_seeds": [
-                    "Choose a first customer segment for a collaboration product."
-                ],
+                "scenario_seeds": ["Choose a first customer segment for a collaboration product."],
                 "scoring_focus": ["problem framing", "decision quality"],
                 "rubric": [
                     {
@@ -123,9 +181,7 @@ async def _ended_anchored_session(
     )
     assert session.status_code == 201, session.text
     session_id = session.json()["id"]
-    started = await client.post(
-        f"/v1/sessions/{session_id}/start", headers=auth_headers, json={}
-    )
+    started = await client.post(f"/v1/sessions/{session_id}/start", headers=auth_headers, json={})
     assert started.status_code == 200, started.text
 
     final_ids: list[str] = []
@@ -168,9 +224,7 @@ async def _ended_anchored_session(
             final_ids.append(turn.json()["id"])
         if interrupted:
             interrupted_id = turn.json()["id"]
-    ended = await client.post(
-        f"/v1/sessions/{session_id}/end", headers=auth_headers
-    )
+    ended = await client.post(f"/v1/sessions/{session_id}/end", headers=auth_headers)
     assert ended.status_code == 200, ended.text
     return session_id, final_ids, interrupted_id
 
@@ -178,9 +232,7 @@ async def _ended_anchored_session(
 async def test_structured_report_uses_anchored_final_turns_and_is_idempotent(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
 ) -> None:
-    session_id, final_ids, interrupted_id = await _ended_anchored_session(
-        client, auth_headers
-    )
+    session_id, final_ids, interrupted_id = await _ended_anchored_session(client, auth_headers)
     captured = _mock_assessment_client(
         monkeypatch,
         {
@@ -202,9 +254,7 @@ async def test_structured_report_uses_anchored_final_turns_and_is_idempotent(
             ]
         },
     )
-    response = await client.post(
-        f"/v1/sessions/{session_id}/report", headers=auth_headers
-    )
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
     assert response.status_code == 201, response.text
     report = response.json()
     assert report["overall_score"] == 80.0
@@ -213,40 +263,28 @@ async def test_structured_report_uses_anchored_final_turns_and_is_idempotent(
         "problem_framing",
         "decision_quality",
     ]
-    assert {item["transcript_turn_id"] for item in report["evidence_map"]} == set(
-        final_ids
-    )
+    assert {item["transcript_turn_id"] for item in report["evidence_map"]} == set(final_ids)
 
     assert captured["calls"] == 1
     assert captured["url"] == "https://llm.test/v1/chat/completions"
     request_body = captured["json"]
     assert request_body["model"]
-    assert request_body["response_format"]["type"] == "json_schema"
-    schema = request_body["response_format"]["json_schema"]["schema"]
-    criterion_schema = schema["properties"]["criteria"]["items"]["properties"]
-    assert criterion_schema["key"]["enum"] == [
-        "problem_framing",
-        "decision_quality",
-    ]
-    assert criterion_schema["evidence_turn_ids"]["items"]["enum"] == final_ids
+    assert request_body["response_format"] == {"type": "json_object"}
+    assert request_body["max_completion_tokens"] == 1_800
     assessment_input = json.loads(request_body["messages"][1]["content"])
     assert set(assessment_input) == {"final_candidate_turns", "panel", "rubric"}
     assert [item["id"] for item in assessment_input["final_candidate_turns"]] == final_ids
     assert interrupted_id not in request_body["messages"][1]["content"]
-    assert assessment_input["rubric"][0]["anchors"]["5"].startswith(
-        "Prioritizes"
-    )
+    assert assessment_input["rubric"][0]["anchors"]["5"].startswith("Prioritizes")
     assert "test-upstream-key" not in json.dumps(request_body)
 
-    repeated = await client.post(
-        f"/v1/sessions/{session_id}/report", headers=auth_headers
-    )
-    assert repeated.status_code == 201
+    repeated = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert repeated.status_code == 200
     assert repeated.json()["id"] == report["id"]
     assert captured["calls"] == 1
 
 
-async def test_structured_report_discards_unknown_keys_and_invalid_citations(
+async def test_structured_report_filters_invalid_citations(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
 ) -> None:
     session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
@@ -263,13 +301,6 @@ async def test_structured_report_discards_unknown_keys_and_invalid_citations(
                     "evidence_turn_ids": [foreign_id],
                 },
                 {
-                    "key": "admin_override",
-                    "score": 100,
-                    "confidence": 1,
-                    "feedback": "Unknown criteria must not enter the report.",
-                    "evidence_turn_ids": [final_ids[0]],
-                },
-                {
                     "key": "decision_quality",
                     "score": 64,
                     "confidence": 0.6,
@@ -279,9 +310,7 @@ async def test_structured_report_discards_unknown_keys_and_invalid_citations(
             ]
         },
     )
-    response = await client.post(
-        f"/v1/sessions/{session_id}/report", headers=auth_headers
-    )
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
     assert response.status_code == 201, response.text
     report = response.json()
     assert report["overall_score"] is None
@@ -304,6 +333,48 @@ async def test_structured_report_discards_unknown_keys_and_invalid_citations(
     ]
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["valid-but-incomplete", "duplicate-key", "unknown-key"],
+)
+async def test_structured_report_rejects_invalid_rubric_key_coverage(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    mode: str,
+) -> None:
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    criteria = [
+        {
+            "key": "problem_framing",
+            "score": 82,
+            "confidence": 0.8,
+            "feedback": "Specific segment and research evidence.",
+            "evidence_turn_ids": [final_ids[0]],
+        },
+        {
+            "key": "decision_quality",
+            "score": 76,
+            "confidence": 0.75,
+            "feedback": "Alternatives and a retention guardrail.",
+            "evidence_turn_ids": [final_ids[1]],
+        },
+    ]
+    if mode == "valid-but-incomplete":
+        criteria = criteria[:1]
+    elif mode == "duplicate-key":
+        criteria.append({**criteria[0], "feedback": "Duplicate rubric entry."})
+    else:
+        criteria.append({**criteria[0], "key": "admin_override"})
+    captured = _mock_assessment_client(monkeypatch, {"criteria": criteria})
+
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+
+    assert response.status_code == 503
+    assert captured["calls"] == 2
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+
+
 async def test_structured_report_preserves_explicit_insufficient_evidence(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
 ) -> None:
@@ -323,9 +394,7 @@ async def test_structured_report_preserves_explicit_insufficient_evidence(
             ]
         },
     )
-    response = await client.post(
-        f"/v1/sessions/{session_id}/report", headers=auth_headers
-    )
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
     assert response.status_code == 201, response.text
     assert captured["calls"] == 1
     assert response.json()["overall_score"] is None
@@ -334,26 +403,287 @@ async def test_structured_report_preserves_explicit_insufficient_evidence(
     assert all(item["score"] is None for item in response.json()["competencies"])
 
 
-@pytest.mark.parametrize("mode", ["failure", "malformed"])
-async def test_structured_report_fails_closed_on_upstream_errors(
+async def test_structured_report_retries_429_then_persists_success(
     client: AsyncClient,
     auth_headers: dict[str, str],
     monkeypatch: Any,
-    mode: str,
+    caplog: Any,
+) -> None:
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    captured = _mock_assessment_client(
+        monkeypatch,
+        {
+            "criteria": [
+                {
+                    "key": "problem_framing",
+                    "score": 82,
+                    "confidence": 0.8,
+                    "feedback": "The candidate grounded the segment choice in research.",
+                    "evidence_turn_ids": [final_ids[0]],
+                },
+                {
+                    "key": "decision_quality",
+                    "score": 78,
+                    "confidence": 0.75,
+                    "feedback": "The candidate named alternatives and a guardrail.",
+                    "evidence_turn_ids": [final_ids[1]],
+                },
+            ]
+        },
+        statuses=[429, 200],
+        headers={"retry-after": "0", "x-request-id": "safe request\n123"},
+    )
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert response.status_code == 201, response.text
+    assert response.json()["readiness"] == "interview_ready"
+    assert captured["calls"] == 2
+    assert "status=429 request_id=saferequest123 error_class=HTTPStatusError" in caplog.text
+    assert "test-upstream-key" not in caplog.text
+    assert "marketplace sellers" not in caplog.text
+
+
+async def test_structured_report_retries_transport_error_then_persists_success(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    delays: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("app.services.assessment.asyncio.sleep", capture_sleep)
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    captured = _mock_assessment_client(
+        monkeypatch,
+        {
+            "criteria": [
+                {
+                    "key": "problem_framing",
+                    "score": 82,
+                    "confidence": 0.8,
+                    "feedback": "Specific segment and research evidence.",
+                    "evidence_turn_ids": [final_ids[0]],
+                },
+                {
+                    "key": "decision_quality",
+                    "score": 76,
+                    "confidence": 0.75,
+                    "feedback": "Alternatives and a retention guardrail.",
+                    "evidence_turn_ids": [final_ids[1]],
+                },
+            ]
+        },
+        errors=[
+            httpx.ConnectError(
+                "temporary assessment connection failure",
+                request=httpx.Request("POST", "https://llm.test"),
+            ),
+            None,
+        ],
+    )
+
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["readiness"] == "interview_ready"
+    assert captured["calls"] == 2
+    assert delays == [2.0]
+
+
+async def test_structured_report_terminal_transport_error_is_503_and_not_persisted(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    delays: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("app.services.assessment.asyncio.sleep", capture_sleep)
+    session_id, _, _ = await _ended_anchored_session(client, auth_headers)
+    captured = _mock_assessment_client(
+        monkeypatch,
+        {},
+        errors=[
+            httpx.ConnectError(
+                "temporary assessment connection failure",
+                request=httpx.Request("POST", "https://llm.test"),
+            ),
+            httpx.ConnectError(
+                "terminal assessment connection failure",
+                request=httpx.Request("POST", "https://llm.test"),
+            ),
+        ],
+    )
+
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "2"
+    assert captured["calls"] == 2
+    assert delays == [2.0]
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+
+
+async def test_structured_report_terminal_failure_is_503_and_not_persisted(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    delays: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("app.services.assessment.asyncio.sleep", capture_sleep)
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    captured = _mock_assessment_client(
+        monkeypatch,
+        {},
+        statuses=[503, 503],
+        headers={"retry-after": "7"},
+    )
+    failed = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert failed.status_code == 503
+    assert failed.headers["retry-after"] == "7"
+    assert captured["calls"] == 2
+    assert delays == [7]
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+
+    _mock_assessment_client(
+        monkeypatch,
+        {
+            "criteria": [
+                {
+                    "key": "problem_framing",
+                    "score": 82,
+                    "confidence": 0.8,
+                    "feedback": "Specific segment and research signal.",
+                    "evidence_turn_ids": [final_ids[0]],
+                },
+                {
+                    "key": "decision_quality",
+                    "score": 78,
+                    "confidence": 0.75,
+                    "feedback": "Alternatives and a reversible decision rule.",
+                    "evidence_turn_ids": [final_ids[1]],
+                },
+            ]
+        },
+    )
+    retried = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert retried.status_code == 201, retried.text
+    assert retried.json()["readiness"] == "interview_ready"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "not valid JSON",
+        {
+            "criteria": [
+                {
+                    "key": "problem_framing",
+                    "score": 80,
+                    "feedback": "Missing required structured fields.",
+                    "evidence_turn_ids": [],
+                }
+            ]
+        },
+    ],
+)
+async def test_structured_report_invalid_json_or_schema_is_503(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    result: dict[str, Any] | str,
 ) -> None:
     session_id, _, _ = await _ended_anchored_session(client, auth_headers)
-    result: str | Exception = (
-        httpx.ConnectError("assessment provider unavailable")
-        if mode == "failure"
-        else "not valid JSON"
+    captured = _mock_assessment_client(monkeypatch, result)
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert response.status_code == 503
+    assert captured["calls"] == 2
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+
+
+async def test_structured_report_regeneration_is_explicit_and_updates_existing(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    _mock_assessment_client(
+        monkeypatch,
+        {
+            "criteria": [
+                {
+                    "key": key,
+                    "score": None,
+                    "confidence": 0,
+                    "feedback": "Evidence is insufficient.",
+                    "evidence_turn_ids": [],
+                }
+                for key in ("problem_framing", "decision_quality")
+            ]
+        },
     )
-    _mock_assessment_client(monkeypatch, result)
-    response = await client.post(
-        f"/v1/sessions/{session_id}/report", headers=auth_headers
+    original = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert original.status_code == 201
+    assert original.json()["readiness"] == "insufficient_evidence"
+    drills = await client.post(f"/v1/sessions/{session_id}/replay-drills", headers=auth_headers)
+    assert drills.status_code == 201, drills.text
+    drill_ids = [item["id"] for item in drills.json()]
+    assert len(drill_ids) == 2
+    cached_drills = await client.post(f"/v1/sessions/{session_id}/replay-drills", headers=auth_headers)
+    assert cached_drills.status_code == 200, cached_drills.text
+    assert [item["id"] for item in cached_drills.json()] == drill_ids
+
+    successful_result = {
+        "criteria": [
+            {
+                "key": "problem_framing",
+                "score": 84,
+                "confidence": 0.8,
+                "feedback": "Specific segment and research evidence.",
+                "evidence_turn_ids": [final_ids[0]],
+            },
+            {
+                "key": "decision_quality",
+                "score": 76,
+                "confidence": 0.75,
+                "feedback": "Alternatives and a retention guardrail.",
+                "evidence_turn_ids": [final_ids[1]],
+            },
+        ]
+    }
+    captured = _mock_assessment_client(monkeypatch, successful_result)
+    cached = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert cached.json()["id"] == original.json()["id"]
+    assert cached.json()["readiness"] == "insufficient_evidence"
+    assert captured["calls"] == 0
+
+    failed_capture = _mock_assessment_client(
+        monkeypatch,
+        {},
+        statuses=[503, 503],
+        headers={"retry-after": "0"},
     )
-    assert response.status_code == 201, response.text
-    report = response.json()
-    assert report["overall_score"] is None
-    assert report["readiness"] == "insufficient_evidence"
-    assert report["evidence_map"] == []
-    assert all(item["score"] is None for item in report["competencies"])
+    failed_regeneration = await client.post(f"/v1/sessions/{session_id}/report?regenerate=true", headers=auth_headers)
+    assert failed_regeneration.status_code == 503
+    assert failed_capture["calls"] == 2
+    unchanged = await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert unchanged.json()["id"] == original.json()["id"]
+    assert unchanged.json()["readiness"] == "insufficient_evidence"
+    unchanged_drills = await client.get(f"/v1/sessions/{session_id}/replay-drills", headers=auth_headers)
+    assert [item["id"] for item in unchanged_drills.json()] == drill_ids
+
+    captured = _mock_assessment_client(monkeypatch, successful_result)
+    regenerated = await client.post(f"/v1/sessions/{session_id}/report?regenerate=true", headers=auth_headers)
+    assert regenerated.status_code == 200, regenerated.text
+    assert regenerated.json()["id"] == original.json()["id"]
+    assert regenerated.json()["readiness"] == "interview_ready"
+    assert captured["calls"] == 1
+    invalidated_drills = await client.get(f"/v1/sessions/{session_id}/replay-drills", headers=auth_headers)
+    assert invalidated_drills.json() == []

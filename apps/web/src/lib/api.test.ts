@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInterviewConfig, createInterviewSession, createPromptTemplate, forkPromptTemplate, listPromptTemplates, renewInterviewSessionToken, startInterviewSession, stopAgoraAgent } from "./api";
+import { createInterviewConfig, createInterviewSession, createPromptTemplate, forkPromptTemplate, generateSessionReport, listPromptTemplates, renewInterviewSessionToken, startInterviewSession, stopAgoraAgent } from "./api";
 
 const storage = new Map<string, string>([["roundcraft.supabase_access_token", "test-jwt"]]);
 const localStorageMock = {
@@ -56,6 +56,27 @@ describe("configured interview flow", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(`${productBase}/sessions/session-1/token`);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  it("regenerates a cached assessment only when explicitly requested", async () => {
+    vi.stubGlobal("window", { localStorage: localStorageMock });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "report-1",
+      session_id: "session-1",
+      overall_score: 78,
+      readiness: "interview_ready",
+      summary: "Evidence-backed report",
+      competencies: [],
+      interviewer_assessments: [],
+      evidence_map: [],
+      generated_at: "2026-09-01T00:00:00Z",
+    }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateSessionReport("session-1", { regenerate: true });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${productBase}/sessions/session-1/report?regenerate=true`);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
   });
 
   it("lists, creates, and forks immutable prompt templates", async () => {

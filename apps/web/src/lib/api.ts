@@ -317,8 +317,9 @@ export type SessionReplayDrill = {
   created_at: string;
 };
 
-export function generateSessionReport(sessionId: string) {
-  return productRequest<SessionReport>(`/sessions/${sessionId}/report`, { method: "POST" });
+export function generateSessionReport(sessionId: string, options?: { regenerate?: boolean }) {
+  const query = options?.regenerate ? "?regenerate=true" : "";
+  return productRequest<SessionReport>(`/sessions/${sessionId}/report${query}`, { method: "POST" });
 }
 
 export function getSessionReport(sessionId: string) {

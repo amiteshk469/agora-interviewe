@@ -1,6 +1,10 @@
+import asyncio
+import hashlib
+import hmac
 import json
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
@@ -70,7 +74,7 @@ async def test_firecrawl_web_search_adapter_is_bounded(monkeypatch: Any) -> None
                             "description": "Bounded provider snippet",
                         }
                     ]
-                }
+                },
             }
 
     class SearchClient:
@@ -133,19 +137,25 @@ async def test_firecrawl_web_search_rejects_oversized_query() -> None:
 
 
 async def _create_session(client: AsyncClient, headers: dict[str, str]) -> dict[str, Any]:
-    config = (
-        await client.post("/v1/interview-configs", headers=headers, json={"title": "Tool test"})
-    ).json()
-    return (
-        await client.post(
-            "/v1/sessions", headers=headers, json={"interview_config_id": config["id"]}
-        )
-    ).json()
+    config = (await client.post("/v1/interview-configs", headers=headers, json={"title": "Tool test"})).json()
+    return (await client.post("/v1/sessions", headers=headers, json={"interview_config_id": config["id"]})).json()
 
 
-async def test_tool_registry_executes_and_audits(
+async def test_panel_dispatch_rejects_whitespace_only_candidate_text(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
+    session = await _create_session(client, auth_headers)
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/panel/dispatch",
+        headers=auth_headers,
+        json={"candidate_text": "  \n  "},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "candidate_text"
+
+
+async def test_tool_registry_executes_and_audits(client: AsyncClient, auth_headers: dict[str, str]) -> None:
     session = await _create_session(client, auth_headers)
     response = await client.post(
         f"/v1/sessions/{session['id']}/tools/calculator",
@@ -204,9 +214,7 @@ async def test_internal_evidence_and_replay_are_not_interviewer_tools(
         },
     )
     assert bookmarked.status_code == 201, bookmarked.text
-    evidence = await client.get(
-        f"/v1/sessions/{session['id']}/evidence", headers=auth_headers
-    )
+    evidence = await client.get(f"/v1/sessions/{session['id']}/evidence", headers=auth_headers)
     assert len(evidence.json()) == 1
 
 
@@ -255,9 +263,7 @@ async def test_official_quickstart_routes_keep_envelopes(client: AsyncClient) ->
     assert config.status_code == 200
     assert config.json()["data"]["uid"] == "222"
     assert config.json()["data"]["channel_name"] == "official-test"
-    started = await client.post(
-        "/startAgent", json={"channelName": "official-test", "rtcUid": 111, "userUid": 222}
-    )
+    started = await client.post("/startAgent", json={"channelName": "official-test", "rtcUid": 111, "userUid": 222})
     assert started.status_code == 200, started.text
     assert started.json()["code"] == 0
     stopped = await client.post("/stopAgent", json={"agentId": "agent-test-1"})
@@ -283,6 +289,20 @@ class FakeStreamResponse:
             b'{"index":0,"delta":{"content":"Next question"},"finish_reason":null}]}\n\n'
         )
         yield b"data: [DONE]\n\n"
+        raise AssertionError("stream must not be polled after the terminal event")
+
+    async def aclose(self) -> None:
+        pass
+
+
+class FakeRejectedStreamResponse:
+    def __init__(self, status_code: int = 429, retry_after: str = "0") -> None:
+        self.status_code = status_code
+        self.headers = {"retry-after": retry_after, "x-request-id": "request-test"}
+        self.text = '{"error":"temporary capacity limit"}'
+
+    async def aread(self) -> bytes:
+        return self.text.encode()
 
     async def aclose(self) -> None:
         pass
@@ -311,9 +331,7 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
 ) -> None:
     session = await _create_session(client, auth_headers)
-    started = await client.post(
-        f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={}
-    )
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
     assert started.status_code == 200, started.text
     payload = {
         "model": "roundcraft-panel",
@@ -353,18 +371,598 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert audits[0]["name"] == "calculator"
     assert audits[0]["result"]["value"] == "6E+1"
     assert first["metadata"]["roundcraft"]["evidence_bookmarks"][0]["competency"] == "analytics"
-    persisted_evidence = await client.get(
-        f"/v1/sessions/{session['id']}/evidence", headers=auth_headers
-    )
+    persisted_evidence = await client.get(f"/v1/sessions/{session['id']}/evidence", headers=auth_headers)
     assert any(item["competency"] == "analytics" for item in persisted_evidence.json())
     upstream_system = FakeUpstreamClient.captured["json"]["messages"][0]["content"]
     assert "UNTRUSTED_DATA" in upstream_system
     assert upstream_system.endswith(PLATFORM_INVARIANTS)
     assert "stream_options" not in FakeUpstreamClient.captured["json"]
+    assert FakeUpstreamClient.captured["json"]["max_tokens"] == 384
     assert FakeUpstreamClient.captured["json"]["messages"][-1] == {
         "role": "user",
         "content": "For the metrics, calculate 20 * 3.",
     }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_custom_llm_empty_user_content_returns_benign_completion_without_persisting(
+    client: AsyncClient, auth_headers: dict[str, str], stream: bool
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+
+    responses = [
+        await client.post(
+            "/llm/chat/completions",
+            headers={
+                "Authorization": "Bearer test-llm-secret",
+                "X-RoundCraft-Session-Id": session["id"],
+            },
+            json={
+                "model": "roundcraft-panel",
+                "messages": [{"role": "user", "content": "  \n  "}],
+                "stream": stream,
+            },
+        )
+        for _ in range(2)
+    ]
+
+    for response in responses:
+        assert response.status_code == 200, response.text
+        assert "Please repeat" not in response.text
+        if stream:
+            assert response.text.rstrip().endswith("data: [DONE]")
+        else:
+            assert response.json()["choices"][0]["message"]["content"] == ""
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    assert not [item for item in turns.json() if item["speaker_type"] == "candidate"]
+
+
+async def test_custom_llm_keeps_distinct_prefix_answers_and_filters_empty_history(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    headers = {
+        "Authorization": "Bearer test-llm-secret",
+        "X-RoundCraft-Session-Id": session["id"],
+    }
+
+    first = await client.post(
+        "/llm/chat/completions",
+        headers=headers,
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "I improved the metric"}],
+            "stream": True,
+        },
+    )
+    second = await client.post(
+        "/llm/chat/completions",
+        headers=headers,
+        json={
+            "model": "roundcraft-panel",
+            "messages": [
+                {"role": "assistant", "content": "   "},
+                {
+                    "role": "user",
+                    "content": "I improved the metric by 20 percent.",
+                },
+            ],
+            "stream": True,
+        },
+    )
+
+    assert first.status_code == second.status_code == 200
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    candidates = [item for item in turns.json() if item["speaker_type"] == "candidate"]
+    assert [item["content"] for item in candidates] == [
+        "I improved the metric",
+        "I improved the metric by 20 percent.",
+    ]
+    assert FakeUpstreamClient.captured["json"]["messages"][-1]["content"] == candidates[-1]["content"]
+    assert not any(not message["content"].strip() for message in FakeUpstreamClient.captured["json"]["messages"])
+
+
+async def test_custom_llm_candidate_reconciles_with_whitespace_varied_agora_turn(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "I measured retention weekly."}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    reconciled = await client.post(
+        f"/v1/sessions/{session['id']}/turns",
+        headers=auth_headers,
+        json={
+            "sequence": 1,
+            "agora_turn_id": "agora-candidate-turn-1",
+            "speaker_type": "candidate",
+            "content": "I  measured\nretention weekly.",
+            "metadata": {"source": "agora-rtm"},
+        },
+    )
+    assert reconciled.status_code == 201, reconciled.text
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    candidates = [item for item in turns.json() if item["speaker_type"] == "candidate"]
+    assert len(candidates) == 1
+    assert candidates[0]["agora_turn_id"] == "agora-candidate-turn-1"
+
+
+async def test_agora_history_reconciles_repeated_custom_llm_answers_one_to_one(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    llm_headers = {
+        "Authorization": "Bearer test-llm-secret",
+        "X-RoundCraft-Session-Id": session["id"],
+    }
+    candidate_text = "I measured retention weekly after an experiment."
+    request = {
+        "model": "roundcraft-panel",
+        "messages": [{"role": "user", "content": candidate_text}],
+        "stream": True,
+    }
+    for _ in range(2):
+        response = await client.post(
+            "/llm/chat/completions",
+            headers=llm_headers,
+            json=request,
+        )
+        assert response.status_code == 200, response.text
+
+    before = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    before_candidates = [item for item in before.json() if item["speaker_type"] == "candidate"]
+    assert len(before_candidates) == 2
+    original_ids = [item["id"] for item in before_candidates]
+
+    history = {
+        "noticeId": "repeated-history-1",
+        "eventType": 103,
+        "payload": {
+            "agentId": "agent-test-1",
+            "history": [
+                {
+                    "turn_id": "agora-repeated-user-1",
+                    "role": "user",
+                    "content": candidate_text,
+                },
+                {
+                    "turn_id": "agora-repeated-user-2",
+                    "role": "user",
+                    "content": "I  measured retention weekly\nafter an experiment.",
+                },
+            ],
+        },
+    }
+    body = json.dumps(history).encode()
+    signature = hmac.new(b"test-webhook-secret", body, hashlib.sha256).hexdigest()
+    webhook = await client.post(
+        "/v1/webhooks/agora",
+        content=body,
+        headers={"Content-Type": "application/json", "Agora-Signature-V2": signature},
+    )
+    assert webhook.status_code == 200, webhook.text
+
+    after = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    after_candidates = [item for item in after.json() if item["speaker_type"] == "candidate"]
+    assert [item["id"] for item in after_candidates] == original_ids
+    assert [item["agora_turn_id"] for item in after_candidates] == [
+        "agora-repeated-user-1",
+        "agora-repeated-user-2",
+    ]
+    evidence = await client.get(f"/v1/sessions/{session['id']}/evidence", headers=auth_headers)
+    assert {item["transcript_turn_id"] for item in evidence.json()} == set(original_ids)
+    tool_runs = await client.get(f"/v1/sessions/{session['id']}/tool-runs", headers=auth_headers)
+    panel_bids = [item for item in tool_runs.json() if item["tool_name"] == "panel.bid"]
+    assert {item["transcript_turn_id"] for item in panel_bids} == set(original_ids)
+
+
+async def test_network_tool_runs_after_the_session_lock_is_released(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    writer_completed = False
+
+    async def execute_while_writing(
+        name: str,
+        arguments: dict[str, Any],
+        corpus: list[dict[str, str]],
+        settings: Settings,
+    ) -> dict[str, Any]:
+        nonlocal writer_completed
+        assert name == "calculator"
+        concurrent_turn = await asyncio.wait_for(
+            client.post(
+                f"/v1/sessions/{session['id']}/turns",
+                headers=auth_headers,
+                json={
+                    "sequence": 999,
+                    "speaker_type": "interviewer",
+                    "content": "A concurrent transcript writer was not blocked.",
+                    "metadata": {"source": "lock-test"},
+                },
+            ),
+            timeout=1,
+        )
+        assert concurrent_turn.status_code == 201, concurrent_turn.text
+        writer_completed = True
+        return {"value": "60"}
+
+    monkeypatch.setattr("app.custom_llm.execute_tool", execute_while_writing)
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "For the metrics, calculate 20 * 3."}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert writer_completed is True
+
+
+async def test_custom_llm_retries_transient_stream_failure_once(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    delays: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    class RetryThenSuccessClient(FakeUpstreamClient):
+        attempts = 0
+
+        async def send(self, request: Any, stream: bool) -> Any:
+            type(self).attempts += 1
+            if type(self).attempts == 1:
+                return FakeRejectedStreamResponse(retry_after="0.25")
+            return FakeStreamResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", RetryThenSuccessClient)
+    monkeypatch.setattr("app.custom_llm.asyncio.sleep", capture_sleep)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my decision."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert RetryThenSuccessClient.attempts == 2
+    assert delays == [0.25]
+    assert "Next question" in response.text
+
+
+async def test_custom_llm_retries_transport_failure_once(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class RetryTransportClient(FakeUpstreamClient):
+        attempts = 0
+
+        async def send(self, request: Any, stream: bool) -> Any:
+            type(self).attempts += 1
+            if type(self).attempts == 1:
+                raise httpx.ConnectError(
+                    "temporary connection failure",
+                    request=httpx.Request("POST", "https://llm.test"),
+                )
+            return FakeStreamResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", RetryTransportClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my decision."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert RetryTransportClient.attempts == 2
+    assert "Next question" in response.text
+
+
+async def test_custom_llm_recovers_when_stream_disconnects_before_content(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class DisconnectingResponse(FakeStreamResponse):
+        headers = {"x-request-id": "safe-request"}
+
+        async def aiter_bytes(self) -> Any:
+            if False:
+                yield b""
+            raise httpx.ReadError(
+                "stream disconnected",
+                request=httpx.Request("POST", "https://llm.test"),
+            )
+
+    class DisconnectingClient(FakeUpstreamClient):
+        async def send(self, request: Any, stream: bool) -> Any:
+            assert stream is True
+            return DisconnectingResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", DisconnectingClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my evidence."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.text.rstrip().endswith("data: [DONE]")
+    assert '"content":"' in response.text
+    assert response.text.count("data: [DONE]") == 1
+
+
+async def test_custom_llm_replaces_clean_non_audible_stream(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class NonAudibleResponse(FakeStreamResponse):
+        headers = {"x-request-id": "safe-request"}
+
+        async def aiter_bytes(self) -> Any:
+            yield b": keepalive\n\n"
+            yield b"data: {malformed}\n\n"
+            yield (
+                b'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+            raise AssertionError("stream must not be polled after the terminal event")
+
+    class NonAudibleClient(FakeUpstreamClient):
+        async def send(self, request: Any, stream: bool) -> Any:
+            assert stream is True
+            return NonAudibleResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", NonAudibleClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my evidence."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")]
+    spoken = [
+        choice["delta"]["content"]
+        for event in events
+        for choice in event.get("choices", [])
+        if choice.get("delta", {}).get("content")
+    ]
+    assert len(spoken) == 1
+    assert response.text.count("data: [DONE]") == 1
+
+
+async def test_custom_llm_times_out_heartbeat_only_stream(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class HeartbeatResponse(FakeStreamResponse):
+        headers = {"x-request-id": "safe-request"}
+
+        async def aiter_bytes(self) -> Any:
+            yield b": keepalive\n\n"
+            await asyncio.sleep(60)
+            yield b": unreachable\n\n"
+
+    class HeartbeatClient(FakeUpstreamClient):
+        async def send(self, request: Any, stream: bool) -> Any:
+            assert stream is True
+            return HeartbeatResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", HeartbeatClient)
+    monkeypatch.setattr("app.custom_llm._FIRST_CONTENT_TIMEOUT_SECONDS", 0.01)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my evidence."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.text.count("data: [DONE]") == 1
+    assert '"content":"' in response.text
+
+
+async def test_custom_llm_recognizes_split_stream_content_and_terminates_it(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class SplitContentResponse(FakeStreamResponse):
+        async def aiter_bytes(self) -> Any:
+            yield (b'data: {"id":"split","choices":[{"index":0,"delta":{"role":"assistant","content":"Split')
+            yield b' question"},"finish_reason":null}]}\n\n'
+
+    class SplitContentClient(FakeUpstreamClient):
+        async def send(self, request: Any, stream: bool) -> Any:
+            assert stream is True
+            return SplitContentResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", SplitContentClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my evidence."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "Split question" in response.text
+    assert "Could you expand on that" not in response.text
+    assert response.text.count("data: [DONE]") == 1
+
+
+async def test_custom_llm_replaces_malformed_non_stream_completion(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    class MalformedResponse:
+        status_code = 200
+        headers = {"x-request-id": "safe-request"}
+
+        def json(self) -> dict[str, Any]:
+            return {"choices": []}
+
+    class MalformedClient(FakeUpstreamClient):
+        async def __aenter__(self) -> "MalformedClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def send(self, request: Any, stream: bool) -> Any:
+            assert stream is False
+            return MalformedResponse()
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", MalformedClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my decision."}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["choices"][0]["message"]["content"]
+    assert response.json()["roundcraft"]["selected_panelist"]
+
+
+async def test_custom_llm_uses_director_continuation_after_transient_retries_exhausted(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    class AlwaysLimitedClient(FakeUpstreamClient):
+        attempts = 0
+
+        async def send(self, request: Any, stream: bool) -> Any:
+            type(self).attempts += 1
+            response = FakeRejectedStreamResponse()
+            response.text = '{"error":"private candidate transcript must not be logged"}'
+            return response
+
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", AlwaysLimitedClient)
+
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "I would prioritize it."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert AlwaysLimitedClient.attempts == 2
+    assert "What evidence would let us verify that claim?" in response.text
+    assert "chat.completion.custom_metadata" in response.text
+    assert response.text.rstrip().endswith("data: [DONE]")
+    assert "private candidate transcript" not in caplog.text
+    assert "test-upstream-key" not in caplog.text
 
 
 async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_claims(
@@ -384,9 +982,7 @@ async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_
             "knowledge": {
                 "case_type": "Metric diagnosis case",
                 "domains": ["retention diagnostics"],
-                "scenario_seeds": [
-                    "Week-four retention fell after the onboarding flow changed."
-                ],
+                "scenario_seeds": ["Week-four retention fell after the onboarding flow changed."],
                 "scoring_focus": ["analytics"],
                 "rubric": [
                     {
@@ -479,18 +1075,14 @@ async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_
         },
     )
     assert response.status_code == 200, response.text
-    first = json.loads(
-        next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
-    )
+    first = json.loads(next(line[6:] for line in response.text.splitlines() if line.startswith("data: ")))
     roundcraft = first["metadata"]["roundcraft"]
     assert roundcraft["selected_panelist"]["id"] == "retention-specialist"
     assert roundcraft["enabled_tools"] == ["knowledge_search", "web_search"]
     assert roundcraft["selected_panelist"]["template_knowledge"] == {
         "case_type": "Metric diagnosis case",
         "domains": ["retention diagnostics"],
-        "scenario_seeds": [
-            "Week-four retention fell after the onboarding flow changed."
-        ],
+        "scenario_seeds": ["Week-four retention fell after the onboarding flow changed."],
         "scoring_focus": ["analytics"],
         "rubric": [
             {
@@ -509,17 +1101,13 @@ async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_
         "knowledge_search",
         "web_search",
     ]
-    assert [
-        item["key"] for item in roundcraft["selected_panelist"]["role_rubric"]
-    ] == ["retention_diagnosis"]
+    assert [item["key"] for item in roundcraft["selected_panelist"]["role_rubric"]] == ["retention_diagnosis"]
+    assert [item["competency"] for item in roundcraft["evidence_bookmarks"]] == ["retention_diagnosis"]
 
     upstream_system = FakeUpstreamClient.captured["json"]["messages"][0]["content"]
     assert "- Style: forensic-retention" in upstream_system
     assert "- Interruption policy: only-on-unsupported-metrics" in upstream_system
-    assert (
-        "- Adaptive probe: Ask which cohort disproves the retention hypothesis."
-        in upstream_system
-    )
+    assert "- Adaptive probe: Ask which cohort disproves the retention hypothesis." in upstream_system
     assert "- Scoring focus: Retention diagnosis" in upstream_system
     assert "- Live interviewer tools: knowledge_search, web_search" in upstream_system
     assert "evidence_bookmark" not in upstream_system
@@ -528,13 +1116,11 @@ async def test_custom_llm_consumes_role_template_metadata_without_internal_tool_
     assert upstream_system.endswith(PLATFORM_INVARIANTS)
 
 
-async def test_forced_panelist_uses_pending_shared_floor_and_dedupes_candidate_processing(
+async def test_pending_dispatch_reuses_its_turn_but_a_repeated_answer_is_new(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
 ) -> None:
     session = await _create_session(client, auth_headers)
-    started = await client.post(
-        f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={}
-    )
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
     assert started.status_code == 200, started.text
     candidate_text = "The activation metric improved after a measured experiment."
     dispatched = await client.post(
@@ -558,9 +1144,7 @@ async def test_forced_panelist_uses_pending_shared_floor_and_dedupes_candidate_p
         json=payload,
     )
     assert response.status_code == 200, response.text
-    first = json.loads(
-        next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
-    )
+    first = json.loads(next(line[6:] for line in response.text.splitlines() if line.startswith("data: ")))
     roundcraft = first["metadata"]["roundcraft"]
     assert roundcraft["selected_panelist"]["id"] == "analytics"
     assert roundcraft["director"]["rationale"].startswith("Explicit panel floor selection")
@@ -576,21 +1160,64 @@ async def test_forced_panelist_uses_pending_shared_floor_and_dedupes_candidate_p
         json=payload,
     )
     assert duplicate.status_code == 200, duplicate.text
-    duplicate_first = json.loads(
-        next(line[6:] for line in duplicate.text.splitlines() if line.startswith("data: "))
-    )
-    assert duplicate_first["metadata"]["roundcraft"]["selected_panelist"]["id"] == "analytics"
-    assert duplicate_first["metadata"]["roundcraft"]["replayed_candidate_turn"] is True
+    duplicate_first = json.loads(next(line[6:] for line in duplicate.text.splitlines() if line.startswith("data: ")))
+    assert duplicate_first["metadata"]["roundcraft"]["replayed_candidate_turn"] is False
 
-    turns = await client.get(
-        f"/v1/sessions/{session['id']}/turns", headers=auth_headers
-    )
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
     matching = [item for item in turns.json() if item["content"] == candidate_text]
-    assert len(matching) == 1
-    tool_runs = await client.get(
-        f"/v1/sessions/{session['id']}/tool-runs", headers=auth_headers
+    assert len(matching) == 2
+    tool_runs = await client.get(f"/v1/sessions/{session['id']}/tool-runs", headers=auth_headers)
+    assert sum(item["tool_name"] == "panel.bid" for item in tool_runs.json()) == 2
+
+
+async def test_stale_pending_dispatch_cannot_capture_the_next_candidate_answer(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    stale_text = "I calculated activation after the experiment."
+    current_text = "I would prioritize the customer segment with the clearest unmet need."
+    dispatched = await client.post(
+        f"/v1/sessions/{session['id']}/panel/dispatch",
+        headers=auth_headers,
+        json={"candidate_text": stale_text, "force_panelist_id": "analytics"},
     )
-    assert sum(item["tool_name"] == "panel.bid" for item in tool_runs.json()) == 1
+    assert dispatched.status_code == 200, dispatched.text
+
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": current_text}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    first = json.loads(next(line[6:] for line in response.text.splitlines() if line.startswith("data: ")))
+    roundcraft = first["metadata"]["roundcraft"]
+    assert not roundcraft["director"]["rationale"].startswith("Explicit panel floor selection")
+
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    candidates = [item for item in turns.json() if item["speaker_type"] == "candidate"]
+    assert [item["content"] for item in candidates] == [stale_text, current_text]
+    stale_id, current_id = (item["id"] for item in candidates)
+
+    tool_runs = await client.get(f"/v1/sessions/{session['id']}/tool-runs", headers=auth_headers)
+    dispatch_run = next(item for item in tool_runs.json() if item["tool_name"] == "panel.dispatch")
+    bid_run = next(item for item in tool_runs.json() if item["tool_name"] == "panel.bid")
+    assert dispatch_run["transcript_turn_id"] == stale_id
+    assert bid_run["transcript_turn_id"] == current_id
+
+    refreshed = await client.get(f"/v1/sessions/{session['id']}", headers=auth_headers)
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["memory_state"]["pending_candidate_turn_id"] is None
+    assert refreshed.json()["memory_state"]["pending_panelist_id"] is None
 
 
 async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypatch: Any) -> None:

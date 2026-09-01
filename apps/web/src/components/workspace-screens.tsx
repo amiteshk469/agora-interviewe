@@ -33,7 +33,7 @@ import { useAuth } from "@/components/auth-provider";
 import { Alert, Avatar, Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input, Select, Separator, Textarea } from "@/components/ui";
 import { competencies, transcript } from "@/data/demo";
 import { cn } from "@/lib/utils";
-import { createPromptTemplate, forkPromptTemplate, generateSessionReplayDrills, getSessionReport, listInterviewSessions, listPromptTemplates, listSessionReplayDrills, listSessionToolRuns, listSessionTurns, type ProductSession, type PromptTemplateRecord, type SessionReplayDrill, type SessionReport, type SessionToolRun, type SessionTurn } from "@/lib/api";
+import { createPromptTemplate, forkPromptTemplate, generateSessionReplayDrills, generateSessionReport, getSessionReport, listInterviewSessions, listPromptTemplates, listSessionReplayDrills, listSessionToolRuns, listSessionTurns, type ProductSession, type PromptTemplateRecord, type SessionReplayDrill, type SessionReport, type SessionToolRun, type SessionTurn } from "@/lib/api";
 
 export function DashboardScreen() {
   const { displayName } = useAuth();
@@ -723,16 +723,56 @@ export function SettingsScreen() {
   );
 }
 
+export type ReportEvidenceLink = {
+  turnId: string;
+  competencyKey: string | null;
+  reason: string;
+};
+
+export function getReportEvidenceLinks(report: Pick<SessionReport, "competencies" | "evidence_map"> | null): ReportEvidenceLink[] {
+  if (!report) return [];
+  const links = new Map<string, ReportEvidenceLink>();
+  const competenciesByKey = new Map(report.competencies.map((item) => [item.key, item]));
+  const add = (turnId: string, competencyKey: string | null, reason: string) => {
+    const id = turnId.trim();
+    if (!id) return;
+    links.set(`${id}\u0000${competencyKey ?? ""}`, { turnId: id, competencyKey, reason });
+  };
+
+  for (const competency of report.competencies) {
+    const reason = competency.feedback.trim() || `The assessment cites this turn for ${competency.label}.`;
+    for (const turnId of competency.evidence_turn_ids) add(turnId, competency.key, reason);
+  }
+  for (const item of report.evidence_map) {
+    const turnId = typeof item.transcript_turn_id === "string" ? item.transcript_turn_id : "";
+    const competencyKey = typeof item.competency === "string" && item.competency.trim() ? item.competency : null;
+    const competency = competencyKey ? competenciesByKey.get(competencyKey) : undefined;
+    const reason = competency?.feedback.trim()
+      || (competency ? `The assessment cites this turn for ${competency.label}.` : competencyKey ? `Cited in the report evidence map for ${competencyKey.replaceAll("_", " ")}.` : "Cited in the report evidence map.");
+    add(turnId, competencyKey, reason);
+  }
+  return [...links.values()];
+}
+
+export function filterAvailableEvidenceLinks(links: ReportEvidenceLink[], availableTurnIds: string[]): ReportEvidenceLink[] {
+  const available = new Set(availableTurnIds);
+  return links.filter((item) => available.has(item.turnId));
+}
+
 export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
   const { initials } = useAuth();
   const realSession = sessionId !== "demo";
-  const [selectedTurn, setSelectedTurn] = useState("turn-04");
+  const [selectedTurn, setSelectedTurn] = useState(realSession ? "" : "turn-04");
+  const [selectedCompetencyKey, setSelectedCompetencyKey] = useState<string | null>(null);
   const [tab, setTab] = useState<"assessment" | "transcript" | "tools">("assessment");
   const [report, setReport] = useState<SessionReport | null>(null);
   const [realTurns, setRealTurns] = useState<SessionTurn[]>([]);
   const [realTools, setRealTools] = useState<SessionToolRun[]>([]);
   const [loading, setLoading] = useState(realSession);
   const [loadError, setLoadError] = useState("");
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState("");
+  const [regeneratedAt, setRegeneratedAt] = useState("");
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
@@ -754,13 +794,6 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
     return () => { cancelled = true; };
   }, [realSession, reload, sessionId]);
 
-  const reportCompetencies = report?.competencies.map((item) => ({
-    name: item.label,
-    score: item.score,
-    level: item.score === null ? "Insufficient evidence" : item.score >= 80 ? "Strong" : "Developing",
-    evidence: item.evidence_turn_ids,
-    note: item.feedback,
-  })) ?? competencies;
   const reportTurns = useMemo(() => realSession ? realTurns.map((turn) => ({
     id: turn.id,
     speaker: turn.speaker_type === "candidate" ? "You" : turn.speaker_id || "Interviewer",
@@ -768,7 +801,30 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
     time: turn.started_at ? new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit" }).format(new Date(turn.started_at)) : `#${turn.sequence}`,
     text: turn.content,
   })) : transcript, [realSession, realTurns]);
-  const evidenceTurn = reportTurns.find((turn) => turn.id === selectedTurn) ?? reportTurns[0];
+  const availableTurnIds = useMemo(() => new Set(reportTurns.map((turn) => turn.id)), [reportTurns]);
+  const reportCompetencies = report ? report.competencies.map((item) => ({
+    key: item.key,
+    name: item.label,
+    score: item.score,
+    level: item.score === null ? "Insufficient evidence" : item.score >= 80 ? "Strong" : "Developing",
+    evidence: item.evidence_turn_ids.filter((turnId) => availableTurnIds.has(turnId)),
+    note: item.feedback,
+  })) : competencies.map((item, index) => ({
+    ...item,
+    key: `demo-${index}`,
+    evidence: item.evidence.filter((turnId) => availableTurnIds.has(turnId)),
+  }));
+  const evidenceLinks = useMemo(() => {
+    const links = realSession
+      ? getReportEvidenceLinks(report)
+      : competencies.flatMap((item, index) => item.evidence.map((turnId) => ({ turnId, competencyKey: `demo-${index}`, reason: item.note })));
+    return filterAvailableEvidenceLinks(links, reportTurns.map((turn) => turn.id));
+  }, [realSession, report, reportTurns]);
+  const selectedEvidence = evidenceLinks.find((item) => item.turnId === selectedTurn && (!selectedCompetencyKey || item.competencyKey === selectedCompetencyKey)) ?? evidenceLinks[0];
+  const sidebarTurn = tab === "assessment"
+    ? reportTurns.find((turn) => turn.id === selectedEvidence?.turnId)
+    : tab === "transcript" ? reportTurns.find((turn) => turn.id === selectedTurn) ?? reportTurns[0] : undefined;
+  const evidenceReason = tab === "assessment" ? selectedEvidence?.reason : undefined;
   const overallScore = report?.overall_score === null ? "N/A" : Math.round(report?.overall_score ?? 81);
   const readiness = report?.readiness || "Strong signal";
   const summary = report?.summary || "You showed clear product judgment and concise communication. Sharpen metric thresholds and collect more execution evidence.";
@@ -784,6 +840,24 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
     { id: "demo-tool-2", tool: "Metric calculator", result: "Retention sensitivity model", turn: "turn-04", time: "07:18", status: "completed" },
     { id: "demo-tool-3", tool: "Evidence bookmark", result: "Analytical thinking", turn: "turn-04", time: "07:33", status: "completed" },
   ];
+
+  async function regenerateAssessment() {
+    if (!realSession) return;
+    setRegenerating(true);
+    setRegenerateError("");
+    setRegeneratedAt("");
+    try {
+      const nextReport = await generateSessionReport(sessionId, { regenerate: true });
+      setReport(nextReport);
+      setSelectedTurn("");
+      setSelectedCompetencyKey(null);
+      setRegeneratedAt(nextReport.generated_at);
+    } catch (cause) {
+      setRegenerateError(cause instanceof Error ? cause.message : "Assessment could not be regenerated");
+    } finally {
+      setRegenerating(false);
+    }
+  }
 
   function exportReport() {
     const contents = JSON.stringify({
@@ -806,20 +880,22 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
   if (loading) return <AppShell screen="history" title="Generating your report" description="RoundCraft is reconciling final Agora turns and linked evidence."><Card className="p-6" aria-busy="true"><div className="h-8 w-44 animate-pulse rounded-md bg-muted" /><div className="mt-5 h-48 animate-pulse rounded-lg bg-muted" /></Card></AppShell>;
   if (loadError) return <AppShell screen="history" title="Report unavailable" description="The session is safe, but its report could not be loaded."><Alert title="Could not load report" variant="destructive"><span>{loadError}</span></Alert><Button className="mt-4" onClick={() => { setLoading(true); setLoadError(""); setReload((value) => value + 1); }}>Try again</Button></AppShell>;
   return (
-    <AppShell screen="history" title={realSession ? "Interview assessment" : "Senior PM, Growth"} description={realSession ? `Completed session ${sessionId}` : "Demo report · Completed Aug 30 · 34 minutes · 3 panelists"} actions={<><Button variant="secondary" onClick={exportReport}><Download aria-hidden="true" />Export report</Button><Button asChild><Link href={realSession ? `/replay/${sessionId}` : "/auth/sign-up?next=%2Freplay"}><Play aria-hidden="true" />Practice gaps</Link></Button></>}>
+    <AppShell screen="history" title={realSession ? "Interview assessment" : "Senior PM, Growth"} description={realSession ? `Completed session ${sessionId}` : "Demo report · Completed Aug 30 · 34 minutes · 3 panelists"} actions={<>{realSession && report?.readiness === "insufficient_evidence" ? <Button variant="secondary" loading={regenerating} onClick={() => void regenerateAssessment()}><Sparkles aria-hidden="true" />Re-run assessment</Button> : null}<Button variant="secondary" onClick={exportReport}><Download aria-hidden="true" />Export report</Button><Button asChild><Link href={realSession ? `/replay/${sessionId}` : "/auth/sign-up?next=%2Freplay"}><Play aria-hidden="true" />Practice gaps</Link></Button></>}>
+      {regenerateError ? <div className="mb-5"><Alert title="Assessment could not be regenerated" variant="destructive"><span>{regenerateError}. Your existing report is unchanged; retry when the assessment service is available.</span></Alert></div> : null}
+      {regeneratedAt ? <div className="mb-5"><Alert title="Assessment regenerated"><span>The latest assessment was generated <time dateTime={regeneratedAt}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(regeneratedAt))}</time>. Its current evidence status is shown below.</span></Alert></div> : null}
       <div className="grid gap-5 sm:grid-cols-[11rem_1fr] lg:grid-cols-[14rem_1fr_19rem]">
-        <Card className="h-fit"><CardContent className="p-3"><nav className="space-y-1" aria-label="Report sections">{[["assessment",Gauge,"Assessment"],["transcript",MessageSquareText,"Transcript"],["tools",Wrench,"Tool activity"]].map(([id, Icon, label]) => { const C = Icon as typeof Gauge; return <button key={String(id)} type="button" onClick={() => setTab(id as typeof tab)} className={cn("flex h-9 w-full items-center gap-3 rounded-md px-3 text-sm text-muted-foreground hover:bg-accent", tab === id && "bg-accent text-foreground")}><C className="size-4" aria-hidden="true" />{String(label)}</button>; })}</nav></CardContent></Card>
+        <Card className="h-fit"><CardContent className="p-3"><nav className="space-y-1" aria-label="Report sections">{[["assessment",Gauge,"Assessment"],["transcript",MessageSquareText,"Transcript"],["tools",Wrench,"Tool activity"]].map(([id, Icon, label]) => { const C = Icon as typeof Gauge; return <button key={String(id)} type="button" aria-pressed={tab === id} onClick={() => setTab(id as typeof tab)} className={cn("flex h-9 w-full items-center gap-3 rounded-md px-3 text-sm text-muted-foreground hover:bg-accent", tab === id && "bg-accent text-foreground")}><C className="size-4" aria-hidden="true" />{String(label)}</button>; })}</nav></CardContent></Card>
 
         <div className="min-w-0 space-y-5">
           {tab === "assessment" ? <>
             <Card><CardContent className="p-5"><div className="flex flex-col gap-5 sm:flex-row sm:items-end"><div><p className="text-sm text-muted-foreground">Overall readiness</p><p className="mt-1 text-6xl font-semibold tracking-[-0.05em]">{overallScore}<span className="text-xl text-muted-foreground">{overallScore === "N/A" ? "" : "/100"}</span></p></div><div className="sm:ms-auto sm:max-w-sm"><Badge variant="default">{readiness}</Badge><p className="mt-2 text-sm leading-6 text-muted-foreground">{summary}</p></div></div></CardContent></Card>
-            <Card><CardHeader><CardTitle>Structured assessment</CardTitle><CardDescription>Each score requires linked transcript evidence.</CardDescription></CardHeader><CardContent className="space-y-3">{reportCompetencies.map((item) => <div key={item.name} className="rounded-lg border bg-background p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="text-sm font-medium">{item.name}</h3>{item.score === null ? <Badge variant="outline"><CircleAlert className="size-3" aria-hidden="true" />Insufficient evidence</Badge> : <Badge variant="secondary">{item.level}</Badge>}</div><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">{item.note}</p></div><span className={cn("font-mono text-xl font-medium", item.score === null && "text-muted-foreground")}>{item.score ?? "N/A"}</span></div>{item.evidence.length ? <div className="mt-4 flex flex-wrap gap-2">{item.evidence.map((id) => <button key={id} type="button" onClick={() => setSelectedTurn(id)} className={cn("max-w-full truncate rounded-md border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground", selectedTurn === id && "border-primary/60 bg-primary/10 text-primary")}>{id}</button>)}</div> : <div className="mt-4"><Button size="sm" variant="secondary" asChild><Link href={realSession ? `/replay/${sessionId}` : "/replay"}><Sparkles aria-hidden="true" />Create evidence drill</Link></Button></div>}</div>)}</CardContent></Card>
+            <Card><CardHeader><CardTitle>Structured assessment</CardTitle><CardDescription>Each score requires linked transcript evidence.</CardDescription></CardHeader><CardContent className="space-y-3">{reportCompetencies.map((item) => <div key={item.key} className="rounded-lg border bg-background p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="text-sm font-medium">{item.name}</h3>{item.score === null ? <Badge variant="outline"><CircleAlert className="size-3" aria-hidden="true" />Insufficient evidence</Badge> : <Badge variant="secondary">{item.level}</Badge>}</div><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">{item.note}</p></div><span className={cn("font-mono text-xl font-medium", item.score === null && "text-muted-foreground")}>{item.score ?? "N/A"}</span></div>{item.evidence.length ? <div className="mt-4 flex flex-wrap gap-2">{item.evidence.map((id) => <button key={id} type="button" aria-pressed={selectedEvidence?.turnId === id && selectedEvidence.competencyKey === item.key} onClick={() => { setSelectedTurn(id); setSelectedCompetencyKey(item.key); }} className={cn("max-w-full truncate rounded-md border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground", selectedEvidence?.turnId === id && selectedEvidence.competencyKey === item.key && "border-primary/60 bg-primary/10 text-primary")}>{id}</button>)}</div> : <div className="mt-4"><Button size="sm" variant="secondary" asChild><Link href={realSession ? `/replay/${sessionId}` : "/replay"}><Sparkles aria-hidden="true" />Create evidence drill</Link></Button></div>}</div>)}</CardContent></Card>
           </> : null}
-          {tab === "transcript" ? <Card><CardHeader><CardTitle>Session transcript</CardTitle><CardDescription>Final and interrupted turns from the Agora live session.</CardDescription></CardHeader><CardContent className="space-y-2">{reportTurns.map((turn) => <button key={turn.id} type="button" onClick={() => setSelectedTurn(turn.id)} className={cn("w-full rounded-lg border p-4 text-start", selectedTurn === turn.id ? "border-primary/50 bg-primary/5" : "bg-background hover:bg-accent/40")}><div className="flex items-center justify-between"><span className="text-xs font-medium">{turn.speaker}</span><span className="max-w-[60%] truncate font-mono text-[10px] text-muted-foreground">{turn.time} · {turn.id}</span></div><p className="mt-2 break-words text-sm leading-6 text-muted-foreground">{turn.text}</p></button>)}{!reportTurns.length ? <div className="py-12 text-center"><MessageSquareText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No final transcript turns</p><p className="mt-1 text-xs text-muted-foreground">The report correctly records that no usable transcript evidence was captured.</p></div> : null}</CardContent></Card> : null}
+          {tab === "transcript" ? <Card><CardHeader><CardTitle>Session transcript</CardTitle><CardDescription>Final and interrupted turns from the Agora live session.</CardDescription></CardHeader><CardContent className="space-y-2">{reportTurns.map((turn) => <button key={turn.id} type="button" aria-pressed={sidebarTurn?.id === turn.id} onClick={() => { setSelectedTurn(turn.id); setSelectedCompetencyKey(null); }} className={cn("w-full rounded-lg border p-4 text-start", sidebarTurn?.id === turn.id ? "border-primary/50 bg-primary/5" : "bg-background hover:bg-accent/40")}><div className="flex items-center justify-between"><span className="text-xs font-medium">{turn.speaker}</span><span className="max-w-[60%] truncate font-mono text-[10px] text-muted-foreground">{turn.time} · {turn.id}</span></div><p className="mt-2 break-words text-sm leading-6 text-muted-foreground">{turn.text}</p></button>)}{!reportTurns.length ? <div className="py-12 text-center"><MessageSquareText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No final transcript turns</p><p className="mt-1 text-xs text-muted-foreground">The report correctly records that no usable transcript evidence was captured.</p></div> : null}</CardContent></Card> : null}
           {tab === "tools" ? <Card><CardHeader><CardTitle>Tool audit</CardTitle><CardDescription>Every interviewer tool run, its purpose, and linked evidence.</CardDescription></CardHeader><CardContent className="space-y-3">{reportToolRows.length ? reportToolRows.map((run) => <div key={run.id} className="flex items-start gap-3 rounded-lg border bg-background p-4"><span className="grid size-9 place-items-center rounded-md bg-secondary"><Wrench className="size-4 text-muted-foreground" aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="capitalize text-sm font-medium">{run.tool}</p><p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">{run.result}</p><div className="mt-2 flex gap-2"><Badge variant="secondary">{run.status}</Badge><Badge variant="outline" className="max-w-36 truncate">{run.turn}</Badge></div></div><span className="font-mono text-[10px] text-muted-foreground">{run.time}</span></div>) : <div className="py-12 text-center"><Wrench className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No tools were needed</p><p className="mt-1 text-xs text-muted-foreground">This session completed without an interviewer tool call.</p></div>}</CardContent></Card> : null}
         </div>
 
-        <aside className="hidden lg:block">{evidenceTurn ? <Card className="sticky top-20"><CardHeader><div className="flex items-center justify-between"><CardTitle className="text-sm">Linked evidence</CardTitle><Badge variant="outline">{evidenceTurn.id}</Badge></div></CardHeader><CardContent><div className="flex items-center gap-2"><Avatar initials={evidenceTurn.kind === "candidate" ? (realSession ? initials : "YO") : evidenceTurn.speaker.slice(0, 2).toUpperCase()} className="size-8" /><div><p className="text-xs font-medium">{evidenceTurn.speaker}</p><p className="font-mono text-[10px] text-muted-foreground">{evidenceTurn.time}</p></div></div><p className="mt-4 text-sm leading-6 text-muted-foreground">{evidenceTurn.text}</p><Separator className="my-4" /><p className="text-xs font-medium">Why it matters</p><p className="mt-2 text-xs leading-5 text-muted-foreground">This turn supports the selected competency because it contains a concrete decision and an explicit signal.</p><Button variant="ghost" size="sm" className="mt-3 px-0" onClick={() => setTab("transcript")}>Open in transcript<ExternalLink aria-hidden="true" /></Button></CardContent></Card> : <Card className="sticky top-20 p-5 text-center"><CircleAlert className="mx-auto size-5 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No linked evidence</p><p className="mt-1 text-xs leading-5 text-muted-foreground">No final turn is available for this assessment.</p></Card>}</aside>
+        <aside className="sm:col-span-2 lg:col-span-1">{sidebarTurn ? <Card className="sticky top-20"><CardHeader><div className="flex items-center justify-between"><CardTitle className="text-sm">{tab === "assessment" ? "Linked evidence" : "Transcript turn"}</CardTitle><Badge variant="outline">{sidebarTurn.id}</Badge></div></CardHeader><CardContent><div className="flex items-center gap-2"><Avatar initials={sidebarTurn.kind === "candidate" ? (realSession ? initials : "YO") : sidebarTurn.speaker.slice(0, 2).toUpperCase()} className="size-8" /><div><p className="text-xs font-medium">{sidebarTurn.speaker}</p><p className="font-mono text-[10px] text-muted-foreground">{sidebarTurn.time}</p></div></div><p className="mt-4 text-sm leading-6 text-muted-foreground">{sidebarTurn.text}</p>{evidenceReason ? <><Separator className="my-4" /><p className="text-xs font-medium">Why it matters</p><p className="mt-2 text-xs leading-5 text-muted-foreground">{evidenceReason}</p></> : null}{tab === "assessment" ? <Button variant="ghost" size="sm" className="mt-3 px-0" onClick={() => { setSelectedTurn(sidebarTurn.id); setTab("transcript"); }}>Open in transcript<ExternalLink aria-hidden="true" /></Button> : null}</CardContent></Card> : tab === "assessment" ? <Card className="sticky top-20 p-5 text-center"><CircleAlert className="mx-auto size-5 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No linked evidence</p><p className="mt-1 text-xs leading-5 text-muted-foreground">This assessment does not cite a transcript turn.</p></Card> : null}</aside>
       </div>
     </AppShell>
   );
