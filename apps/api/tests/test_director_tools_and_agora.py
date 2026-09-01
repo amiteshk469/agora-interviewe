@@ -11,7 +11,7 @@ from httpx import AsyncClient
 
 from app.core.config import Settings
 from app.core.security import require_agora_compat_access
-from app.domain import PLATFORM_INVARIANTS, PanelDirector
+from app.domain import PLATFORM_INVARIANTS, PanelDirector, detect_metric_claim
 from app.schemas import PanelistInput, PanelState
 from app.services.agora import AgoraAgentService
 from app.services.tools import calculate, execute_tool
@@ -1390,3 +1390,115 @@ async def test_product_agora_start_fails_closed_without_custom_llm() -> None:
             roundcraft_session_id="00000000-0000-4000-8000-000000000123",
         )
     assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expression", "relative_change", "claimed"),
+    [
+        (
+            "We moved conversion from 4% to 4.5%, so that is a 10% relative lift.",
+            "(4.5 - 4) / 4 * 100",
+            "12.5",
+            "10",
+        ),
+        (
+            "Conversion went from 4 percent to 4.5 percent, a 10 percent lift.",
+            "(4.5 - 4) / 4 * 100",
+            "12.5",
+            "10",
+        ),
+        (
+            "We grew signups from 120k to 150k, about 20% growth.",
+            "(150000 - 120000) / 120000 * 100",
+            "25",
+            "20",
+        ),
+        (
+            "We scaled MAU from 120,000 to 150,000.",
+            "(150000 - 120000) / 120000 * 100",
+            "25",
+            None,
+        ),
+        (
+            "Churn dropped from 8% to 6%.",
+            "(6 - 8) / 8 * 100",
+            "-25",
+            None,
+        ),
+        (
+            "We took NPS from 20 to 35 over two quarters.",
+            "(35 - 20) / 20 * 100",
+            "75",
+            None,
+        ),
+    ],
+)
+def test_spoken_metric_claim_becomes_deterministic_relative_change(
+    spoken: str, expression: str, relative_change: str, claimed: str | None
+) -> None:
+    claim = detect_metric_claim(spoken)
+    assert claim is not None, spoken
+    assert claim.expression == expression
+    assert str(calculate(claim.expression).normalize()) == relative_change
+    assert (str(claim.claimed_percent) if claim.claimed_percent is not None else None) == claimed
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "I led that team from 2019 to 2023.",
+        "On a scale from 1 to 10, I would rate my SQL at an 8.",
+        "I worked from 9 to 5 on that launch.",
+        "We moved the roadmap from Q1 to Q2.",
+        "We went from 5 percent to 5 percent, basically flat.",
+        "The team shipped it in Q3 and customers were happy.",
+    ],
+)
+def test_spoken_metric_claim_ignores_number_pairs_that_are_not_metric_movements(spoken: str) -> None:
+    assert detect_metric_claim(spoken) is None
+
+
+async def test_custom_llm_verifies_a_spoken_lift_claim_with_the_calculator(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    """The judged demo claim is spoken, not written, so it must still reach the calculator."""
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    spoken = "Our activation metrics moved from 4% to 4.5%, which I called a 10% relative lift."
+
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": spoken}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    first = json.loads(
+        next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
+    )
+    roundcraft = first["metadata"]["roundcraft"]
+    assert roundcraft["selected_panelist"]["id"] == "analytics"
+    audit = roundcraft["tool_audits"][0]
+    assert audit["name"] == "calculator"
+    assert audit["status"] == "completed"
+    assert audit["arguments"]["expression"] == "(4.5 - 4) / 4 * 100"
+    assert audit["arguments"]["claimed_relative_change_percent"] == "10"
+    # The candidate called it a 10% lift; the deterministic check contradicts that.
+    assert audit["result"]["value"] == "12.5"
+
+    runs = (await client.get(f"/v1/sessions/{session['id']}/tool-runs", headers=auth_headers)).json()
+    calculator_runs = [run for run in runs if run["tool_name"] == "calculator"]
+    assert len(calculator_runs) == 1
+    assert calculator_runs[0]["result"]["value"] == "12.5"
+    assert calculator_runs[0]["transcript_turn_id"] is not None
+    assert calculator_runs[0]["panelist_id"] == "analytics"
+    # The tool result reaches the model as untrusted data, never as an instruction.
+    assert 'source=\'tool:calculator\'' in FakeUpstreamClient.captured["json"]["messages"][0]["content"]
