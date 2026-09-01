@@ -26,4 +26,14 @@ describe("live panel presentation", () => {
       { panelist_id: defaultPanelists[1].id, agent_uid: "1002", avatar_uid: "2002", video_mode: "live" },
     ])).toBe("2002");
   });
+
+  it("gives the five default panelists distinct Indian English voices", () => {
+    expect(new Set(defaultPanelists.map((panelist) => panelist.voice))).toEqual(new Set([
+      "indian-calm",
+      "indian-advisor",
+      "indian-anchor",
+      "indian-deep",
+      "indian-bright",
+    ]));
+  });
 });

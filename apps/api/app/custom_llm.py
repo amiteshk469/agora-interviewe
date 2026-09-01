@@ -42,6 +42,7 @@ from app.services.evidence import (
     persist_inferred_evidence,
 )
 from app.services.tools import execute_tool
+from app.services.voice_profiles import minimax_tts_params, resolve_minimax_voice
 
 router = APIRouter(tags=["Agora custom LLM"])
 logger = logging.getLogger(__name__)
@@ -298,28 +299,6 @@ def _local_completion_response(
 
 
 _ARITHMETIC = re.compile(r"(?<!\w)([-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+)")
-_MINIMAX_VOICE_TYPES = {
-    "clear-neutral": "English_CalmWoman",
-    "warm-analytical": "English_Graceful_Lady",
-    "precise": "English_Debator",
-    "direct": "English_Trustworth_Man",
-    "nova": "English_expressive_narrator",
-    "atlas": "English_Trustworth_Man",
-    "sage": "English_Steadymentor",
-    "ember": "English_Debator",
-    "lumen": "English_Graceful_Lady",
-}
-_MINIMAX_VOICE_WHITELIST = {
-    "English_CalmWoman",
-    "English_Trustworth_Man",
-    "English_Debator",
-    "English_Steadymentor",
-    "English_Graceful_Lady",
-    "English_expressive_narrator",
-    "English_captivating_female1",
-}
-
-
 async def _prepare_live_tool(
     db: Db,
     settings: Settings,
@@ -702,20 +681,14 @@ async def panel_chat_completions(
     }
     upstream_url = _upstream_url(settings.llm_base_url)
 
-    requested_voice = selected.voice.strip()
-    voice_type = (
-        requested_voice
-        if requested_voice in _MINIMAX_VOICE_WHITELIST
-        else _MINIMAX_VOICE_TYPES.get(requested_voice.lower(), "English_captivating_female1")
-    )
-    rate = 0.96
+    voice_profile = resolve_minimax_voice(selected.voice)
     first_chunk = {
         "id": f"roundcraft-{uuid4().hex}",
         "object": "chat.completion.custom_metadata",
         "choices": [],
         "metadata": {
             "interruptable": selected.interruption_style != "uninterruptible",
-            "tts_params": {"params": {"voice_type": voice_type, "rate": rate}},
+            "tts_params": {"params": minimax_tts_params(voice_profile)},
             "roundcraft": metadata,
         },
     }
