@@ -1,4 +1,7 @@
+import re
 from collections import Counter
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from app.schemas import PanelDecision, PanelistInput, PanelState
@@ -238,3 +241,150 @@ def compile_agent_prompt(config_snapshot: dict[str, Any]) -> str:
 
 def delimit_untrusted(label: str, value: str) -> str:
     return f"<UNTRUSTED_DATA source={label!r}>\n{value}\n</UNTRUSTED_DATA>"
+
+
+_METRIC_MAGNITUDES: dict[str, int] = {
+    "k": 1_000,
+    "thousand": 1_000,
+    "m": 1_000_000,
+    "mm": 1_000_000,
+    "million": 1_000_000,
+    "b": 1_000_000_000,
+    "bn": 1_000_000_000,
+    "billion": 1_000_000_000,
+}
+
+_METRIC_KEYWORDS: tuple[str, ...] = (
+    "activation",
+    "adoption",
+    "aov",
+    "arr",
+    "bounce",
+    "cac",
+    "churn",
+    "click-through",
+    "completion",
+    "conversion",
+    "ctr",
+    "dau",
+    "downloads",
+    "engagement",
+    "funnel",
+    "installs",
+    "latency",
+    "ltv",
+    "margin",
+    "mau",
+    "mrr",
+    "nps",
+    "retention",
+    "revenue",
+    "sign-up",
+    "signup",
+    "traffic",
+    "uptime",
+    "usage",
+    "wau",
+)
+
+_NUMBER = r"\d[\d,]*(?:\.\d+)?"
+_MAGNITUDE = r"(?:k|mm|m|bn|b|thousand|million|billion)\b"
+_UNIT = r"%|percent(?:age)?"
+_MAX_EXPRESSION_CHARS = 160
+_MAX_METRIC_VALUE = Decimal("1e15")
+_CHANGE_VERB_WINDOW = 60
+
+_CHANGE_PAIR = re.compile(
+    rf"\bfrom\s+(?P<baseline>{_NUMBER})\s*(?P<baseline_magnitude>{_MAGNITUDE})?\s*(?P<baseline_unit>{_UNIT})?"
+    rf"[^.;!?]{{0,40}}?\bto\s+(?P<final>{_NUMBER})\s*(?P<final_magnitude>{_MAGNITUDE})?\s*(?P<final_unit>{_UNIT})?",
+    re.IGNORECASE,
+)
+_CLAIMED_CHANGE = re.compile(
+    rf"(?P<claimed>{_NUMBER})\s*(?:{_UNIT})\s*(?:relative\s+|absolute\s+|overall\s+)?"
+    r"(?:lift|increase|improv\w*|growth|gain|jump|bump|uplift|boost|drop|declin\w*|reduction|decrease|fall)",
+    re.IGNORECASE,
+)
+_CHANGE_VERB = re.compile(
+    r"\b(?:rose|grew|grow|increas\w*|improv\w*|went|moved|climb\w*|jump\w*|drop\w*|fell"
+    r"|fall\w*|declin\w*|decreas\w*|reduc\w*|lifted|scaled|took|pushed|raised|cut)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class MetricClaim:
+    """A spoken before/after metric claim reduced to a deterministic relative-change check."""
+
+    baseline: Decimal
+    final: Decimal
+    expression: str
+    claimed_percent: Decimal | None
+
+
+def _metric_decimal(raw: str, magnitude: str | None) -> Decimal | None:
+    try:
+        value = Decimal(raw.replace(",", ""))
+    except InvalidOperation:
+        return None
+    if magnitude:
+        value *= _METRIC_MAGNITUDES[magnitude.lower()]
+    if not value.is_finite() or abs(value) >= _MAX_METRIC_VALUE:
+        return None
+    return value
+
+
+def _metric_literal(value: Decimal) -> str:
+    """Render a plain decimal literal so the audited expression never uses exponent form."""
+    return format(value, "f")
+
+
+def detect_metric_claim(text: str) -> MetricClaim | None:
+    """Turn a spoken "from X to Y" metric claim into deterministic relative-change arithmetic.
+
+    Candidates state before/after numbers in words rather than operators, so the
+    literal-arithmetic trigger never sees an expression to evaluate. This keeps the
+    calculator deterministic while letting an analytics interviewer verify a stated lift
+    against the transcript turn that made the claim.
+    """
+    match = _CHANGE_PAIR.search(text)
+    if match is None:
+        return None
+    baseline_magnitude = match.group("baseline_magnitude")
+    final_magnitude = match.group("final_magnitude")
+    # "grew from 4 to 5 million" states one magnitude for both sides. Applying it to
+    # both keeps the audited expression faithful to what the candidate actually claimed.
+    shared_magnitude = baseline_magnitude or final_magnitude
+    baseline = _metric_decimal(match.group("baseline"), baseline_magnitude or shared_magnitude)
+    final = _metric_decimal(match.group("final"), final_magnitude or shared_magnitude)
+    if baseline is None or final is None or baseline == 0 or baseline == final:
+        return None
+
+    has_unit = bool(match.group("baseline_unit") or match.group("final_unit"))
+    if not has_unit and shared_magnitude is None:
+        # Bare integer pairs are usually calendar ranges or rating scales, not movements.
+        if (
+            baseline == baseline.to_integral_value()
+            and final == final.to_integral_value()
+            and 1900 <= baseline <= 2100
+            and 1900 <= final <= 2100
+        ):
+            return None
+        lowered = text.lower()
+        if not any(keyword in lowered for keyword in _METRIC_KEYWORDS):
+            return None
+        if not _CHANGE_VERB.search(text[: match.start()][-_CHANGE_VERB_WINDOW:]):
+            return None
+
+    expression = (
+        f"({_metric_literal(final)} - {_metric_literal(baseline)}) "
+        f"/ {_metric_literal(baseline)} * 100"
+    )
+    if len(expression) > _MAX_EXPRESSION_CHARS:
+        return None
+
+    # Mask the before/after span so the candidate's own numbers cannot be mistaken
+    # for the separate percentage they claimed the change represents.
+    masked = f"{text[: match.start()]} {text[match.end() :]}"
+    claimed_match = _CLAIMED_CHANGE.search(masked)
+    claimed = _metric_decimal(claimed_match.group("claimed"), None) if claimed_match else None
+    return MetricClaim(baseline=baseline, final=final, expression=expression, claimed_percent=claimed)

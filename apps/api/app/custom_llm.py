@@ -19,6 +19,7 @@ from app.domain import (
     PanelDirector,
     compile_agent_prompt,
     delimit_untrusted,
+    detect_metric_claim,
 )
 from app.models import (
     EvidenceItem,
@@ -319,9 +320,22 @@ async def _prepare_live_tool(
             corpus.append({"source": f"job-description:{document.id}", "text": document.raw_text})
 
     plans: list[tuple[str, dict[str, Any]]] = []
-    expression = _ARITHMETIC.search(candidate_text)
-    if expression and "calculator" in enabled_tools:
-        plans.append(("calculator", {"expression": expression.group(1)}))
+    if "calculator" in enabled_tools:
+        arithmetic = _ARITHMETIC.search(candidate_text)
+        if arithmetic:
+            plans.append(("calculator", {"expression": arithmetic.group(1)}))
+        else:
+            # Spoken answers state before/after numbers in words, never as operators,
+            # so a stated lift is only verifiable through the metric-claim detector.
+            claim = detect_metric_claim(candidate_text)
+            if claim is not None:
+                arguments: dict[str, Any] = {
+                    "expression": claim.expression,
+                    "check": "relative_change_percent",
+                }
+                if claim.claimed_percent is not None:
+                    arguments["claimed_relative_change_percent"] = str(claim.claimed_percent)
+                plans.append(("calculator", arguments))
     if has_jd and "knowledge_search" in enabled_tools:
         plans.append(("knowledge_search", {"query": candidate_text[-500:]}))
     if (
