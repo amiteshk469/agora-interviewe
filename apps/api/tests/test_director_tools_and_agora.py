@@ -363,8 +363,17 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert first["object"] == "chat.completion.custom_metadata"
     assert first["choices"] == []
     assert first["metadata"]["interruptable"] is True
-    assert first["metadata"]["tts_params"]["params"]["voice_type"].startswith("English_")
-    assert first["metadata"]["tts_params"]["params"]["rate"] == 0.96
+    assert first["metadata"]["tts_params"]["params"] == {
+        "voice_setting": {
+            "voice_id": "hindi_female_1_v2",
+            "speed": 1.02,
+            "vol": 1.03,
+            "pitch": 0,
+            "emotion": "fluent",
+            "english_normalization": True,
+        },
+        "language_boost": "English",
+    }
     assert first["metadata"]["roundcraft"]["selected_panelist"]["id"] == "analytics"
     assert first["metadata"]["roundcraft"]["replayed_candidate_turn"] is False
     audits = first["metadata"]["roundcraft"]["tool_audits"]
@@ -1302,8 +1311,13 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
     assert captured["agent"]["advanced_features"]["enable_rtm"] is True
     assert "avatar" not in captured
     assert captured["tts"]["sample_rate"] is None
-    assert captured["tts"]["speed"] == 0.96
+    assert captured["tts"]["voice_id"] == "hindi_female_2_v1"
+    assert captured["tts"]["speed"] == 0.94
+    assert captured["tts"]["vol"] == 1.0
+    assert captured["tts"]["pitch"] == -1
+    assert captured["tts"]["emotion"] == "calm"
     assert captured["tts"]["english_normalization"] is True
+    assert captured["tts"]["language_boost"] == "English"
     await service.stop("sdk-agent")
     assert captured["stopped"] is True
 

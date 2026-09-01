@@ -20,6 +20,7 @@ from agora_agent.pool_client import AsyncAgora
 from fastapi import Depends, HTTPException, status
 
 from app.core.config import Settings, get_settings
+from app.services.voice_profiles import DEFAULT_VOICE_ALIAS, resolve_minimax_voice
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +33,6 @@ DEFAULT_GREETING = (
 FAILURE_MESSAGE = (
     "I couldn't reach the interview service. Please return to the lobby and rejoin."
 )
-
-_VOICE_TYPES = {
-    "clear-neutral": "English_CalmWoman",
-    "warm-analytical": "English_Graceful_Lady",
-    "precise": "English_Debator",
-    "direct": "English_Trustworth_Man",
-    "nova": "English_expressive_narrator",
-    "atlas": "English_Trustworth_Man",
-    "sage": "English_Steadymentor",
-    "ember": "English_Debator",
-    "lumen": "English_Graceful_Lady",
-}
-
 
 class AgoraAgentService:
     """Adapted from the inspected official Python quickstart AgentSession flow."""
@@ -248,7 +236,7 @@ class AgoraAgentService:
         greeting: str = DEFAULT_GREETING,
         roundcraft_session_id: str | None = None,
         panelist_id: str | None = None,
-        panelist_voice: str = "clear-neutral",
+        panelist_voice: str = DEFAULT_VOICE_ALIAS,
         avatar_profile: dict[str, Any] | None = None,
         manual_turn_control: bool = False,
     ) -> dict[str, Any]:
@@ -304,13 +292,16 @@ class AgoraAgentService:
         avatar = self._avatar(avatar_profile or {})
         vendor = (avatar_profile or {}).get("avatar_vendor")
         sample_rate = 16_000 if vendor == "akool" else 24_000
+        voice_profile = resolve_minimax_voice(panelist_voice)
         tts = MiniMaxTTS(
             model="speech_2_6_turbo",
-            voice_id=_VOICE_TYPES.get(
-                panelist_voice.lower(), "English_captivating_female1"
-            ),
-            speed=0.96,
+            voice_id=voice_profile.voice_id,
+            speed=voice_profile.speed,
+            vol=voice_profile.vol,
+            pitch=voice_profile.pitch,
+            emotion=voice_profile.emotion,
             english_normalization=True,
+            language_boost="English",
             sample_rate=sample_rate if avatar is not None else None,
         )
         parameters: dict[str, Any] = {
@@ -425,6 +416,7 @@ class AgoraAgentService:
                 greeting=DEFAULT_GREETING,
                 roundcraft_session_id=roundcraft_session_id,
                 panelist_id=None,
+                panelist_voice=str(panel[0].get("voice") or DEFAULT_VOICE_ALIAS),
                 manual_turn_control=False,
             )
             return [

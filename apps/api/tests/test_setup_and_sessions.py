@@ -457,7 +457,8 @@ async def test_optional_jd_applies_recommendations_or_defaults(
         json={"title": "Growth PM", "job_description_id": jd["id"]},
     )
     assert with_jd.status_code == 201, with_jd.text
-    assert any(member["id"] == "growth" for member in with_jd.json()["panel"])
+    growth_member = next(member for member in with_jd.json()["panel"] if member["id"] == "growth")
+    assert growth_member["voice"] == "indian-bright"
     assert with_jd.json()["difficulty"] == "challenging"
 
     without_jd = await client.post(
@@ -466,7 +467,12 @@ async def test_optional_jd_applies_recommendations_or_defaults(
         json={"title": "Default PM"},
     )
     assert without_jd.status_code == 201, without_jd.text
-    assert len(without_jd.json()["panel"]) == 3
+    default_panel = without_jd.json()["panel"]
+    assert [member["voice"] for member in default_panel] == [
+        "indian-calm",
+        "indian-advisor",
+        "indian-anchor",
+    ]
 
 
 async def test_panel_requires_two_to_five_members(

@@ -200,7 +200,7 @@ class PanelistInput(ApiModel):
     role_rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
     custom_prompt: str | None = Field(default=None, max_length=20_000)
     knowledge_prompt: str | None = Field(default=None, max_length=10_000)
-    voice: str = Field(default="clear-neutral", max_length=80)
+    voice: str = Field(default="indian-calm", max_length=80)
     mood: str = Field(default="professional", max_length=40)
     behavior: str = Field(default="evidence-seeking", max_length=60)
     interruption_style: str = Field(default="contextual", max_length=60)

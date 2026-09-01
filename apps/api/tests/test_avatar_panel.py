@@ -157,6 +157,7 @@ async def test_panel_start_uses_one_unbound_auto_vad_agent_and_rolls_back_mappin
     assert calls[0]["channel_name"] == "one-shared-channel"
     assert calls[0]["manual_turn_control"] is False
     assert calls[0]["panelist_id"] is None
+    assert calls[0]["panelist_voice"] == "nova"
     assert "avatar_profile" not in calls[0]
     assert calls[0]["instructions"] == "Shared invariant prompt"
 
