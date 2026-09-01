@@ -17,6 +17,14 @@ PLACEHOLDER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+AGORA_LIVE_LLM_MODES = {"roundcraft_custom", "agora_managed_preview"}
+AGORA_MANAGED_OPENAI_MODELS = {
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-5-nano",
+    "gpt-5-mini",
+}
+
 
 def _public_https_url(value: str, name: str, *, origin_only: bool = False) -> SplitResult:
     if PLACEHOLDER_PATTERN.search(value):
@@ -121,6 +129,8 @@ class Settings(BaseSettings):
     agora_agent_idle_timeout_seconds: int = Field(default=30, ge=5, le=3600)
     agora_session_expires_seconds: int = Field(default=3600, ge=60, le=86400)
     agora_webhook_secret: str = ""
+    agora_live_llm_mode: str = "roundcraft_custom"
+    agora_managed_openai_model: str = "gpt-4.1-mini"
     agora_custom_llm_url: str = ""
     agora_llm_bearer_secret: str = ""
     agora_avatar_enabled: bool = True
@@ -158,6 +168,24 @@ class Settings(BaseSettings):
     def normalize_environment(cls, value: str) -> str:
         return value.strip().lower()
 
+    @field_validator("agora_live_llm_mode")
+    @classmethod
+    def validate_agora_live_llm_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in AGORA_LIVE_LLM_MODES:
+            choices = ", ".join(sorted(AGORA_LIVE_LLM_MODES))
+            raise ValueError(f"AGORA_LIVE_LLM_MODE must be one of: {choices}")
+        return normalized
+
+    @field_validator("agora_managed_openai_model")
+    @classmethod
+    def validate_agora_managed_openai_model(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in AGORA_MANAGED_OPENAI_MODELS:
+            choices = ", ".join(sorted(AGORA_MANAGED_OPENAI_MODELS))
+            raise ValueError(f"AGORA_MANAGED_OPENAI_MODEL must be one of: {choices}")
+        return normalized
+
     @model_validator(mode="after")
     def guard_development_auth(self) -> "Settings":
         if self.dev_auth_enabled and self.environment not in {"development", "test"}:
@@ -172,9 +200,6 @@ class Settings(BaseSettings):
             api_url = _public_https_url(self.api_base_url, "API_BASE_URL", origin_only=True)
             web_url = _public_https_url(self.web_base_url, "WEB_BASE_URL", origin_only=True)
             supabase_url = _public_https_url(self.supabase_url, "SUPABASE_URL", origin_only=True)
-            custom_llm_url = _public_https_url(
-                self.agora_custom_llm_url, "AGORA_CUSTOM_LLM_URL"
-            )
             groq_url = _public_https_url(self.llm_base_url, "LLM_BASE_URL")
 
             if not re.match(r"^postgres(?:ql)?(?:\+asyncpg)?://", self.database_url):
@@ -197,15 +222,29 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "AGORA_APP_CERTIFICATE must be a valid 32-character Agora App Certificate"
                 )
-            _required_secret(self.agora_llm_bearer_secret, "AGORA_LLM_BEARER_SECRET", minimum_length=24)
             _required_secret(self.agora_webhook_secret, "AGORA_WEBHOOK_SECRET")
 
-            if custom_llm_url.path.rstrip("/") != "/llm/chat/completions":
-                raise ValueError("AGORA_CUSTOM_LLM_URL must end with /llm/chat/completions")
-            if custom_llm_url.query or custom_llm_url.fragment:
-                raise ValueError("AGORA_CUSTOM_LLM_URL must not contain a query or fragment")
-            if _url_origin(custom_llm_url) != _url_origin(api_url):
-                raise ValueError("AGORA_CUSTOM_LLM_URL must use the API_BASE_URL origin")
+            if self.agora_live_llm_mode == "roundcraft_custom":
+                custom_llm_url = _public_https_url(
+                    self.agora_custom_llm_url, "AGORA_CUSTOM_LLM_URL"
+                )
+                _required_secret(
+                    self.agora_llm_bearer_secret,
+                    "AGORA_LLM_BEARER_SECRET",
+                    minimum_length=24,
+                )
+                if custom_llm_url.path.rstrip("/") != "/llm/chat/completions":
+                    raise ValueError(
+                        "AGORA_CUSTOM_LLM_URL must end with /llm/chat/completions"
+                    )
+                if custom_llm_url.query or custom_llm_url.fragment:
+                    raise ValueError(
+                        "AGORA_CUSTOM_LLM_URL must not contain a query or fragment"
+                    )
+                if _url_origin(custom_llm_url) != _url_origin(api_url):
+                    raise ValueError(
+                        "AGORA_CUSTOM_LLM_URL must use the API_BASE_URL origin"
+                    )
 
             supabase_secret = _required_secret(
                 self.supabase_service_role_key, "SUPABASE_SECRET_KEY", minimum_length=20

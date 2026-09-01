@@ -83,6 +83,15 @@ def test_production_settings_accept_complete_release_contract() -> None:
     assert Settings(_env_file=None, environment="test").environment == "test"
 
 
+def test_production_managed_openai_does_not_require_custom_llm_secrets() -> None:
+    settings = production_settings(
+        agora_live_llm_mode="agora_managed_preview",
+        agora_custom_llm_url="",
+        agora_llm_bearer_secret="",
+    )
+    assert settings.agora_managed_openai_model == "gpt-4.1-mini"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -97,6 +106,8 @@ def test_production_settings_accept_complete_release_contract() -> None:
         ("agora_app_certificate", "replace-with-certificate"),
         ("agora_app_certificate", "00000000000000000000000000000000"),
         ("agora_webhook_secret", "short"),
+        ("agora_live_llm_mode", "automatic"),
+        ("agora_managed_openai_model", "gpt-4o"),
         ("agora_custom_llm_url", "https://other.onrender.com/llm/chat/completions"),
         ("agora_llm_bearer_secret", "placeholder"),
         ("supabase_url", "http://project.supabase.co"),
