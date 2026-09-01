@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from app.schemas import PanelDecision, PanelistInput, PanelState
+from app.schemas import MetricClaimRecord, PanelDecision, PanelistInput, PanelState
 
 DEFAULT_PANEL: list[dict[str, Any]] = [
     {
@@ -115,21 +115,37 @@ class PanelDirector:
             )
             scored.append((score, panelist))
         selected = max(scored, key=lambda item: (item[0], item[1].id))[1]
+        contradiction = find_metric_contradiction(state.metric_claims, last_candidate_turn)
         has_evidence = any(
             cue in text for cue in ("%", "metric", "result", "measured", "users")
         )
-        action: Literal["probe", "challenge"] = (
-            "probe" if not has_evidence else "challenge"
-        )
-        question = (
-            "What evidence would let us verify that claim?"
-            if not has_evidence
-            else "What tradeoff did you accept, and how did you measure the result?"
-        )
+        hedges = [cue for cue in _HEDGE_CUES if cue in text]
+
+        action: Literal["probe", "challenge"]
+        if contradiction is not None:
+            action = "challenge"
+            question = (
+                f"Earlier you said {contradiction.earlier_claim} for {contradiction.subject}, "
+                f"but just now you said {contradiction.current_claim}. Which is right, and what changed?"
+            )
+        elif not has_evidence:
+            action = "probe"
+            question = "What evidence would let us verify that claim?"
+        else:
+            action = "challenge"
+            question = "What tradeoff did you accept, and how did you measure the result?"
+
         return PanelDecision(
             next_speaker_id=selected.id,
             action=action,
-            rationale="Selected from current evidence gaps, expertise match, and coverage balance.",
+            rationale=_selection_rationale(
+                selected,
+                counts=counts,
+                text=text,
+                contradiction=contradiction,
+                hedges=hedges,
+                has_evidence=has_evidence,
+            ),
             suggested_question=question,
         )
 
@@ -293,6 +309,7 @@ _UNIT = r"%|percent(?:age)?"
 _MAX_EXPRESSION_CHARS = 160
 _MAX_METRIC_VALUE = Decimal("1e15")
 _CHANGE_VERB_WINDOW = 60
+_MAX_TRACKED_CLAIMS = 40
 
 _CHANGE_PAIR = re.compile(
     rf"\bfrom\s+(?P<baseline>{_NUMBER})\s*(?P<baseline_magnitude>{_MAGNITUDE})?\s*(?P<baseline_unit>{_UNIT})?"
@@ -388,3 +405,122 @@ def detect_metric_claim(text: str) -> MetricClaim | None:
     claimed_match = _CLAIMED_CHANGE.search(masked)
     claimed = _metric_decimal(claimed_match.group("claimed"), None) if claimed_match else None
     return MetricClaim(baseline=baseline, final=final, expression=expression, claimed_percent=claimed)
+
+
+_HEDGE_CUES: tuple[str, ...] = (
+    "i guess",
+    "i think maybe",
+    "kind of",
+    "more or less",
+    "not sure",
+    "or something",
+    "pretty much",
+    "probably",
+    "roughly",
+    "sort of",
+)
+
+
+@dataclass(frozen=True)
+class ContradictionFinding:
+    """A metric the candidate restated with different numbers than an earlier turn."""
+
+    subject: str
+    earlier_turn_id: str
+    earlier_claim: str
+    current_claim: str
+
+
+def _claim_subject(text: str) -> str | None:
+    lowered = text.lower()
+    return next((keyword for keyword in _METRIC_KEYWORDS if keyword in lowered), None)
+
+
+def _format_movement(baseline: str, final: str) -> str:
+    return f"{baseline} to {final}"
+
+
+def find_metric_contradiction(
+    claims: list[MetricClaimRecord], text: str
+) -> ContradictionFinding | None:
+    """Compare this turn's metric movement against the last one stated for the same subject.
+
+    Only the candidate's own words are compared, so a contradiction is always backed by two
+    real transcript turns and never inferred. A consistent restatement is not a contradiction.
+    """
+    claim = detect_metric_claim(text)
+    subject = _claim_subject(text)
+    if claim is None or subject is None:
+        return None
+    prior = next((item for item in reversed(claims) if item.subject == subject), None)
+    if prior is None:
+        return None
+    try:
+        unchanged = (
+            Decimal(prior.baseline) == claim.baseline and Decimal(prior.final) == claim.final
+        )
+    except InvalidOperation:
+        return None
+    if unchanged:
+        return None
+    return ContradictionFinding(
+        subject=subject,
+        earlier_turn_id=prior.turn_id,
+        earlier_claim=_format_movement(prior.baseline, prior.final),
+        current_claim=_format_movement(
+            _metric_literal(claim.baseline), _metric_literal(claim.final)
+        ),
+    )
+
+
+def record_metric_claim(
+    claims: list[MetricClaimRecord], *, turn_id: str, text: str
+) -> list[MetricClaimRecord]:
+    """Append this turn's metric movement to the ledger, keeping the ledger bounded."""
+    claim = detect_metric_claim(text)
+    subject = _claim_subject(text)
+    if claim is None or subject is None:
+        return claims
+    if any(item.turn_id == turn_id for item in claims):
+        # A replayed director bid re-runs this turn; the ledger must stay one entry per turn.
+        return claims
+    record = MetricClaimRecord(
+        turn_id=turn_id,
+        subject=subject,
+        baseline=_metric_literal(claim.baseline),
+        final=_metric_literal(claim.final),
+        excerpt=text[:300],
+    )
+    return [*claims, record][-_MAX_TRACKED_CLAIMS:]
+
+
+def _selection_rationale(
+    selected: PanelistInput,
+    *,
+    counts: Counter[str],
+    text: str,
+    contradiction: ContradictionFinding | None,
+    hedges: list[str],
+    has_evidence: bool,
+) -> str:
+    """State the actual reason this panelist won the floor, for the live director rail."""
+    reasons: list[str] = []
+    if contradiction is not None:
+        reasons.append(
+            f"the {contradiction.subject} numbers changed between turns "
+            f"({contradiction.earlier_claim} then {contradiction.current_claim})"
+        )
+    matched = [term for term in selected.expertise if term.lower() in text]
+    if matched:
+        reasons.append(f"the answer touched {', '.join(matched[:3])}")
+    if not counts[selected.id]:
+        reasons.append("this role has not spoken yet")
+    elif counts[selected.id] == min(counts.values(), default=0):
+        reasons.append("this role has the lightest coverage so far")
+    if hedges:
+        reasons.append(f"the answer hedged ({', '.join(sorted(hedges)[:2])})")
+    elif not has_evidence:
+        reasons.append("no measurable evidence was offered")
+    if not reasons:
+        reasons.append("it keeps rubric coverage balanced")
+    return f"{selected.display_name} takes the floor because " + "; ".join(reasons) + "."

@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -13,7 +13,13 @@ from httpx import AsyncClient
 
 from app.core.config import Settings
 from app.core.security import require_agora_compat_access
-from app.domain import PLATFORM_INVARIANTS, PanelDirector, detect_metric_claim
+from app.domain import (
+    PLATFORM_INVARIANTS,
+    PanelDirector,
+    detect_metric_claim,
+    find_metric_contradiction,
+    record_metric_claim,
+)
 from app.schemas import PanelistInput, PanelState
 from app.services.agora import AgoraAgentService, build_turn_detection
 from app.services.tools import calculate, execute_tool
@@ -1647,3 +1653,104 @@ def test_manual_turn_control_is_unaffected_by_the_end_of_speech_mode() -> None:
                 "end_of_speech": {"mode": "manual"},
             }
         }
+
+
+def test_director_challenges_a_restated_metric_and_cites_both_claims() -> None:
+    claims = record_metric_claim(
+        [], turn_id="turn-1", text="We took conversion from 4% to 4.5% that quarter."
+    )
+    assert [(item.subject, item.baseline, item.final) for item in claims] == [
+        ("conversion", "4", "4.5")
+    ]
+
+    restated = "Actually conversion went from 4% to 6% after the relaunch."
+    contradiction = find_metric_contradiction(claims, restated)
+    assert contradiction is not None
+    assert contradiction.earlier_turn_id == "turn-1"
+    assert contradiction.earlier_claim == "4 to 4.5"
+    assert contradiction.current_claim == "4 to 6"
+
+    panel = [
+        PanelistInput(id="analytics", display_name="Priya Rao", role="Analytics", expertise=["conversion"]),
+        PanelistInput(id="hiring-manager", display_name="Maya Chen", role="Hiring Manager", expertise=["leadership"]),
+    ]
+    decision = PanelDirector.choose_next(panel, PanelState(metric_claims=claims), restated)
+    assert decision.action == "challenge"
+    assert "4 to 4.5" in decision.suggested_question
+    assert "4 to 6" in decision.suggested_question
+    # The rationale must state the real reason, not a fixed sentence.
+    assert "conversion numbers changed" in decision.rationale
+
+
+def test_consistent_restatement_and_unrelated_metrics_are_not_contradictions() -> None:
+    claims = record_metric_claim(
+        [], turn_id="turn-1", text="We took conversion from 4% to 4.5% that quarter."
+    )
+    assert find_metric_contradiction(claims, "Again, conversion moved from 4% to 4.5%.") is None
+    assert find_metric_contradiction(claims, "Retention improved from 20% to 30%.") is None
+    assert find_metric_contradiction(claims, "The team shipped it in Q3.") is None
+
+
+def test_metric_ledger_keeps_one_entry_per_turn_when_a_bid_is_replayed() -> None:
+    text = "We took conversion from 4% to 4.5% that quarter."
+    claims = record_metric_claim([], turn_id="turn-1", text=text)
+    replayed = record_metric_claim(claims, turn_id="turn-1", text=text)
+    assert replayed == claims
+
+
+def test_director_rationale_names_hedging_and_coverage_instead_of_a_fixed_sentence() -> None:
+    panel = [
+        PanelistInput(id="analytics", display_name="Priya Rao", role="Analytics", expertise=["metrics"]),
+        PanelistInput(id="hiring-manager", display_name="Maya Chen", role="Hiring Manager", expertise=["leadership"]),
+    ]
+    decision = PanelDirector.choose_next(
+        panel, PanelState(), "I guess we sort of improved things, roughly."
+    )
+    assert decision.action == "probe"
+    assert "hedged" in decision.rationale
+    assert decision.rationale.startswith(("Priya Rao", "Maya Chen"))
+
+
+async def test_contradiction_across_two_live_turns_is_recorded_against_both_turns(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    """A metric restated with different numbers must become contradicting evidence."""
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+
+    async def speak(text: str) -> dict[str, Any]:
+        response = await client.post(
+            "/llm/chat/completions",
+            headers={
+                "Authorization": "Bearer test-llm-secret",
+                "X-RoundCraft-Session-Id": session["id"],
+            },
+            json={
+                "model": "roundcraft-panel",
+                "messages": [{"role": "user", "content": text}],
+                "stream": True,
+            },
+        )
+        assert response.status_code == 200, response.text
+        first = next(line[6:] for line in response.text.splitlines() if line.startswith("data: "))
+        return cast(dict[str, Any], json.loads(first)["metadata"]["roundcraft"])
+
+    first_turn = await speak("Our conversion metrics moved from 4% to 4.5% last quarter.")
+    assert first_turn["contradiction"] is None
+
+    second_turn = await speak("Actually our conversion metrics went from 4% to 6% after the relaunch.")
+    contradiction = second_turn["contradiction"]
+    assert contradiction is not None
+    assert contradiction["subject"] == "conversion"
+    assert contradiction["earlier_claim"] == "4 to 4.5"
+    assert contradiction["current_claim"] == "4 to 6"
+    assert "4 to 4.5" in second_turn["director"]["suggested_question"]
+    assert second_turn["director"]["action"] == "challenge"
+
+    evidence = (await client.get(f"/v1/sessions/{session['id']}/evidence", headers=auth_headers)).json()
+    contradicting = [item for item in evidence if item["strength"] == "contradicts"]
+    assert len(contradicting) == 1
+    # The note must point back at the earlier turn so the report can cite both sides.
+    assert contradiction["earlier_turn_id"] in contradicting[0]["note"]

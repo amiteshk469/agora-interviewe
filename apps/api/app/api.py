@@ -1285,11 +1285,21 @@ async def generate_report(
             )
         ).scalars()
     )
+    evidence = [
+        {
+            "competency": item.competency,
+            "strength": item.strength,
+            "transcript_turn_id": str(item.transcript_turn_id),
+        }
+        for item in (
+            await db.execute(select(EvidenceItem).where(EvidenceItem.session_id == session_id))
+        ).scalars()
+    ]
     snapshot = session.config_snapshot
     # Do not hold a database transaction or connection while awaiting the model.
     await db.commit()
     try:
-        result = await build_assessment(snapshot, turns, settings)
+        result = await build_assessment(snapshot, turns, settings, evidence)
     except AssessmentServiceUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

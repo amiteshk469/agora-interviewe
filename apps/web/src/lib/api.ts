@@ -277,7 +277,7 @@ export type SessionReport = {
   overall_score: number | null;
   readiness: string;
   summary: string;
-  competencies: Array<{ key: string; label: string; score: number | null; confidence: number; evidence_turn_ids: string[]; feedback: string }>;
+  competencies: Array<{ key: string; label: string; score: number | null; confidence: number; evidence_turn_ids: string[]; panel_view?: "contested" | "corroborated" | "single_source" | "insufficient_evidence"; contradiction_turn_ids?: string[]; feedback: string }>;
   interviewer_assessments: Array<Record<string, unknown>>;
   evidence_map: Array<Record<string, unknown>>;
   generated_at: string;

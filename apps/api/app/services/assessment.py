@@ -3,7 +3,7 @@ import json
 import logging
 import math
 import re
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -354,6 +354,33 @@ async def request_structured_assessment(
     raise AssessmentServiceUnavailable("assessment provider failed")
 
 
+PanelView = Literal["contested", "corroborated", "single_source", "insufficient_evidence"]
+
+
+def panel_view_for(
+    competency: str, evidence: list[dict[str, Any]], cited_turn_ids: list[str]
+) -> tuple[PanelView, list[str]]:
+    """Classify how well the panel's recorded evidence agrees about one competency.
+
+    "contested" is reserved for competencies with evidence explicitly recorded as
+    contradicting, such as a metric the candidate restated with different numbers. It is
+    never inferred from a low score.
+    """
+    related = [item for item in evidence if item.get("competency") == competency]
+    contradicting = [
+        str(item["transcript_turn_id"])
+        for item in related
+        if item.get("strength") == "contradicts" and item.get("transcript_turn_id")
+    ]
+    if contradicting:
+        return "contested", list(dict.fromkeys(contradicting))
+    if len(cited_turn_ids) >= 2:
+        return "corroborated", []
+    if cited_turn_ids:
+        return "single_source", []
+    return "insufficient_evidence", []
+
+
 def _insufficient_criterion(criterion: dict[str, Any]) -> dict[str, Any]:
     return {
         "key": criterion["key"],
@@ -361,6 +388,8 @@ def _insufficient_criterion(criterion: dict[str, Any]) -> dict[str, Any]:
         "score": None,
         "confidence": 0.0,
         "evidence_turn_ids": [],
+        "panel_view": "insufficient_evidence",
+        "contradiction_turn_ids": [],
         "feedback": (
             "Insufficient final transcript evidence. Use a replay drill to provide a specific "
             "example, tradeoff, and measurable outcome."
@@ -373,7 +402,9 @@ def _finalize_assessment(
     rubric: list[dict[str, Any]],
     candidate_turns: list[dict[str, str]],
     structured: StructuredAssessment | None,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    evidence = evidence or []
     turn_by_id = {item["id"]: item for item in candidate_turns}
     responses: dict[str, list[StructuredCriterionAssessment]] = {}
     if structured is not None:
@@ -401,6 +432,9 @@ def _finalize_assessment(
             continue
         score = round(float(candidate.score), 1)
         feedback = candidate.feedback.strip()[:_MAX_FEEDBACK_CHARS]
+        view, contradiction_turn_ids = panel_view_for(
+            str(criterion["key"]), evidence, valid_citations
+        )
         competencies.append(
             {
                 "key": criterion["key"],
@@ -408,6 +442,8 @@ def _finalize_assessment(
                 "score": score,
                 "confidence": round(float(candidate.confidence), 3),
                 "evidence_turn_ids": valid_citations,
+                "panel_view": view,
+                "contradiction_turn_ids": contradiction_turn_ids,
                 "feedback": feedback,
             }
         )
@@ -463,6 +499,7 @@ async def build_assessment(
     snapshot: dict[str, Any],
     turns: list[TranscriptTurn],
     settings: Settings,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     rubric = select_assessment_rubric(snapshot)
     candidate_turns = final_candidate_turns(turns)
@@ -476,7 +513,7 @@ async def build_assessment(
         if rubric and candidate_turns
         else None
     )
-    return _finalize_assessment(snapshot, rubric, candidate_turns, structured)
+    return _finalize_assessment(snapshot, rubric, candidate_turns, structured, evidence)
 
 
 def build_replay_drills(report: dict[str, Any]) -> list[dict[str, Any]]:

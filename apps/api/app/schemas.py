@@ -391,6 +391,16 @@ class EvidenceOut(ApiModel):
     created_at: datetime
 
 
+class MetricClaimRecord(ApiModel):
+    """One before/after metric the candidate stated, kept so a later restatement can be checked."""
+
+    turn_id: str
+    subject: str
+    baseline: str
+    final: str
+    excerpt: str
+
+
 class PanelState(ApiModel):
     current_speaker_id: str | None = None
     pending_panelist_id: str | None = None
@@ -399,6 +409,7 @@ class PanelState(ApiModel):
     open_threads: list[str] = Field(default_factory=list)
     competency_coverage: dict[str, int] = Field(default_factory=dict)
     panelist_question_counts: dict[str, int] = Field(default_factory=dict)
+    metric_claims: list[MetricClaimRecord] = Field(default_factory=list)
     last_question: str | None = None
 
 
