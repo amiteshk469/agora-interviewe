@@ -3,7 +3,7 @@ import re
 from functools import lru_cache
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import SplitResult, urlsplit
 from uuid import UUID
 
@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     agora_agent_idle_timeout_seconds: int = Field(default=30, ge=5, le=3600)
     agora_session_expires_seconds: int = Field(default=3600, ge=60, le=86400)
     agora_webhook_secret: str = ""
+    # End-of-speech detection. "semantic" lets Agora decide the candidate has finished
+    # rather than cutting them off after a fixed silence, which matters when they pause
+    # mid-answer to think. "vad" restores the previous fixed-silence behavior.
+    agora_end_of_speech_mode: Literal["semantic", "vad"] = "semantic"
+    agora_semantic_silence_ms: int = Field(default=320, ge=100, le=5000)
+    agora_semantic_max_wait_ms: int = Field(default=3000, ge=500, le=15000)
+    agora_pause_state_enabled: bool = True
+    agora_vad_silence_ms: int = Field(default=900, ge=100, le=5000)
     agora_live_llm_mode: str = "roundcraft_custom"
     agora_managed_openai_model: str = "gpt-4.1-mini"
     agora_custom_llm_url: str = ""
