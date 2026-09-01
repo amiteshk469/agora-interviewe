@@ -20,6 +20,8 @@ from app.domain import (
     compile_agent_prompt,
     delimit_untrusted,
     detect_metric_claim,
+    find_metric_contradiction,
+    record_metric_claim,
 )
 from app.models import (
     EvidenceItem,
@@ -40,6 +42,7 @@ from app.schemas import (
 from app.services.evidence import (
     normalize_transcript_content,
     persist_candidate_turn,
+    persist_contradiction_evidence,
     persist_inferred_evidence,
 )
 from app.services.tools import execute_tool
@@ -545,6 +548,25 @@ async def panel_chat_completions(
     state.current_speaker_id = selected.id
     state.last_question = decision.suggested_question
 
+    # Check the ledger before this turn joins it, then record the turn's own claim so a
+    # later restatement is compared against it.
+    contradiction = find_metric_contradiction(state.metric_claims, candidate_text)
+    state.metric_claims = record_metric_claim(
+        state.metric_claims, turn_id=str(candidate_turn.id), text=candidate_text
+    )
+    if contradiction is not None:
+        await persist_contradiction_evidence(
+            db,
+            session,
+            candidate_turn,
+            subject=contradiction.subject,
+            earlier_turn_id=contradiction.earlier_turn_id,
+            detail=(
+                f"Earlier: {contradiction.earlier_claim}. "
+                f"This turn: {contradiction.current_claim}."
+            ),
+        )
+
     inferred_evidence = await persist_inferred_evidence(db, session, candidate_turn)
     if not inferred_evidence:
         inferred_evidence = list(
@@ -594,6 +616,16 @@ async def panel_chat_completions(
             "role_rubric": [item.model_dump(mode="json") for item in selected.role_rubric],
         },
         "director": decision.model_dump(),
+        "contradiction": (
+            {
+                "subject": contradiction.subject,
+                "earlier_turn_id": contradiction.earlier_turn_id,
+                "earlier_claim": contradiction.earlier_claim,
+                "current_claim": contradiction.current_claim,
+            }
+            if contradiction is not None
+            else None
+        ),
         "enabled_tools": role_tools,
         "tool_audits": tool_audits,
         "replayed_candidate_turn": replayed_bid is not None,

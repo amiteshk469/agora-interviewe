@@ -207,3 +207,65 @@ async def persist_inferred_evidence(
     if created:
         await db.flush()
     return created
+
+
+def competency_for_subject(subject: str, rubric: list[dict[str, Any]]) -> str | None:
+    """Map a contradicted metric subject onto a rubric competency using existing cues."""
+    for criterion in rubric:
+        key = str(criterion.get("key", ""))
+        if subject in _COMPETENCY_CUES.get(key, ()):
+            return key
+    return None
+
+
+async def persist_contradiction_evidence(
+    db: AsyncSession,
+    session: InterviewSession,
+    turn: TranscriptTurn,
+    *,
+    subject: str,
+    earlier_turn_id: str,
+    detail: str,
+) -> EvidenceItem | None:
+    """Record a contradiction against the turn that made it, citing the earlier turn.
+
+    The unique (session, turn, competency) constraint means an inferred "supports" row for
+    this turn may already exist. A contradiction is the stronger finding, so it upgrades
+    that row in place rather than being dropped.
+    """
+    role_rubric = {
+        str(criterion.get("key")): criterion
+        for panelist in session.config_snapshot.get("panel", [])
+        for criterion in panelist.get("role_rubric", [])
+        if criterion.get("key")
+    }
+    rubric = list(role_rubric.values()) or session.config_snapshot["rubric"]
+    competency = competency_for_subject(subject, rubric)
+    if competency is None:
+        return None
+    note = (
+        f"Candidate restated {subject} with different numbers than transcript turn "
+        f"{earlier_turn_id}. {detail}"
+    )[:2_000]
+    existing = await db.scalar(
+        select(EvidenceItem).where(
+            EvidenceItem.session_id == session.id,
+            EvidenceItem.transcript_turn_id == turn.id,
+            EvidenceItem.competency == competency,
+        )
+    )
+    if existing is not None:
+        existing.strength = "contradicts"
+        existing.note = note
+        await db.flush()
+        return existing
+    item = EvidenceItem(
+        session_id=session.id,
+        transcript_turn_id=turn.id,
+        competency=competency,
+        strength="contradicts",
+        note=note,
+    )
+    db.add(item)
+    await db.flush()
+    return item

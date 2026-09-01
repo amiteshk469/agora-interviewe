@@ -7,7 +7,13 @@ import pytest
 from httpx import AsyncClient
 
 from app.models import TranscriptTurn
-from app.services.assessment import final_candidate_turns
+from app.services.assessment import (
+    StructuredAssessment,
+    StructuredCriterionAssessment,
+    _finalize_assessment,
+    final_candidate_turns,
+    panel_view_for,
+)
 
 
 def _mock_assessment_client(
@@ -687,3 +693,52 @@ async def test_structured_report_regeneration_is_explicit_and_updates_existing(
     assert captured["calls"] == 1
     invalidated_drills = await client.get(f"/v1/sessions/{session_id}/replay-drills", headers=auth_headers)
     assert invalidated_drills.json() == []
+
+
+def test_panel_view_marks_a_competency_contested_only_on_recorded_contradictions() -> None:
+    evidence = [
+        {"competency": "analytics", "strength": "supports", "transcript_turn_id": "turn-1"},
+        {"competency": "analytics", "strength": "contradicts", "transcript_turn_id": "turn-3"},
+        {"competency": "execution", "strength": "supports", "transcript_turn_id": "turn-2"},
+    ]
+
+    view, contradicting = panel_view_for("analytics", evidence, ["turn-1", "turn-3"])
+    assert view == "contested"
+    assert contradicting == ["turn-3"]
+
+    # A low-confidence or single-source competency is never silently called contested.
+    assert panel_view_for("execution", evidence, ["turn-2"]) == ("single_source", [])
+    assert panel_view_for("execution", evidence, ["turn-2", "turn-4"]) == ("corroborated", [])
+    assert panel_view_for("leadership", evidence, []) == ("insufficient_evidence", [])
+
+
+def test_finalized_report_carries_panel_view_for_every_criterion() -> None:
+    rubric = [
+        {"key": "analytics", "label": "Analytics", "weight": 0.5, "description": "", "anchors": {}},
+        {"key": "leadership", "label": "Leadership", "weight": 0.5, "description": "", "anchors": {}},
+    ]
+    turn_id = uuid4()
+    candidate_turns = [{"id": str(turn_id), "text": "Conversion moved from 4% to 4.5%."}]
+    structured = StructuredAssessment(
+        criteria=[
+            StructuredCriterionAssessment(
+                key="analytics",
+                score=72.0,
+                confidence=0.8,
+                feedback="Quantified but restated inconsistently.",
+                evidence_turn_ids=[turn_id],
+            )
+        ]
+    )
+    evidence = [
+        {"competency": "analytics", "strength": "contradicts", "transcript_turn_id": str(turn_id)}
+    ]
+
+    report = _finalize_assessment({"panel": []}, rubric, candidate_turns, structured, evidence)
+
+    by_key = {item["key"]: item for item in report["competencies"]}
+    assert by_key["analytics"]["panel_view"] == "contested"
+    assert by_key["analytics"]["contradiction_turn_ids"] == [str(turn_id)]
+    # Uncovered criteria stay honest rather than being reported as agreement.
+    assert by_key["leadership"]["panel_view"] == "insufficient_evidence"
+    assert by_key["leadership"]["score"] is None
