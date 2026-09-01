@@ -15,7 +15,7 @@ from app.core.config import Settings
 from app.core.security import require_agora_compat_access
 from app.domain import PLATFORM_INVARIANTS, PanelDirector, detect_metric_claim
 from app.schemas import PanelistInput, PanelState
-from app.services.agora import AgoraAgentService
+from app.services.agora import AgoraAgentService, build_turn_detection
 from app.services.tools import calculate, execute_tool
 
 
@@ -1315,8 +1315,12 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
                 "vad_config": {"interrupt_duration_ms": 160, "prefix_padding_ms": 300},
             },
             "end_of_speech": {
-                "mode": "vad",
-                "vad_config": {"silence_duration_ms": 900},
+                "mode": "semantic",
+                "semantic_config": {
+                    "silence_duration_ms": 320,
+                    "max_wait_ms": 3000,
+                    "pause_state_enabled": True,
+                },
             },
         }
     }
@@ -1588,3 +1592,58 @@ async def test_custom_llm_verifies_a_spoken_lift_claim_with_the_calculator(
     assert calculator_runs[0]["panelist_id"] == "analytics"
     # The tool result reaches the model as untrusted data, never as an instruction.
     assert 'source=\'tool:calculator\'' in FakeUpstreamClient.captured["json"]["messages"][0]["content"]
+
+
+def test_semantic_end_of_speech_is_the_default_so_thinking_pauses_do_not_yield_the_floor() -> None:
+    turn_detection = build_turn_detection(Settings(), manual_turn_control=False)
+
+    end_of_speech = turn_detection["config"]["end_of_speech"]
+    assert end_of_speech["mode"] == "semantic"
+    assert end_of_speech["semantic_config"]["pause_state_enabled"] is True
+    assert end_of_speech["semantic_config"]["max_wait_ms"] == 3000
+    # Barge-in is unchanged: the candidate must still be able to cut a panelist off.
+    assert turn_detection["config"]["start_of_speech"] == {
+        "mode": "vad",
+        "vad_config": {"interrupt_duration_ms": 160, "prefix_padding_ms": 300},
+    }
+
+
+def test_vad_end_of_speech_mode_restores_the_previous_fixed_silence_behavior() -> None:
+    turn_detection = build_turn_detection(
+        Settings(agora_end_of_speech_mode="vad"), manual_turn_control=False
+    )
+
+    assert turn_detection["config"]["end_of_speech"] == {
+        "mode": "vad",
+        "vad_config": {"silence_duration_ms": 900},
+    }
+
+
+def test_turn_detection_settings_are_overridable_without_a_code_change() -> None:
+    turn_detection = build_turn_detection(
+        Settings(
+            agora_semantic_silence_ms=500,
+            agora_semantic_max_wait_ms=4000,
+            agora_pause_state_enabled=False,
+        ),
+        manual_turn_control=False,
+    )
+
+    assert turn_detection["config"]["end_of_speech"]["semantic_config"] == {
+        "silence_duration_ms": 500,
+        "max_wait_ms": 4000,
+        "pause_state_enabled": False,
+    }
+
+
+def test_manual_turn_control_is_unaffected_by_the_end_of_speech_mode() -> None:
+    for mode in ("semantic", "vad"):
+        turn_detection = build_turn_detection(
+            Settings(agora_end_of_speech_mode=mode), manual_turn_control=True
+        )
+        assert turn_detection == {
+            "config": {
+                "start_of_speech": {"mode": "manual"},
+                "end_of_speech": {"mode": "manual"},
+            }
+        }

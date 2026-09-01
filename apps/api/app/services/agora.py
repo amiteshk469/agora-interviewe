@@ -34,6 +34,53 @@ FAILURE_MESSAGE = (
     "I couldn't reach the interview service. Please return to the lobby and rejoin."
 )
 
+def build_turn_detection(settings: Settings, *, manual_turn_control: bool) -> dict[str, Any]:
+    """Assemble Agora turn detection for one interview session.
+
+    Candidates pause mid-answer to structure a framework or work through a metric.
+    Fixed-silence end-of-speech treats those pauses as a finished turn and hands the
+    floor to a panelist, so the default is semantic detection, which decides the
+    candidate is done from meaning rather than from silence alone. Setting
+    AGORA_END_OF_SPEECH_MODE=vad restores the previous fixed-silence behavior
+    without a code change.
+    """
+    if manual_turn_control:
+        return {
+            "config": {
+                "start_of_speech": {"mode": "manual"},
+                "end_of_speech": {"mode": "manual"},
+            }
+        }
+    if settings.agora_end_of_speech_mode == "semantic":
+        end_of_speech: dict[str, Any] = {
+            "mode": "semantic",
+            "semantic_config": {
+                "silence_duration_ms": settings.agora_semantic_silence_ms,
+                "max_wait_ms": settings.agora_semantic_max_wait_ms,
+                # Honors "hold on" and "let me think" instead of yielding the floor.
+                "pause_state_enabled": settings.agora_pause_state_enabled,
+            },
+        }
+    else:
+        end_of_speech = {
+            "mode": "vad",
+            "vad_config": {"silence_duration_ms": settings.agora_vad_silence_ms},
+        }
+    return {
+        "config": {
+            "speech_threshold": 0.5,
+            "start_of_speech": {
+                "mode": "vad",
+                "vad_config": {
+                    "interrupt_duration_ms": 160,
+                    "prefix_padding_ms": 300,
+                },
+            },
+            "end_of_speech": end_of_speech,
+        }
+    }
+
+
 class AgoraAgentService:
     """Adapted from the inspected official Python quickstart AgentSession flow."""
 
@@ -330,30 +377,8 @@ class AgoraAgentService:
         if output_audio_codec and output_audio_codec.strip():
             parameters["output_audio_codec"] = output_audio_codec.strip()
 
-        turn_detection = (
-            {
-                "config": {
-                    "start_of_speech": {"mode": "manual"},
-                    "end_of_speech": {"mode": "manual"},
-                }
-            }
-            if manual_turn_control
-            else {
-                "config": {
-                    "speech_threshold": 0.5,
-                    "start_of_speech": {
-                        "mode": "vad",
-                        "vad_config": {
-                            "interrupt_duration_ms": 160,
-                            "prefix_padding_ms": 300,
-                        },
-                    },
-                    "end_of_speech": {
-                        "mode": "vad",
-                        "vad_config": {"silence_duration_ms": 900},
-                    },
-                }
-            }
+        turn_detection = build_turn_detection(
+            self.settings, manual_turn_control=manual_turn_control
         )
         agora_agent = AgoraAgent(
             client=client,
