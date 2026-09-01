@@ -32,6 +32,10 @@ services:
         value: "120"
       - key: AGORA_SESSION_EXPIRES_SECONDS
         value: "3600"
+      - key: AGORA_LIVE_LLM_MODE
+        value: roundcraft_custom
+      - key: AGORA_MANAGED_OPENAI_MODEL
+        value: gpt-4.1-mini
       - key: SUPABASE_STORAGE_DOCUMENTS_BUCKET
         value: candidate-documents
       - key: SUPABASE_STORAGE_ARTIFACTS_BUCKET

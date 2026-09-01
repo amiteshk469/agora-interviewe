@@ -247,7 +247,24 @@ class AgoraAgentService:
         custom_configured = bool(
             self.settings.agora_custom_llm_url and self.settings.agora_llm_bearer_secret
         )
-        if roundcraft_session_id and custom_configured:
+        managed_openai = self.settings.agora_live_llm_mode == "agora_managed_preview"
+        llm: CustomLLM | OpenAI
+        if roundcraft_session_id and managed_openai:
+            logger.warning(
+                "Starting RoundCraft session %s in Agora-managed OpenAI preview mode; "
+                "custom panel orchestration and tool persistence are bypassed",
+                roundcraft_session_id,
+            )
+            llm = OpenAI(
+                model=self.settings.agora_managed_openai_model,
+                greeting_message=greeting,
+                failure_message=FAILURE_MESSAGE,
+                max_history=15,
+                max_tokens=1024,
+                temperature=0.7,
+                top_p=0.95,
+            )
+        elif roundcraft_session_id and custom_configured:
             headers = (
                 {
                     "X-RoundCraft-Session-Id": roundcraft_session_id,
@@ -258,7 +275,7 @@ class AgoraAgentService:
                 if roundcraft_session_id
                 else None
             )
-            llm: CustomLLM | OpenAI = CustomLLM(
+            llm = CustomLLM(
                 api_key=self.settings.agora_llm_bearer_secret,
                 base_url=self.settings.agora_custom_llm_url,
                 model="roundcraft-panel",
@@ -280,7 +297,7 @@ class AgoraAgentService:
             )
         else:
             llm = OpenAI(
-                model="gpt-4o-mini",
+                model=self.settings.agora_managed_openai_model,
                 greeting_message=greeting,
                 failure_message=FAILURE_MESSAGE,
                 max_history=15,

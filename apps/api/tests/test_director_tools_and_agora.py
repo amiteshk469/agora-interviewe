@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 import pytest
+from agora_agent.agentkit.presets import resolve_session_presets
+from agora_agent.agentkit.vendors import OpenAI as AgoraOpenAI
 from fastapi import HTTPException
 from httpx import AsyncClient
 
@@ -15,6 +17,16 @@ from app.domain import PLATFORM_INVARIANTS, PanelDirector, detect_metric_claim
 from app.schemas import PanelistInput, PanelState
 from app.services.agora import AgoraAgentService
 from app.services.tools import calculate, execute_tool
+
+
+def test_locked_agora_sdk_resolves_managed_openai_without_provider_credentials() -> None:
+    config = AgoraOpenAI(model="gpt-4.1-mini", max_tokens=1024).to_config()
+    preset, properties = resolve_session_presets(None, {"llm": config})
+
+    assert preset == "openai_gpt_4_1_mini"
+    assert "api_key" not in properties["llm"]
+    assert "url" not in properties["llm"]
+    assert "model" not in properties["llm"]["params"]
 
 
 def test_panel_director_can_repeat_or_jump_non_linearly() -> None:
@@ -1320,6 +1332,66 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
     assert captured["tts"]["language_boost"] == "English"
     await service.stop("sdk-agent")
     assert captured["stopped"] is True
+
+
+async def test_agora_managed_openai_omits_provider_credentials(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeSession:
+        async def start(self) -> str:
+            return "managed-sdk-agent"
+
+    class FakeAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent"] = kwargs
+
+        def with_stt(self, value: Any) -> "FakeAgent":
+            return self
+
+        def with_llm(self, value: Any) -> "FakeAgent":
+            captured["llm"] = value
+            return self
+
+        def with_tts(self, value: Any) -> "FakeAgent":
+            return self
+
+        def create_async_session(self, **kwargs: Any) -> FakeSession:
+            captured["session"] = kwargs
+            return FakeSession()
+
+    def fake_vendor(**kwargs: Any) -> dict[str, Any]:
+        return kwargs
+
+    def reject_custom_llm(**kwargs: Any) -> None:
+        raise AssertionError(f"Custom LLM must not be constructed: {kwargs}")
+
+    monkeypatch.setattr("app.services.agora.AgoraAgent", FakeAgent)
+    monkeypatch.setattr("app.services.agora.OpenAI", fake_vendor)
+    monkeypatch.setattr("app.services.agora.CustomLLM", reject_custom_llm)
+    monkeypatch.setattr("app.services.agora.DeepgramSTT", fake_vendor)
+    monkeypatch.setattr("app.services.agora.MiniMaxTTS", fake_vendor)
+    service = AgoraAgentService.__new__(AgoraAgentService)
+    service.settings = Settings(
+        environment="test",
+        agora_live_llm_mode="agora_managed_preview",
+        agora_managed_openai_model="gpt-5-mini",
+        agora_custom_llm_url="https://api.example.test/llm/chat/completions",
+        agora_llm_bearer_secret="unused-custom-secret",
+    )
+    service.client = object()
+    service._sessions = {}
+
+    result = await service.start(
+        channel_name="managed-openai-channel",
+        agent_uid=111,
+        user_uid=222,
+        roundcraft_session_id="00000000-0000-4000-8000-000000000123",
+    )
+
+    assert result["agent_id"] == "managed-sdk-agent"
+    assert captured["llm"]["model"] == "gpt-5-mini"
+    assert "api_key" not in captured["llm"]
+    assert "base_url" not in captured["llm"]
 
 
 async def test_agora_agent_name_collision_retries_with_a_fresh_unique_name(
