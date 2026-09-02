@@ -38,6 +38,37 @@ Frontend: `http://localhost:3000`
 Backend: `http://localhost:8000`  
 OpenAPI: `http://localhost:8000/docs`
 
+## Technology stack
+
+| Layer | Choice |
+|---|---|
+| Real-time voice | Agora RTC, RTM, and Conversational AI - one agent session per interview |
+| Speech to text | Deepgram `nova-3`, Agora-managed |
+| Text to speech | MiniMax `speech_2_6_turbo`, per-turn voice selected by the director |
+| Turn taking | Agora VAD barge-in with semantic end-of-speech and pause detection |
+| Language model | OpenAI-compatible endpoint behind the RoundCraft custom LLM gateway |
+| Web search | Firecrawl, role-allowlisted and never sent candidate documents |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind, deployed on Vercel |
+| Backend | FastAPI, Pydantic, SQLAlchemy, Python 3.12+, deployed on Render |
+| Data and auth | Supabase - Auth, Postgres with RLS, private Storage |
+| Tooling | pnpm workspaces, uv, Ruff, mypy, pytest, Vitest, ESLint, GitHub Actions |
+
+## Known limitations
+
+These are current, deliberate, and stated so the product is not read as claiming more than it does.
+
+- **Live avatars are not the baseline.** Avatar vendors are optional and off unless configured. Every logical panelist falls back to an animated identity tile, then to audio only.
+- **Document retrieval is lexical, not semantic.** JD and transcript search ranks by term overlap. The schema is pgvector-ready, but embedding-based ranking is not implemented.
+- **One physical Agora agent, not several.** Two to five panelists are logical identities inside a single session. Older documents describing one agent per interviewer are out of date.
+- **Contradiction detection is deterministic and numeric.** It compares before/after metrics the candidate restates. It does not catch qualitative contradictions such as reversing a claim of ownership, and it never infers a contradiction from a low score.
+- **There is no human-review queue.** This is autonomous practice. Unsupported criteria become `insufficient_evidence` and are converted into replay drills instead of being escalated.
+- **Assessment depends on an external model.** If the provider is unavailable the report generation endpoint returns 503 with `Retry-After` rather than producing an unsupported score.
+- **Semantic end-of-speech is not yet validated against live production audio.** `AGORA_END_OF_SPEECH_MODE=vad` restores fixed-silence turn taking without a redeploy.
+- **The calculator returns full decimal precision.** Values are rounded for display only; the audited tool result keeps the exact figure.
+- **Free-tier API hosting can cold start.** The first request after an idle period is slow, which matters for a live demo.
+
+RoundCraft is practice-only software. It is not a hiring decision, and it must never be used to assist a candidate during a real interview.
+
 ## Architecture and deployment
 
 - [System architecture](docs/ARCHITECTURE.md)

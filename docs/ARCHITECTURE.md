@@ -11,6 +11,72 @@ Shared browser contracts and configuration live in `packages/`. Supabase owns pr
 
 ## System map
 
+```mermaid
+flowchart TB
+    subgraph browser["Candidate browser"]
+        UI["Next.js app on Vercel<br/>identity tiles, transcript, tool evidence"]
+    end
+
+    subgraph agora["Agora - real-time voice layer"]
+        RTC["RTC + RTM channel<br/>audio transport, transcripts, events"]
+        AGENT["ONE Conversational AI agent<br/>2-5 logical panelist identities"]
+        STT["Deepgram STT<br/>nova-3"]
+        TTS["MiniMax TTS<br/>per-turn voice"]
+        VAD["Turn detection<br/>VAD barge-in + semantic end-of-speech"]
+    end
+
+    subgraph api["FastAPI on Render"]
+        LLM["Custom LLM endpoint<br/>OpenAI-compatible, bearer verified"]
+        DIR["Panel Director - silent<br/>picks ONE speaker per turn, non-linear"]
+        TOOLS["Role-scoped tools<br/>knowledge search, calculator, web search"]
+        EVID["Evidence + contradiction ledger"]
+        ASSESS["Assessment, reports, replay drills"]
+    end
+
+    subgraph ext["External services"]
+        GROQ["LLM provider<br/>OpenAI-compatible"]
+        FC["Firecrawl<br/>current-information search"]
+    end
+
+    subgraph data["Supabase"]
+        AUTH["Auth + RLS"]
+        PG["Postgres<br/>transcript, evidence, tool audit, reports"]
+        STORE["Private Storage<br/>JD and resume"]
+    end
+
+    UI <-->|"mic audio / agent audio"| RTC
+    RTC --> STT --> AGENT
+    AGENT --> TTS --> RTC
+    VAD -.->|"barge-in, end of turn"| AGENT
+    AGENT -->|"one call per candidate turn"| LLM
+    LLM --> DIR
+    DIR -->|"selected role prompt + voice + allowed tools"| TOOLS
+    TOOLS --> GROQ
+    TOOLS --> FC
+    GROQ -->|"single response + voice metadata"| AGENT
+    LLM --> EVID
+    EVID --> PG
+    ASSESS --> PG
+    UI -->|"authenticated REST"| AUTH
+    AUTH --> PG
+    UI -->|"JD upload"| STORE
+    STORE --> TOOLS
+    PG --> ASSESS
+
+    classDef agoraStyle fill:#e8f1fb,stroke:#2f6fbb,color:#10263f
+    classDef apiStyle fill:#fdeeea,stroke:#c4462c,color:#3d1108
+    class RTC,AGENT,STT,TTS,VAD agoraStyle
+    class LLM,DIR,TOOLS,EVID,ASSESS apiStyle
+```
+
+The critical constraint: **exactly one physical Agora agent** carries two to five *logical*
+panelist identities. The Panel Director selects one of them per candidate turn and injects that
+role's prompt, voice, and tool allowlist, so the panel is non-linear and interruptible while
+Agora only ever renders one audible speaker.
+
+### Text equivalent
+
+
 ```text
 Candidate browser
   ├─ HTTPS ───────────────► Next.js on Vercel
