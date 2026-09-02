@@ -267,14 +267,14 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   return (
     <div className="space-y-2">
       {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
+      <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
         <div className="size-10 overflow-hidden rounded-md border bg-background" aria-hidden="true"><AgentVisualizer state={visualizerState} size="sm" /></div>
         <Badge variant={displayedError ? "destructive" : isConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><Radio className="size-3" aria-hidden="true" />{connectionStatus}</Badge>
         <div className="conversation-mic-host flex items-center justify-center">
           <MicButtonWithVisualizer isEnabled={enabled} setIsEnabled={setEnabled} track={localMicrophoneTrack} onToggle={toggleMic} aria-label={enabled ? "Mute microphone" : "Unmute microphone"} enabledColor="oklch(0.675 0.175 245)" disabledColor="oklch(0.63 0.205 25)" />
         </div>
-        <Button size="sm" variant={roomToneEnabled ? "secondary" : "outline"} onClick={toggleRoomTone} aria-pressed={roomToneEnabled} title="Play subtle room ambience locally; it is never published to Agora">
-          <Waves aria-hidden="true" /><span className="hidden sm:inline">Room tone</span>
+        <Button size="icon" variant={roomToneEnabled ? "secondary" : "outline"} className="size-11 rounded-full" onClick={toggleRoomTone} aria-pressed={roomToneEnabled} title="Play subtle room ambience locally; it is never published to Agora">
+          <Waves aria-hidden="true" />
         </Button>
         {audioTracks.map((track) => <RemoteAudioTrack key={String(track.getUserId())} track={track} play />)}
       </div>

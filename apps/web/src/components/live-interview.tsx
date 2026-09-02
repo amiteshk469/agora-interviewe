@@ -15,10 +15,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
-import { PanelChip, SpotlightSpeaker, type PanelPresence } from "@/components/panel-video";
+import { PanelTile, SpotlightSpeaker, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   demoModeEnabled,
@@ -311,14 +311,14 @@ export function LiveInterviewScreen() {
 
   const displayedTranscript = useMemo(() => {
     if (!liveTurns.length) return sessionIsDemo ? transcript : [];
-    return liveTurns.map((turn, index) => {
+    return mergeLiveTurns(liveTurns).map((turn, index) => {
       const participant = storedSession?.connection?.panelists?.find((item) => String(item.agent_uid) === String(turn.uid));
       const panelist = configuredPanel.find((person) => person.id === participant?.panelist_id);
       return {
         id: turn.id || `live-${index}`,
         speaker: turn.isLocal ? "You" : panelist?.name || "Live panel",
         kind: turn.isLocal ? "candidate" as const : "panel" as const,
-        time: `Turn ${index + 1}`,
+        time: `Turn ${turn.turnNumber}`,
         text: turn.text,
         interrupted: turn.interrupted,
       };
@@ -382,11 +382,12 @@ export function LiveInterviewScreen() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
-        <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
           <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
             <SpotlightSpeaker
               person={activePanelist}
               state={selectedPresence(agentState, sessionIsDemo)}
+              toneIndex={configuredPanel.findIndex((item) => item.id === activePanelist.id)}
               track={mediaState.remoteVideos.find((video) => video.uid === String(avatarUidForPanelist(activePanelist, storedSession?.connection?.panelists)))?.track}
               className="min-h-[15rem] flex-1"
             />
@@ -395,7 +396,7 @@ export function LiveInterviewScreen() {
               {configuredPanel
                 .filter((person) => person.id !== activePanelist.id)
                 .map((person) => (
-                  <PanelChip
+                  <PanelTile
                     key={person.id}
                     person={person}
                     state={sessionIsDemo ? presenceForPanelist(Math.max(0, configuredPanel.findIndex((item) => item.id === person.id)), idlePhase, false) : "listening"}
@@ -415,13 +416,14 @@ export function LiveInterviewScreen() {
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Current interviewer: {interviewerStatus}.</p>
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Question from {activePanelist.name}: {announcedQuestion}</p>
               </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center justify-center gap-2">
                 <div className="min-w-0"><AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} /></div>
-                <div className="flex-1" />
-                <Button ref={evidenceTriggerRef} variant="outline" className="shrink-0 xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog">
-                  <MessageSquareText aria-hidden="true" />Transcript
+                <Button ref={evidenceTriggerRef} variant="outline" size="icon" className="size-11 shrink-0 rounded-full xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog" aria-label="Open transcript">
+                  <MessageSquareText aria-hidden="true" />
                 </Button>
-                <Button variant="secondary" className="shrink-0" onClick={openEndDialog}><CircleStop aria-hidden="true" />End</Button>
+                <Button variant="destructive" size="icon" className="size-11 shrink-0 rounded-full" onClick={openEndDialog} aria-label="End interview">
+                  <CircleStop aria-hidden="true" />
+                </Button>
               </div>
             </div>
           </footer>

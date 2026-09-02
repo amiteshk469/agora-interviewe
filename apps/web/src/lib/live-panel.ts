@@ -147,3 +147,73 @@ export function readLiveContradiction(metadata: unknown): LiveContradiction | nu
     earlierTurnId: text(record.earlier_turn_id, 80) || null,
   };
 }
+
+export type RawLiveTurn = {
+  id: string;
+  uid: string;
+  isLocal: boolean;
+  text: string;
+  final: boolean;
+  interrupted: boolean;
+};
+
+export type MergedTurn = RawLiveTurn & { turnNumber: number };
+
+const MIN_SEAM_OVERLAP = 6;
+
+/**
+ * Length of the longest suffix of `previous` that also opens `next`.
+ * Agora re-sends the tail of a run when it reopens a turn, so joining blind duplicates
+ * words at the seam. Only word-aligned overlaps count, so "the" never welds onto "there".
+ */
+function seamOverlap(previous: string, next: string): number {
+  const left = previous.toLowerCase();
+  const right = next.toLowerCase();
+  const limit = Math.min(left.length, right.length);
+  for (let size = limit; size >= MIN_SEAM_OVERLAP; size -= 1) {
+    if (!left.endsWith(right.slice(0, size))) continue;
+    const boundary = left.length - size;
+    if (boundary === 0 || /\s/.test(left[boundary - 1])) return size;
+  }
+  return 0;
+}
+
+/** Join one spoken segment onto the run it continues, without repeating the seam. */
+export function joinSegments(previous: string, next: string): string {
+  if (!previous) return next;
+  if (!next) return previous;
+  const left = previous.toLowerCase();
+  const right = next.toLowerCase();
+  // A segment that restates or contains the run is a correction, not new speech.
+  if (right.startsWith(left)) return next;
+  if (left.includes(right)) return previous;
+  const overlap = seamOverlap(previous, next);
+  const tail = overlap > 0 ? next.slice(overlap).trimStart() : next;
+  if (!tail) return previous;
+  return `${previous}${/^[,.!?;:]/.test(tail) ? "" : " "}${tail}`.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Collapse a speaker's consecutive segments into the turn they actually took.
+ *
+ * Agora closes a turn whenever end-of-speech fires, so pausing mid-answer to think
+ * splits one answer across several turn ids. Merging by speaker restores the answer;
+ * a turn from someone else still breaks the run, because that is a real handover.
+ * This is presentation only: persistence stays keyed by Agora's own turn id.
+ */
+export function mergeLiveTurns(turns: RawLiveTurn[]): MergedTurn[] {
+  const merged: MergedTurn[] = [];
+  for (const turn of turns) {
+    const spoken = turn.text.trim();
+    if (!spoken) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && previous.isLocal === turn.isLocal && previous.uid === turn.uid) {
+      previous.text = joinSegments(previous.text, spoken);
+      previous.final = turn.final;
+      previous.interrupted = previous.interrupted || turn.interrupted;
+      continue;
+    }
+    merged.push({ ...turn, text: spoken, turnNumber: merged.length + 1 });
+  }
+  return merged;
+}

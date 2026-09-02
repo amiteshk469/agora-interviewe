@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPanelists } from "../data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, joinSegments, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
 
 describe("live panel presentation", () => {
   it("keeps the selected interviewer in the speaking state", () => {
@@ -154,5 +154,62 @@ describe("live contradiction marker", () => {
     expect(readLiveContradiction({
       contradiction: { subject: "conversion", earlier_claim: "4 to 4.5", current_claim: "4 to 4.5" },
     })).toBeNull();
+  });
+});
+
+describe("live transcript merging", () => {
+  const say = (id: string, uid: string, isLocal: boolean, text: string, final = true) =>
+    ({ id, uid, isLocal, text, final, interrupted: false });
+
+  it("keeps one answer as one turn when a pause splits it", () => {
+    const merged = mergeLiveTurns([
+      say("a", "0", true, "The product should be designed"),
+      say("b", "0", true, "to benefit the users"),
+      say("c", "0", true, "and make them comfortable."),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].text).toBe("The product should be designed to benefit the users and make them comfortable.");
+  });
+
+  it("does not repeat the words a reopened turn resends", () => {
+    // Agora often replays the tail of the run when it opens the next turn.
+    expect(joinSegments(
+      "I would track completion of recurring one-to-one preparation",
+      "recurring one-to-one preparation and a short direct-report pulse",
+    )).toBe("I would track completion of recurring one-to-one preparation and a short direct-report pulse");
+  });
+
+  it("never welds a short overlap onto the middle of a word", () => {
+    expect(joinSegments("we shipped the", "there was pushback")).toBe("we shipped the there was pushback");
+  });
+
+  it("treats a restatement or a contained segment as a correction", () => {
+    expect(joinSegments("We moved conversion", "We moved conversion from 4% to 4.5%")).toBe("We moved conversion from 4% to 4.5%");
+    expect(joinSegments("We moved conversion from 4% to 4.5%", "conversion from 4%")).toBe("We moved conversion from 4% to 4.5%");
+  });
+
+  it("attaches trailing punctuation without a space", () => {
+    expect(joinSegments("and that is the tradeoff", ".")).toBe("and that is the tradeoff.");
+  });
+
+  it("breaks the run when a different speaker takes the floor", () => {
+    const merged = mergeLiveTurns([
+      say("a", "0", true, "First part"),
+      say("b", "0", true, "second part"),
+      say("c", "900", false, "That's a solid foundation."),
+      say("d", "0", true, "Thanks."),
+    ]);
+    expect(merged.map((turn) => [turn.turnNumber, turn.uid])).toEqual([[1, "0"], [2, "900"], [3, "0"]]);
+    expect(merged[0].text).toBe("First part second part");
+  });
+
+  it("carries an interruption across the merged run and drops empty segments", () => {
+    const merged = mergeLiveTurns([
+      say("a", "0", true, "  "),
+      { ...say("b", "0", true, "I was mid sentence"), interrupted: true },
+      say("c", "0", true, "when they cut in"),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].interrupted).toBe(true);
   });
 });

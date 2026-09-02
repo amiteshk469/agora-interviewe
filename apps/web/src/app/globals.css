@@ -52,6 +52,12 @@
   --video-overlay: rgb(20 22 22 / 86%);
   --video-overlay-foreground: #f6f7f5;
   --panel-shadow: 0 14px 36px rgb(41 46 48 / 10%);
+  /* Interview room: every participant sits on the same surface, as in a real
+     meeting client. Identity is carried by the avatar, never by the tile. */
+  --stage: #e7e9ea;
+  --tile: #f8f9f9;
+  --tile-foreground: #252728;
+  --tile-muted: #6b7073;
 }
 
 :root[data-theme="dark"] {
@@ -77,6 +83,10 @@
   --video-overlay: rgb(8 10 10 / 84%);
   --video-overlay-foreground: #f6f7f5;
   --panel-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+  --stage: #0d0f0f;
+  --tile: #1d2121;
+  --tile-foreground: #f0f1ef;
+  --tile-muted: #9aa2a0;
 }
 
 * {
@@ -231,6 +241,26 @@ input[type="file"]:not(:disabled) {
   50% { height: 0.8rem; }
 }
 
+/* Speaking halo. Two rings ease outward from the avatar so the active speaker
+   reads at a glance, the way a meeting client pulses around the talker. */
+.speaking-halo::before,
+.speaking-halo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid var(--primary);
+  opacity: 0;
+  animation: speaking-halo 1900ms cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+.speaking-halo::after { animation-delay: 620ms; }
+
+@keyframes speaking-halo {
+  0% { transform: scale(1); opacity: 0.42; }
+  70% { opacity: 0.06; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after {
@@ -238,4 +268,6 @@ input[type="file"]:not(:disabled) {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  .speaking-halo::before { opacity: 0.35; }
+  .speaking-halo::after { display: none; }
 }
