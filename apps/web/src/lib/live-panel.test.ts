@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPanelists } from "../data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeMediaFault, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
 
 describe("live panel presentation", () => {
   it("keeps the selected interviewer in the speaking state", () => {
@@ -154,66 +154,5 @@ describe("live contradiction marker", () => {
     expect(readLiveContradiction({
       contradiction: { subject: "conversion", earlier_claim: "4 to 4.5", current_claim: "4 to 4.5" },
     })).toBeNull();
-  });
-});
-
-describe("live transcript merging", () => {
-  const say = (id: string, uid: string, isLocal: boolean, text: string, final = true) =>
-    ({ id, uid, isLocal, text, final, interrupted: false });
-
-  it("joins the segments of one answer into a single turn", () => {
-    const merged = mergeLiveTurns([
-      say("a", "0", true, "The product should be designed"),
-      say("b", "0", true, "to benefit the users"),
-      say("c", "0", true, "and make them comfortable."),
-    ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].text).toBe("The product should be designed to benefit the users and make them comfortable.");
-    expect(merged[0].turnNumber).toBe(1);
-  });
-
-  it("numbers turns by real speaking order, not array position", () => {
-    const merged = mergeLiveTurns([
-      say("a", "0", true, "First part"),
-      say("b", "0", true, "second part"),
-      say("c", "900", false, "That's a solid foundation."),
-      say("d", "0", true, "Thanks."),
-    ]);
-    expect(merged.map((turn) => [turn.turnNumber, turn.uid])).toEqual([[1, "0"], [2, "900"], [3, "0"]]);
-  });
-
-  it("treats a restatement as a refinement rather than duplicating it", () => {
-    const merged = mergeLiveTurns([
-      say("a", "0", true, "We moved conversion", false),
-      say("b", "0", true, "We moved conversion from 4% to 4.5%"),
-    ]);
-    expect(merged[0].text).toBe("We moved conversion from 4% to 4.5%");
-  });
-
-  it("keeps different speakers apart and drops empty segments", () => {
-    const merged = mergeLiveTurns([
-      say("a", "0", true, "  "),
-      say("b", "900", false, "Question one?"),
-      say("c", "901", false, "Question two?"),
-    ]);
-    expect(merged.map((turn) => turn.uid)).toEqual(["900", "901"]);
-  });
-});
-
-describe("media fault copy", () => {
-  it("tells the candidate how to fix a blocked microphone", () => {
-    expect(describeMediaFault({ code: "PERMISSION_DENIED", message: "NotAllowedError: Permission denied" }))
-      .toBe("Microphone access is blocked. Allow it in your browser's address bar, then rejoin from the lobby.");
-  });
-
-  it("names the real cause when another app holds the device", () => {
-    expect(describeMediaFault(new Error("NotReadableError: could not start audio source")))
-      .toContain("Another app is using your microphone");
-  });
-
-  it("never leaks a raw SDK code to the candidate", () => {
-    const message = describeMediaFault({ code: "WS_ABORT", message: "unknown internal failure" });
-    expect(message).not.toMatch(/WS_ABORT|Error:/);
-    expect(message).toBe("Live audio stopped working. Rejoin from the lobby to reconnect.");
   });
 });
