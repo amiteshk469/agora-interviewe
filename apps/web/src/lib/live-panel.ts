@@ -118,3 +118,32 @@ export function speakerSequence(
   }
   return sequence;
 }
+
+export type LiveContradiction = {
+  subject: string;
+  earlierClaim: string;
+  currentClaim: string;
+  earlierTurnId: string | null;
+};
+
+/**
+ * Read the contradiction the director recorded for the current turn, if any.
+ * Every field must be present before anything is shown: a partial record would let the room
+ * assert a conflict it cannot actually quote, which is the one thing evidence-first forbids.
+ */
+export function readLiveContradiction(metadata: unknown): LiveContradiction | null {
+  const found = (metadata as { contradiction?: unknown } | undefined)?.contradiction;
+  if (!found || typeof found !== "object") return null;
+  const record = found as Record<string, unknown>;
+  const subject = text(record.subject, 60);
+  const earlierClaim = text(record.earlier_claim, 60);
+  const currentClaim = text(record.current_claim, 60);
+  if (!subject || !earlierClaim || !currentClaim) return null;
+  if (earlierClaim === currentClaim) return null;
+  return {
+    subject,
+    earlierClaim,
+    currentClaim,
+    earlierTurnId: text(record.earlier_turn_id, 80) || null,
+  };
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPanelists } from "../data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, speakerSequence } from "./live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
 
 describe("live panel presentation", () => {
   it("keeps the selected interviewer in the speaking state", () => {
@@ -114,5 +114,45 @@ describe("speaker sequence", () => {
       bid("analytics", "Priya Rao", "2026-09-01T10:02:00Z"),
       bid("hiring-manager", "Maya Chen", "2026-09-01T10:01:00Z"),
     ]).map((turn) => turn.name)).toEqual(["Maya Chen", "Priya Rao"]);
+  });
+});
+
+describe("live contradiction marker", () => {
+  it("reads a complete contradiction the director recorded", () => {
+    expect(readLiveContradiction({
+      contradiction: {
+        subject: "conversion",
+        earlier_claim: "4 to 4.5",
+        current_claim: "4 to 6",
+        earlier_turn_id: "turn-1",
+      },
+    })).toEqual({
+      subject: "conversion",
+      earlierClaim: "4 to 4.5",
+      currentClaim: "4 to 6",
+      earlierTurnId: "turn-1",
+    });
+  });
+
+  it("shows nothing when the director recorded no contradiction", () => {
+    expect(readLiveContradiction({ contradiction: null })).toBeNull();
+    expect(readLiveContradiction({})).toBeNull();
+    expect(readLiveContradiction(undefined)).toBeNull();
+  });
+
+  it("refuses to assert a conflict it cannot quote in full", () => {
+    // A partial record would let the room claim a contradiction without both sides.
+    expect(readLiveContradiction({
+      contradiction: { subject: "conversion", earlier_claim: "4 to 4.5" },
+    })).toBeNull();
+    expect(readLiveContradiction({
+      contradiction: { subject: "", earlier_claim: "4 to 4.5", current_claim: "4 to 6" },
+    })).toBeNull();
+  });
+
+  it("does not flag a restatement of the same numbers", () => {
+    expect(readLiveContradiction({
+      contradiction: { subject: "conversion", earlier_claim: "4 to 4.5", current_claim: "4 to 4.5" },
+    })).toBeNull();
   });
 });

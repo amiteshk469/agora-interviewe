@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   Sparkles,
   TimerReset,
+  TriangleAlert,
   UsersRound,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -26,7 +27,7 @@ import { CandidateVideoTile, PanelIdentity, PanelVideoTile, type PanelPresence }
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, speakerSequence } from "@/lib/live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   demoModeEnabled,
@@ -234,7 +235,11 @@ export function LiveInterviewScreen() {
   const directorMetadata = latestDirectorBid?.result as {
     selected_panelist?: { id?: string; display_name?: string; role?: string };
     director?: { action?: string; rationale?: string; suggested_question?: string };
+    contradiction?: { subject?: string; earlier_claim?: string; current_claim?: string; earlier_turn_id?: string } | null;
   } | undefined;
+  // The director records a contradiction on the turn that made it. Surfacing it is what
+  // makes the catch visible while it is happening rather than only in the final report.
+  const liveContradiction = readLiveContradiction(directorMetadata);
   const selectedPanelistId = directorMetadata?.selected_panelist?.id;
   const activeIndex = selectedPanelistId
     ? Math.max(0, configuredPanel.findIndex((person) => person.id === selectedPanelistId))
@@ -403,6 +408,16 @@ export function LiveInterviewScreen() {
         <div className="mt-6 rounded-xl border bg-background/78 p-3">
           <div className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="size-3.5 text-primary" aria-hidden="true" />Panel Director</div>
           <p className="mt-2 break-words text-[11px] leading-5 text-muted-foreground">{directorSummary}</p>
+          {liveContradiction ? (
+            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/8 p-2.5" role="status" aria-live="polite">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-destructive"><TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />Contradiction caught</p>
+              <p className="mt-1 break-words text-[11px] leading-5 text-muted-foreground">
+                <span className="font-medium capitalize text-foreground">{liveContradiction.subject}</span>{" "}
+                was <span className="font-mono">{liveContradiction.earlierClaim}</span>, now{" "}
+                <span className="font-mono">{liveContradiction.currentClaim}</span>.
+              </p>
+            </div>
+          ) : null}
           {speakerTrail.length > 1 ? (
             <div className="mt-3 border-t pt-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Floor order</p>
@@ -443,7 +458,10 @@ export function LiveInterviewScreen() {
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Interview room</p>
                 <p className="mt-0.5 text-sm font-medium">{configuredPanel.length} configured interviewers share this session context</p>
               </div>
-              <Badge variant={rtcConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><UsersRound className="size-3" aria-hidden="true" />{roomStatus}</Badge>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {liveContradiction ? <Badge variant="destructive" role="status" aria-live="polite"><TriangleAlert className="size-3" aria-hidden="true" />Contradiction: {liveContradiction.subject}</Badge> : null}
+                <Badge variant={rtcConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><UsersRound className="size-3" aria-hidden="true" />{roomStatus}</Badge>
+              </div>
             </div>
 
             <section className="grid grid-cols-2 auto-rows-[clamp(8.5rem,20vh,12.5rem)] gap-2.5 lg:h-[clamp(26rem,56vh,40rem)] lg:grid-cols-3 lg:grid-rows-[1.25fr_1fr] lg:gap-3" aria-label="Live interview video wall">
