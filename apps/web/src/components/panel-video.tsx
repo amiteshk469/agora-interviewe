@@ -1,7 +1,7 @@
 "use client";
 
-import type { ICameraVideoTrack, IRemoteVideoTrack } from "agora-rtc-react";
-import { AvatarVideoDisplay, LocalVideoPreview } from "agora-agent-uikit";
+import type { IRemoteVideoTrack } from "agora-rtc-react";
+import { AvatarVideoDisplay } from "agora-agent-uikit";
 import { AudioLines, Brain, Ear, Hand, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
@@ -47,70 +47,88 @@ function PresenceIcon({ state }: { state: PanelPresence }) {
   return <Ear className={className} aria-hidden="true" />;
 }
 
-export function PanelVideoTile({
+export function SpotlightSpeaker({
   person,
   state,
   track,
   className,
-  motionIndex = 0,
-  identityIndex,
-  selected,
 }: {
   person: Panelist;
   state: PanelPresence;
   track?: IRemoteVideoTrack | null;
   className?: string;
-  motionIndex?: number;
-  identityIndex?: number;
-  selected?: boolean;
 }) {
-  const active = selected ?? state === "speaking";
+  const speaking = state === "speaking";
   return (
-    <article className={cn("panel-video-tile group relative min-h-0 overflow-hidden rounded-xl border bg-card", active ? "panel-video-active" : "panel-video-idle", className)} aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}>
-      <div className={cn("absolute inset-0 overflow-hidden", !track && `panel-idle-motion-${(motionIndex % 4) + 1}`, active && !track && "panel-speaking-motion")}>
+    <article
+      className={cn("relative isolate min-h-0 overflow-hidden rounded-2xl border bg-card", className)}
+      aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}
+    >
+      <div className={cn("absolute inset-0", identityTone(person.id || person.name, undefined))}>
         {track ? (
           <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="size-full" />
         ) : (
-          <div className={cn("relative grid size-full place-items-center", identityTone(person.id || person.name, identityIndex))}>
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_36%,rgb(255_255_255_/_0.38),transparent_42%)] dark:bg-[radial-gradient(circle_at_50%_36%,rgb(255_255_255_/_0.09),transparent_42%)]" aria-hidden="true" />
-            <div className="relative grid place-items-center">
-              {active ? <span className="absolute size-28 rounded-full border border-current/15 sm:size-36" aria-hidden="true" /> : null}
-              <span className="grid size-20 place-items-center rounded-full bg-white/55 text-2xl font-semibold tracking-[-0.04em] shadow-sm ring-1 ring-black/10 backdrop-blur-sm dark:bg-black/16 dark:ring-white/10 sm:size-24 sm:text-3xl" aria-hidden="true">{person.initials}</span>
-            </div>
+          <div className="grid size-full place-items-center">
+            {speaking ? <span className="absolute size-44 rounded-full border border-current/12 sm:size-56" aria-hidden="true" /> : null}
+            <span className="grid size-24 place-items-center rounded-full bg-white/60 text-3xl font-semibold tracking-[-0.04em] ring-1 ring-black/5 dark:bg-black/20 dark:ring-white/10 sm:size-32 sm:text-4xl" aria-hidden="true">
+              {person.initials}
+            </span>
           </div>
         )}
       </div>
-      <div className="absolute inset-x-0 bottom-0 flex min-h-10 items-center gap-2 bg-[var(--video-overlay)] px-3 py-2 text-[var(--video-overlay-foreground)]">
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-semibold sm:text-sm">{person.name}</p>
-          <p className="truncate text-[10px] text-white/72 sm:text-[11px]">{person.role}</p>
+      {/* A gradient scrim carries the label instead of a solid caption bar. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/62 via-black/28 to-transparent px-4 pb-3 pt-10">
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-white sm:text-base">{person.name}</p>
+            <p className="truncate text-xs text-white/70">{person.role}</p>
+          </div>
+          <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-white/85">
+            {speaking ? <SpeakingBars /> : <PresenceIcon state={state} />}
+            <span className="hidden sm:inline">{stateCopy[state]}</span>
+          </span>
         </div>
-        <span className={cn("flex shrink-0 items-center gap-1 text-[10px] font-medium sm:text-[11px]", active ? "text-[#ff8b7d]" : state === "floor-requested" ? "text-[#ffd0c9]" : "text-white/78")}>
-          <PresenceIcon state={state} />
-          <span className="hidden min-[520px]:inline">{stateCopy[state]}</span>
-        </span>
       </div>
-      {state === "speaking" ? <div className="absolute start-3 top-3 flex items-center gap-1.5 rounded-md bg-[var(--video-overlay)] px-2 py-1 text-[11px] font-medium text-[#ff8b7d]"><AudioLines className="size-3.5" aria-hidden="true" />{person.name} is speaking</div> : null}
     </article>
   );
 }
 
-export function CandidateVideoTile({ track, cameraEnabled, className }: { track?: ICameraVideoTrack | null; cameraEnabled: boolean; className?: string }) {
+function SpeakingBars() {
   return (
-    <article className={cn("panel-video-tile relative min-h-0 overflow-hidden rounded-xl border bg-card", className)} aria-label={`Candidate camera, ${track && cameraEnabled ? "camera live" : "camera off"}`}>
-      <div className="absolute inset-0 overflow-hidden">
-        {track && cameraEnabled ? (
-          <LocalVideoPreview videoTrack={track} label="Candidate" isMirrored className="size-full" />
-        ) : (
-          <div className="grid size-full place-items-center bg-[#e5e8e5] text-[#303733] dark:bg-[#29302c] dark:text-[#e6ebe8]">
-            <span className="grid size-20 place-items-center rounded-full bg-white/55 text-xl font-semibold tracking-[-0.04em] shadow-sm ring-1 ring-black/10 dark:bg-black/16 dark:ring-white/10 sm:size-24 sm:text-2xl" aria-hidden="true">YOU</span>
-          </div>
-        )}
-      </div>
-      <div className="absolute inset-x-0 bottom-0 flex min-h-10 items-center justify-between bg-[var(--video-overlay)] px-3 py-2 text-[var(--video-overlay-foreground)]">
-        <span className="text-xs font-semibold sm:text-sm">You (Candidate)</span>
-        <span className="flex items-center gap-1 text-[10px] text-white/78 sm:text-[11px]"><AudioLines className="size-3.5" aria-hidden="true" />{track && cameraEnabled ? "Camera live" : "Camera off"}</span>
-      </div>
-    </article>
+    <span className="flex items-end gap-[2px]" aria-hidden="true">
+      {[0, 1, 2].map((bar) => (
+        <span key={bar} className={cn("w-[3px] rounded-full bg-current", `speaking-bar-${bar + 1}`)} />
+      ))}
+    </span>
+  );
+}
+
+export function PanelChip({
+  person,
+  state,
+  toneIndex,
+  onSelect,
+}: {
+  person: Panelist;
+  state: PanelPresence;
+  toneIndex?: number;
+  onSelect?: () => void;
+}) {
+  const Wrapper = onSelect ? "button" : "div";
+  return (
+    <Wrapper
+      {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
+      className={cn(
+        "flex shrink-0 items-center gap-2 rounded-full border bg-card/80 py-1 ps-1 pe-3 text-start backdrop-blur transition-colors",
+        onSelect && "hover:border-foreground/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
+      title={`${person.name} · ${person.role} · ${stateCopy[state]}`}
+    >
+      <PanelIdentity initials={person.initials} seed={person.id || person.name} toneIndex={toneIndex} className="size-7 text-[10px]" />
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-medium leading-4">{person.name}</span>
+        <span className="block truncate text-[10px] leading-4 text-muted-foreground">{stateCopy[state]}</span>
+      </span>
+    </Wrapper>
   );
 }

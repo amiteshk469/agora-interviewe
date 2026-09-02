@@ -1,6 +1,6 @@
 "use client";
 
-import type { ICameraVideoTrack, IRemoteVideoTrack } from "agora-rtc-react";
+import type { IRemoteVideoTrack } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
 import dynamic from "next/dynamic";
 import { AlertCircle, AudioLines, Radio, RotateCcw } from "lucide-react";
@@ -11,8 +11,6 @@ import { demoModeEnabled, getAgoraConfig, startAgoraAgent, stopAgoraAgent, type 
 export type LiveTranscriptTurn = { id: string; uid: string; isLocal: boolean; text: string; status: string; final: boolean; interrupted: boolean };
 export type LiveAgentState = "idle" | "listening" | "thinking" | "speaking" | "silent" | null;
 export type LiveMediaState = {
-  localCameraTrack: ICameraVideoTrack | null;
-  cameraEnabled: boolean;
   microphoneEnabled: boolean;
   remoteVideos: Array<{ uid: string; track: IRemoteVideoTrack }>;
   connectionState: string;
