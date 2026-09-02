@@ -18,7 +18,7 @@ import { Brand } from "@/components/app-shell";
 import { PanelTile, SpotlightSpeaker, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   demoModeEnabled,
@@ -311,14 +311,14 @@ export function LiveInterviewScreen() {
 
   const displayedTranscript = useMemo(() => {
     if (!liveTurns.length) return sessionIsDemo ? transcript : [];
-    return liveTurns.map((turn, index) => {
+    return mergeLiveTurns(liveTurns).map((turn, index) => {
       const participant = storedSession?.connection?.panelists?.find((item) => String(item.agent_uid) === String(turn.uid));
       const panelist = configuredPanel.find((person) => person.id === participant?.panelist_id);
       return {
         id: turn.id || `live-${index}`,
         speaker: turn.isLocal ? "You" : panelist?.name || "Live panel",
         kind: turn.isLocal ? "candidate" as const : "panel" as const,
-        time: `Turn ${index + 1}`,
+        time: `Turn ${turn.turnNumber}`,
         text: turn.text,
         interrupted: turn.interrupted,
       };
