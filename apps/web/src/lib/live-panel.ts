@@ -147,3 +147,83 @@ export function readLiveContradiction(metadata: unknown): LiveContradiction | nu
     earlierTurnId: text(record.earlier_turn_id, 80) || null,
   };
 }
+
+const MEDIA_FAULTS: Array<{ match: RegExp; message: string }> = [
+  { match: /permission_denied|notallowed/i, message: "Microphone access is blocked. Allow it in your browser's address bar, then rejoin from the lobby." },
+  { match: /notfound|device_not_found/i, message: "No microphone was found. Connect one, then rejoin from the lobby." },
+  { match: /notreadable|track_start_failed/i, message: "Another app is using your microphone. Close it, then rejoin from the lobby." },
+  { match: /network|timeout|disconnect/i, message: "The connection to the interview room dropped. Check your network, then rejoin from the lobby." },
+  { match: /token|expired|invalid_?vendor/i, message: "This session's access expired. Return to the lobby and start it again." },
+];
+
+/**
+ * Turn a raw SDK fault into something the candidate can act on.
+ * The room shows this mid-interview, so it says what to do rather than which error class threw.
+ */
+export function describeMediaFault(raw: unknown, fallback = "Live audio stopped working. Rejoin from the lobby to reconnect."): string {
+  const parts: string[] = [];
+  if (raw instanceof Error) parts.push(raw.name, raw.message);
+  else if (typeof raw === "string") parts.push(raw);
+  else if (raw && typeof raw === "object") {
+    const detail = raw as Record<string, unknown>;
+    for (const key of ["name", "code", "type", "message", "reason", "description"]) {
+      if (typeof detail[key] === "string" || typeof detail[key] === "number") parts.push(String(detail[key]));
+    }
+  }
+  const haystack = parts.join(" ");
+  if (!haystack.trim()) return fallback;
+  return MEDIA_FAULTS.find((fault) => fault.match.test(haystack))?.message ?? fallback;
+}
+
+export type RawLiveTurn = {
+  id: string;
+  uid: string;
+  isLocal: boolean;
+  text: string;
+  final: boolean;
+  interrupted: boolean;
+};
+
+export type MergedTurn = {
+  id: string;
+  uid: string;
+  isLocal: boolean;
+  text: string;
+  final: boolean;
+  interrupted: boolean;
+  turnNumber: number;
+};
+
+/**
+ * Collapse consecutive segments from the same speaker into one spoken turn.
+ *
+ * Agora emits a transcript item per utterance segment, so a single answer arrives as several
+ * items. Rendering them one-to-one turned one sentence into five cards numbered by array index.
+ * Merging by speaker gives the reader the turn they actually took, numbered by real turn order.
+ */
+export function mergeLiveTurns(turns: RawLiveTurn[]): MergedTurn[] {
+  const merged: MergedTurn[] = [];
+  for (const turn of turns) {
+    const spoken = turn.text.trim();
+    if (!spoken) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && previous.isLocal === turn.isLocal && previous.uid === turn.uid) {
+      // A segment that restates the running text is a refinement, not new speech.
+      const joined = spoken.startsWith(previous.text) ? spoken : `${previous.text} ${spoken}`;
+      previous.text = joined.replace(/\s+/g, " ").trim();
+      previous.final = turn.final;
+      previous.interrupted = previous.interrupted || turn.interrupted;
+      continue;
+    }
+    merged.push({
+      id: turn.id,
+      uid: turn.uid,
+      isLocal: turn.isLocal,
+      text: spoken,
+      final: turn.final,
+      interrupted: turn.interrupted,
+      turnNumber: merged.length + 1,
+    });
+  }
+  return merged;
+}

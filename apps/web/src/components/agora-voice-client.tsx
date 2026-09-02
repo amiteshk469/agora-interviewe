@@ -32,6 +32,7 @@ import { Camera, CameraOff, Radio, Waves } from "lucide-react";
 import { Alert, Badge, Button } from "@/components/ui";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
+import { describeMediaFault } from "@/lib/live-panel";
 
 type Props = {
   config: AgoraConfig;
@@ -41,24 +42,6 @@ type Props = {
   onAgentState?: (state: LiveAgentState) => void;
   onMediaState?: (state: LiveMediaState) => void;
 };
-
-function errorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === "string" && error.trim()) return error.trim();
-  if (error && typeof error === "object") {
-    const detail = error as Record<string, unknown>;
-    const message = [detail.message, detail.reason, detail.description].find(
-      (value): value is string => typeof value === "string" && Boolean(value.trim()),
-    );
-    const code = [detail.code, detail.type].find(
-      (value): value is string | number => typeof value === "string" || typeof value === "number",
-    );
-    if (message && code !== undefined) return `${message.trim()} (${String(code)})`;
-    if (message) return message.trim();
-    if (code !== undefined) return `${fallback} (${String(code)})`;
-  }
-  return fallback;
-}
 
 type RoomToneGraph = {
   context: AudioContext;
@@ -169,16 +152,16 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
         ai.on(AgoraVoiceAIEvents.AGENT_METRICS, (_, metrics) => console.debug("[AgoraVoiceAI] metrics", metrics));
         ai.on(AgoraVoiceAIEvents.MESSAGE_ERROR, (agentUid, error) => {
           console.error("[AgoraVoiceAI] message error", agentUid, error);
-          setVoiceError(`${errorMessage(error, "Agora could not process a live message")}. Rejoin from the lobby if it continues.`);
+          setVoiceError(describeMediaFault(error, "A live message could not be processed. Rejoin from the lobby if it continues."));
         });
         ai.on(AgoraVoiceAIEvents.AGENT_ERROR, (agentUid, error) => {
           console.error("[AgoraVoiceAI] agent error", agentUid, error);
-          setVoiceError(`${errorMessage(error, "The interviewer agent encountered an error")}. Rejoin from the lobby to recover.`);
+          setVoiceError(describeMediaFault(error, "The interview panel hit an error. Rejoin from the lobby to recover."));
         });
         ai.subscribeMessage(config.channel_name);
       } catch (error) {
         console.error("[AgoraVoiceAI] init failed", error);
-        if (!cancelled) setVoiceError(`${errorMessage(error, "Agora voice initialization failed")}. Return to the lobby, then retry the session.`);
+        if (!cancelled) setVoiceError(describeMediaFault(error, "Live audio could not start. Return to the lobby, then start the session again."));
       }
     })();
     return () => {
@@ -213,7 +196,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
       await rtmClient.renewToken(rtmConfig.token);
     } catch (error) {
       console.error("[AgoraVoiceAI] token renewal failed", error);
-      setVoiceError(`${errorMessage(error, "Agora credentials could not be renewed")}. Rejoin from the lobby before the connection expires.`);
+      setVoiceError(describeMediaFault(error, "This session's access could not be renewed. Rejoin from the lobby before it expires."));
     }
   });
 
@@ -226,9 +209,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   }, [agentState, connectionState, isConnected]);
 
   const sdkError = joinError || microphoneError || cameraError || publishError || remoteAudioError || remoteVideoError;
-  const displayedError = voiceError || (sdkError
-    ? `${errorMessage(sdkError, "Agora media initialization failed")}. Check browser media permissions, then rejoin from the lobby.`
-    : "");
+  const displayedError = voiceError || (sdkError ? describeMediaFault(sdkError) : "");
   const connectionStatus = displayedError
     ? "Agora voice needs attention"
     : connectionState === "RECONNECTING"
@@ -245,7 +226,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
       if (localMicrophoneTrack) await localMicrophoneTrack.setEnabled(next);
       setEnabled(next);
     } catch (error) {
-      setVoiceError(`${errorMessage(error, "The microphone could not be updated")}. Check browser permissions and retry.`);
+      setVoiceError(describeMediaFault(error, "The microphone could not be switched. Check browser permissions, then try again."));
     }
   }, [enabled, localMicrophoneTrack]);
 
@@ -255,7 +236,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
       if (localCameraTrack) await localCameraTrack.setEnabled(next);
       setCameraEnabled(next);
     } catch (error) {
-      setVoiceError(`${errorMessage(error, "The camera could not be updated")}. Check browser permissions and retry.`);
+      setVoiceError(describeMediaFault(error, "The camera could not be switched. Check browser permissions, then try again."));
     }
   }, [cameraEnabled, localCameraTrack]);
 
@@ -281,7 +262,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
 
   return (
     <div className="space-y-2">
-      {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
+      {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words [overflow-wrap:anywhere]">{displayedError}</span></Alert> : null}
       <div className="flex flex-wrap items-center justify-center gap-2 rounded-xl border bg-card px-3 py-2 shadow-[var(--panel-shadow)]" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
         <div className="size-10 overflow-hidden rounded-md border bg-background" aria-hidden="true"><AgentVisualizer state={visualizerState} size="sm" /></div>
         <Badge variant={displayedError ? "destructive" : isConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><Radio className="size-3" aria-hidden="true" />{connectionStatus}</Badge>
