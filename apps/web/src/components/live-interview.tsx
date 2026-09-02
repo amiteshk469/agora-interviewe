@@ -27,7 +27,7 @@ import { CandidateVideoTile, PanelIdentity, PanelVideoTile, type PanelPresence }
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   demoModeEnabled,
@@ -323,14 +323,14 @@ export function LiveInterviewScreen() {
 
   const displayedTranscript = useMemo(() => {
     if (!liveTurns.length) return sessionIsDemo ? transcript : [];
-    return liveTurns.map((turn, index) => {
+    return mergeLiveTurns(liveTurns).map((turn, index) => {
       const participant = storedSession?.connection?.panelists?.find((item) => String(item.agent_uid) === String(turn.uid));
       const panelist = configuredPanel.find((person) => person.id === participant?.panelist_id);
       return {
         id: turn.id || `live-${index}`,
         speaker: turn.isLocal ? "You" : panelist?.name || "Live panel",
         kind: turn.isLocal ? "candidate" as const : "panel" as const,
-        time: `Turn ${index + 1}`,
+        time: `Turn ${turn.turnNumber}`,
         text: turn.text,
         interrupted: turn.interrupted,
       };
@@ -494,7 +494,7 @@ export function LiveInterviewScreen() {
               className="h-[clamp(10rem,23vh,15.25rem)]"
             />
 
-            <section className="grid gap-3 rounded-xl border bg-card/92 p-3 shadow-[var(--panel-shadow)] backdrop-blur sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-4" aria-labelledby="current-question-title">
+            <section className="flex flex-col gap-3 rounded-xl border bg-card/92 p-3 shadow-[var(--panel-shadow)] backdrop-blur sm:p-4" aria-labelledby="current-question-title">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="default"><AudioLines className="size-3" aria-hidden="true" />{activePanelist.name}</Badge>
@@ -505,9 +505,9 @@ export function LiveInterviewScreen() {
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Question from {activePanelist.name}: {announcedQuestion}</p>
                 <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><Info className="size-3" aria-hidden="true" />Speak naturally to interrupt. The whole panel keeps the same context.</p>
               </div>
-              <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
-                <AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} />
-                <Button variant="secondary" onClick={openEndDialog}><CircleStop aria-hidden="true" />End</Button>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 border-t pt-3">
+                <div className="min-w-0 flex-1"><AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} /></div>
+                <Button variant="secondary" className="shrink-0" onClick={openEndDialog}><CircleStop aria-hidden="true" />End</Button>
               </div>
             </section>
           </div>

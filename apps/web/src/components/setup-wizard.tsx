@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
-  Bot,
   Check,
   Copy,
   FileText,
@@ -874,23 +873,28 @@ export function LobbyScreen() {
 
   return (
     <AppShell screen="setup" title="Interview lobby" description="Check the environment, review the panel, and enter when you are ready.">
-      <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
-        <Card className="min-h-[28rem] overflow-hidden">
-          <div className="surface-grid relative grid min-h-[28rem] place-items-center p-6">
-            <div className="relative w-full max-w-2xl text-center">
-              <span className="mx-auto grid size-20 place-items-center rounded-xl border bg-card shadow-xl"><Bot className="size-8 text-primary" aria-hidden="true" /></span>
-              <h2 className="mt-6 text-xl font-semibold">Your panel is ready</h2>
-              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted-foreground">The silent director will select one interviewer after every answer. You can interrupt naturally at any time.</p>
-              <div className="mx-auto mt-7 grid max-w-xl gap-2 sm:grid-cols-2" aria-label="Configured interview panel">
-                {lobbyPanel.people.map((person, index) => (
-                  <div key={person.id} className="flex items-center gap-3 rounded-lg border bg-card/88 p-3 text-start shadow-sm backdrop-blur">
-                    <PanelIdentity initials={person.initials} seed={person.id || person.name} toneIndex={index} className="size-10 text-xs" />
-                    <span className="min-w-0"><span className="block truncate text-sm font-medium">{person.name}</span><span className="block truncate text-xs text-muted-foreground">{person.role}</span></span>
-                  </div>
-                ))}
-              </div>
+      <div className="grid gap-6 lg:grid-cols-[1fr_22rem] lg:items-start">
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <CardTitle className="text-base">Your panel</CardTitle>
+              <p className="text-xs text-muted-foreground tabular-nums">{lobbyPanel.people.length} interviewers · {lobbyPanel.duration} min · {lobbyPanel.difficulty}</p>
             </div>
-          </div>
+            <CardDescription>One interviewer speaks at a time. A silent director picks who goes next after every answer, so anyone can return. Interrupt whenever you want.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="divide-y rounded-lg border" aria-label="Configured interview panel">
+              {lobbyPanel.people.map((person, index) => (
+                <li key={person.id} className="flex items-center gap-3 p-3">
+                  <PanelIdentity initials={person.initials} seed={person.id || person.name} toneIndex={index} className="size-9 text-[11px]" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{person.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{person.role}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
         </Card>
         <div className="space-y-4">
           <Card>
@@ -910,10 +914,9 @@ export function LobbyScreen() {
               {microphoneStatus === "error" ? <Alert title="Microphone test failed" variant="destructive"><span>{microphoneError}</span></Alert> : null}
             </CardContent>
           </Card>
-          <Alert title="Private by default"><span>Recording is off. Live audio uses Agora RTC; final transcript turns and evidence are stored for your report.</span></Alert>
-          {startError ? <Alert title="Session could not start" variant="destructive"><span>{startError}</span></Alert> : null}
+          {startError ? <Alert title="The interview could not start" variant="destructive"><span className="break-words [overflow-wrap:anywhere]">{startError}</span></Alert> : null}
           <Button size="lg" className="w-full" loading={starting} onClick={startInterview}><Sparkles aria-hidden="true" />Start interview</Button>
-          <p className="text-center text-xs text-muted-foreground">{lobbyPanel.duration} minutes · {lobbyPanel.people.length} panelists · {lobbyPanel.difficulty}</p>
+          <p className="text-xs leading-5 text-muted-foreground">Nothing is recorded. Your transcript and its evidence are saved to your report, and stay private to you.</p>
         </div>
       </div>
     </AppShell>
