@@ -144,9 +144,9 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
           <span className="break-words">{error}. {demoModeEnabled ? "Keep exploring the demo or retry when the backend is configured." : "Return to the lobby and start the configured session again."}</span>
         </Alert>
       ) : null}
-      <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border bg-card px-3 py-2.5 shadow-xl">
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <Badge variant={phase === "connecting" ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true">{phase === "connecting" ? <Radio className="size-3 animate-pulse motion-reduce:animate-none" aria-hidden="true" /> : <AudioLines className="size-3" aria-hidden="true" />}{status}</Badge>
-        <Button size="sm" variant="secondary" onClick={prepared?.connection ? connectPrepared : connect} loading={phase === "connecting"} disabled={!prepared?.connection && !demoModeEnabled}>{phase === "error" ? <RotateCcw aria-hidden="true" /> : <Radio aria-hidden="true" />}{buttonLabel}</Button>
+        <Button size="sm" variant="secondary" className="rounded-full" onClick={prepared?.connection ? connectPrepared : connect} loading={phase === "connecting"} disabled={!prepared?.connection && !demoModeEnabled}>{phase === "error" ? <RotateCcw aria-hidden="true" /> : <Radio aria-hidden="true" />}{buttonLabel}</Button>
         {phase === "error" && demoModeEnabled ? <Button size="sm" variant="ghost" onClick={() => setPhase("demo")}><AlertCircle aria-hidden="true" />Use Demo</Button> : null}
       </div>
     </div>

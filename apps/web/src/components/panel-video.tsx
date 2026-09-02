@@ -2,7 +2,7 @@
 
 import type { IRemoteVideoTrack } from "agora-rtc-react";
 import { AvatarVideoDisplay } from "agora-agent-uikit";
-import { AudioLines, Brain, Ear, Hand, MoveDown } from "lucide-react";
+import { Brain, Ear, Hand, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
 
@@ -16,12 +16,16 @@ const stateCopy: Record<PanelPresence, string> = {
   "floor-requested": "Floor requested",
 };
 
+/**
+ * Avatar tints only. Tiles themselves stay one neutral surface for everyone, the way a
+ * meeting client does it, so five people never turn the room into five colour fields.
+ */
 const identityTones = [
-  "bg-[#dfe9e2] text-[#263a2d] dark:bg-[#263a31] dark:text-[#dfe9e2]",
-  "bg-[#e8e2d8] text-[#463729] dark:bg-[#45382c] dark:text-[#eee6da]",
-  "bg-[#dce7ed] text-[#243b48] dark:bg-[#263d49] dark:text-[#dce7ed]",
-  "bg-[#e8dfe5] text-[#493343] dark:bg-[#463441] dark:text-[#ebdfe7]",
-  "bg-[#e7e5d9] text-[#3e3b29] dark:bg-[#3d3a2b] dark:text-[#ece9d9]",
+  "bg-[#d9e3dd] text-[#26382f] dark:bg-[#22322b] dark:text-[#cfded6]",
+  "bg-[#e3ddd3] text-[#3f342a] dark:bg-[#332c24] dark:text-[#e0d6c9]",
+  "bg-[#d8e1e8] text-[#22333d] dark:bg-[#20303a] dark:text-[#d0dee6]",
+  "bg-[#e2d9de] text-[#3b2f36] dark:bg-[#332a30] dark:text-[#ded1d8]",
+  "bg-[#e0e1d6] text-[#37382c] dark:bg-[#2e3026] dark:text-[#dcded0]",
 ] as const;
 
 function identityTone(seed: string, toneIndex?: number) {
@@ -32,103 +36,110 @@ function identityTone(seed: string, toneIndex?: number) {
 
 export function PanelIdentity({ initials, seed, toneIndex, className }: { initials: string; seed: string; toneIndex?: number; className?: string }) {
   return (
-    <span className={cn("grid shrink-0 place-items-center rounded-full font-semibold ring-1 ring-black/10 dark:ring-white/10", identityTone(seed, toneIndex), className)} aria-hidden="true">
+    <span className={cn("grid shrink-0 place-items-center rounded-full font-semibold", identityTone(seed, toneIndex), className)} aria-hidden="true">
       {initials}
     </span>
   );
 }
 
-function PresenceIcon({ state }: { state: PanelPresence }) {
-  const className = "size-3.5";
-  if (state === "speaking") return <AudioLines className={className} aria-hidden="true" />;
-  if (state === "thinking") return <Brain className={className} aria-hidden="true" />;
-  if (state === "floor-requested") return <Hand className={className} aria-hidden="true" />;
-  if (state === "nodded") return <MoveDown className={className} aria-hidden="true" />;
-  return <Ear className={className} aria-hidden="true" />;
+function PresenceIcon({ state, className }: { state: PanelPresence; className?: string }) {
+  const shared = cn("size-3.5", className);
+  if (state === "thinking") return <Brain className={shared} aria-hidden="true" />;
+  if (state === "floor-requested") return <Hand className={shared} aria-hidden="true" />;
+  if (state === "nodded") return <MoveDown className={shared} aria-hidden="true" />;
+  return <Ear className={shared} aria-hidden="true" />;
+}
+
+function SpeakingBars({ className }: { className?: string }) {
+  return (
+    <span className={cn("flex items-end gap-[2px]", className)} aria-hidden="true">
+      {[1, 2, 3].map((bar) => (
+        <span key={bar} className={cn("w-[3px] rounded-full bg-current", `speaking-bar-${bar}`)} />
+      ))}
+    </span>
+  );
+}
+
+/** The avatar, with the halo rings that mark whoever currently holds the floor. */
+function Avatar({ person, toneIndex, speaking, size }: { person: Panelist; toneIndex?: number; speaking: boolean; size: "lg" | "sm" }) {
+  return (
+    <span className={cn("relative grid place-items-center", speaking && "speaking-halo", size === "lg" ? "size-24 sm:size-28" : "size-11")}>
+      <span
+        className={cn(
+          "grid size-full place-items-center rounded-full font-semibold tracking-[-0.03em]",
+          identityTone(person.id || person.name, toneIndex),
+          size === "lg" ? "text-3xl sm:text-4xl" : "text-sm",
+        )}
+        aria-hidden="true"
+      >
+        {person.initials}
+      </span>
+    </span>
+  );
 }
 
 export function SpotlightSpeaker({
   person,
   state,
   track,
+  toneIndex,
   className,
 }: {
   person: Panelist;
   state: PanelPresence;
   track?: IRemoteVideoTrack | null;
+  toneIndex?: number;
   className?: string;
 }) {
   const speaking = state === "speaking";
   return (
     <article
-      className={cn("relative isolate min-h-0 overflow-hidden rounded-2xl border bg-card", className)}
+      className={cn(
+        // The spotlight is by definition the speaker, so the halo and meter carry that
+        // state; a heavy accent border on a tile this large only shouts.
+        "relative isolate min-h-0 overflow-hidden rounded-2xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1 ring-black/5 dark:ring-white/8",
+        className,
+      )}
       aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
-      <div className={cn("absolute inset-0", identityTone(person.id || person.name, undefined))}>
-        {track ? (
-          <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="size-full" />
-        ) : (
-          <div className="grid size-full place-items-center">
-            {speaking ? <span className="absolute size-44 rounded-full border border-current/12 sm:size-56" aria-hidden="true" /> : null}
-            <span className="grid size-24 place-items-center rounded-full bg-white/60 text-3xl font-semibold tracking-[-0.04em] ring-1 ring-black/5 dark:bg-black/20 dark:ring-white/10 sm:size-32 sm:text-4xl" aria-hidden="true">
-              {person.initials}
-            </span>
-          </div>
-        )}
-      </div>
-      {/* A gradient scrim carries the label instead of a solid caption bar. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/62 via-black/28 to-transparent px-4 pb-3 pt-10">
-        <div className="flex items-end justify-between gap-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-white sm:text-base">{person.name}</p>
-            <p className="truncate text-xs text-white/70">{person.role}</p>
-          </div>
-          <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-white/85">
-            {speaking ? <SpeakingBars /> : <PresenceIcon state={state} />}
-            <span className="hidden sm:inline">{stateCopy[state]}</span>
-          </span>
+      {track ? (
+        <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="absolute inset-0 size-full" />
+      ) : (
+        <div className="absolute inset-0 grid place-items-center">
+          <Avatar person={person} toneIndex={toneIndex} speaking={speaking} size="lg" />
         </div>
+      )}
+
+      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 p-4">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold sm:text-base">{person.name}</p>
+          <p className="truncate text-xs text-[var(--tile-muted)]">{person.role}</p>
+        </div>
+        <span className={cn("flex shrink-0 items-center gap-1.5 text-xs font-medium", speaking ? "text-primary" : "text-[var(--tile-muted)]")}>
+          {speaking ? <SpeakingBars /> : <PresenceIcon state={state} />}
+          <span className="hidden sm:inline">{stateCopy[state]}</span>
+        </span>
       </div>
     </article>
   );
 }
 
-function SpeakingBars() {
+/** A filmstrip participant: a real tile, not a name chip. */
+export function PanelTile({ person, state, toneIndex }: { person: Panelist; state: PanelPresence; toneIndex?: number }) {
+  const speaking = state === "speaking";
   return (
-    <span className="flex items-end gap-[2px]" aria-hidden="true">
-      {[0, 1, 2].map((bar) => (
-        <span key={bar} className={cn("w-[3px] rounded-full bg-current", `speaking-bar-${bar + 1}`)} />
-      ))}
-    </span>
-  );
-}
-
-export function PanelChip({
-  person,
-  state,
-  toneIndex,
-  onSelect,
-}: {
-  person: Panelist;
-  state: PanelPresence;
-  toneIndex?: number;
-  onSelect?: () => void;
-}) {
-  const Wrapper = onSelect ? "button" : "div";
-  return (
-    <Wrapper
-      {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
+    <article
       className={cn(
-        "flex shrink-0 items-center gap-2 rounded-full border bg-card/80 py-1 ps-1 pe-3 text-start backdrop-blur transition-colors",
-        onSelect && "hover:border-foreground/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "relative flex h-[5.75rem] w-[8.5rem] shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1 sm:w-[9.5rem]",
+        speaking ? "ring-2 ring-primary/60" : "ring-black/5 dark:ring-white/8",
       )}
-      title={`${person.name} · ${person.role} · ${stateCopy[state]}`}
+      aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
-      <PanelIdentity initials={person.initials} seed={person.id || person.name} toneIndex={toneIndex} className="size-7 text-[10px]" />
-      <span className="min-w-0">
-        <span className="block truncate text-xs font-medium leading-4">{person.name}</span>
-        <span className="block truncate text-[10px] leading-4 text-muted-foreground">{stateCopy[state]}</span>
+      <Avatar person={person} toneIndex={toneIndex} speaking={speaking} size="sm" />
+      <p className="max-w-full truncate px-2 text-[11px] font-medium leading-4">{person.name}</p>
+      <span className={cn("absolute end-1.5 top-1.5", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={stateCopy[state]}>
+        {speaking ? <SpeakingBars /> : <PresenceIcon state={state} className="size-3" />}
       </span>
-    </Wrapper>
+    </article>
   );
 }
