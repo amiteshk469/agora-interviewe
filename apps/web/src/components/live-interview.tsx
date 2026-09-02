@@ -2,29 +2,20 @@
 
 import { useRouter } from "next/navigation";
 import {
-  AudioLines,
   BookOpen,
   Check,
   CircleStop,
   FileSearch,
   Gauge,
-  Info,
   MessageSquareText,
   PanelRightClose,
-  Pause,
-  Play,
-  Radio,
-  ShieldCheck,
-  Sparkles,
   TimerReset,
   TriangleAlert,
-  UsersRound,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
-import { CandidateVideoTile, PanelIdentity, PanelVideoTile, type PanelPresence } from "@/components/panel-video";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { PanelChip, SpotlightSpeaker, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
 import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
@@ -54,7 +45,8 @@ type PanelSnapshot = {
   avatar_image?: string;
 };
 
-type EvidenceTab = "transcript" | "tools";
+type EvidenceTab = "transcript" | "tools" | "director";
+const EVIDENCE_TABS: EvidenceTab[] = ["transcript", "tools", "director"];
 
 const focusableSelector = [
   "a[href]",
@@ -84,8 +76,6 @@ function trapFocus(event: ReactKeyboardEvent, container: HTMLElement | null) {
 }
 
 const initialMedia: LiveMediaState = {
-  localCameraTrack: null,
-  cameraEnabled: false,
   microphoneEnabled: false,
   remoteVideos: [],
   connectionState: "DISCONNECTED",
@@ -107,7 +97,6 @@ export function LiveInterviewScreen() {
   const [mediaState, setMediaState] = useState<LiveMediaState>(initialMedia);
   const [idlePhase, setIdlePhase] = useState(0);
   const [demoStep, setDemoStep] = useState(0);
-  const [motionEnabled, setMotionEnabled] = useState(true);
   const [liveTurns, setLiveTurns] = useState<LiveTranscriptTurn[]>([]);
   const [endOpen, setEndOpen] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -122,6 +111,7 @@ export function LiveInterviewScreen() {
   const evidenceCloseRef = useRef<HTMLButtonElement>(null);
   const transcriptTabRef = useRef<HTMLButtonElement>(null);
   const toolsTabRef = useRef<HTMLButtonElement>(null);
+  const directorTabRef = useRef<HTMLButtonElement>(null);
   const endDialogRef = useRef<HTMLDivElement>(null);
   const keepPracticingRef = useRef<HTMLButtonElement>(null);
 
@@ -167,10 +157,10 @@ export function LiveInterviewScreen() {
   }, []);
 
   useEffect(() => {
-    if (!motionEnabled || (!demoModeEnabled && !storedSession?.demo)) return;
+    if (!demoModeEnabled && !storedSession?.demo) return;
     const timer = window.setInterval(() => setIdlePhase((current) => current + 1), 5600);
     return () => window.clearInterval(timer);
-  }, [motionEnabled, storedSession]);
+  }, [storedSession]);
 
   useEffect(() => {
     if (!demoModeEnabled || (storedSession && !storedSession.demo)) return;
@@ -245,10 +235,6 @@ export function LiveInterviewScreen() {
     ? Math.max(0, configuredPanel.findIndex((person) => person.id === selectedPanelistId))
     : sessionIsDemo ? demoSpeakerIndex(demoStep, configuredPanel.length) : 0;
   const activePanelist = configuredPanel[activeIndex] || configuredPanel[0] || defaultPanelists[0];
-  const visualPanel = useMemo(
-    () => [activePanelist, ...configuredPanel.filter((person) => person.id !== activePanelist.id)],
-    [activePanelist, configuredPanel],
-  );
 
   const handleLiveTranscript = useCallback((turns: LiveTranscriptTurn[]) => {
     setLiveTurns(turns);
@@ -278,16 +264,18 @@ export function LiveInterviewScreen() {
 
   function selectEvidenceTab(tab: EvidenceTab) {
     setActiveTab(tab);
-    (tab === "transcript" ? transcriptTabRef : toolsTabRef).current?.focus();
+    ({ transcript: transcriptTabRef, tools: toolsTabRef, director: directorTabRef })[tab].current?.focus();
   }
 
   function handleEvidenceTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const index = EVIDENCE_TABS.indexOf(activeTab);
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
-      selectEvidenceTab(activeTab === "transcript" ? "tools" : "transcript");
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      selectEvidenceTab(EVIDENCE_TABS[(index + step + EVIDENCE_TABS.length) % EVIDENCE_TABS.length]);
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      selectEvidenceTab(event.key === "Home" ? "transcript" : "tools");
+      selectEvidenceTab(event.key === "Home" ? EVIDENCE_TABS[0] : EVIDENCE_TABS[EVIDENCE_TABS.length - 1]);
     }
   }
 
@@ -374,149 +362,74 @@ export function LiveInterviewScreen() {
   const backgroundInert = detailsOpen || endOpen;
 
   return (
-    <div className={cn("grid min-h-[100dvh] overflow-x-hidden bg-background pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] lg:grid-cols-[10.5rem_minmax(0,1fr)] xl:h-[100dvh] xl:grid-cols-[10.5rem_minmax(0,1fr)_16.75rem] xl:overflow-hidden", !motionEnabled && "motion-paused")}>
+    <div className="flex min-h-[100dvh] flex-col overflow-x-hidden bg-background pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] xl:h-[100dvh] xl:overflow-hidden">
       <a href="#live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:start-4 focus:top-4">Skip to interview</a>
 
-      <aside inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="m-1 me-0 hidden min-h-0 flex-col rounded-xl border bg-card/72 px-3 py-5 shadow-[var(--panel-shadow)] backdrop-blur lg:flex" aria-label="Interview overview">
-        <div className="flex justify-center"><Brand stacked /></div>
-        <ThemeToggle segmented className="mt-6" />
-        <Button variant="ghost" size="sm" className="mt-1 w-full" onClick={() => setMotionEnabled((current) => !current)}>{motionEnabled ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}{motionEnabled ? "Pause motion" : "Resume motion"}</Button>
-
-        <div className="mt-8">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Live panel</p>
-            <span className={cn("size-2 rounded-full", rtcConnected || sessionIsDemo ? "animate-pulse bg-primary motion-reduce:animate-none" : "bg-muted-foreground/45")} aria-hidden="true" />
-          </div>
-          <div className="mt-3 flex items-center gap-2">
-            <div className="flex -space-x-2">
-              {configuredPanel.map((person, index) => <PanelIdentity key={person.id} initials={person.initials} seed={person.id || person.name} toneIndex={index} className="size-7 border-2 border-card text-[10px]" />)}
-            </div>
-            <span className="text-xs text-muted-foreground">{configuredPanel.length} interviewers</span>
-          </div>
-        </div>
-
-        <div className="mt-7 border-t pt-5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Interview</p>
-          <h1 className="mt-2 break-words text-sm font-semibold leading-5 text-pretty">{snapshotTitle}</h1>
-          <dl className="mt-4 space-y-3 text-xs">
-            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Elapsed</dt><dd className="font-mono font-medium">{formatDuration(elapsed)}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Panel turns</dt><dd className="font-medium">{panelTurnCount}</dd></div>
-            <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Interruptions</dt><dd className="font-medium">{interruptionCount}</dd></div>
-          </dl>
-        </div>
-
-        <div className="mt-6 rounded-xl border bg-background/78 p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="size-3.5 text-primary" aria-hidden="true" />Panel Director</div>
-          <p className="mt-2 break-words text-[11px] leading-5 text-muted-foreground">{directorSummary}</p>
+      <header inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex h-14 shrink-0 items-center gap-3 border-b bg-background px-3 sm:px-4">
+        <Brand />
+        <span className="hidden min-w-0 border-s ps-3 sm:block">
+          <span className="block truncate text-sm font-medium leading-5">{snapshotTitle}</span>
+        </span>
+        <div className="ms-auto flex items-center gap-2">
           {liveContradiction ? (
-            <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/8 p-2.5" role="status" aria-live="polite">
-              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-destructive"><TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />Contradiction caught</p>
-              <p className="mt-1 break-words text-[11px] leading-5 text-muted-foreground">
-                <span className="font-medium capitalize text-foreground">{liveContradiction.subject}</span>{" "}
-                was <span className="font-mono">{liveContradiction.earlierClaim}</span>, now{" "}
-                <span className="font-mono">{liveContradiction.currentClaim}</span>.
-              </p>
-            </div>
+            <Badge variant="destructive" role="status" aria-live="polite">
+              <TriangleAlert className="size-3" aria-hidden="true" />
+              <span className="hidden sm:inline">Contradiction: </span>{liveContradiction.subject}
+            </Badge>
           ) : null}
-          {speakerTrail.length > 1 ? (
-            <div className="mt-3 border-t pt-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Floor order</p>
-              <ol className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] leading-5">
-                {speakerTrail.map((turn, index) => (
-                  <li key={`${turn.panelistId}-${index}`} className="flex items-center gap-1">
-                    {index > 0 ? <span aria-hidden="true" className="text-muted-foreground/60">&rarr;</span> : null}
-                    <span className={cn("truncate", index === speakerTrail.length - 1 ? "font-medium text-foreground" : "text-muted-foreground")}>{turn.name.split(" ")[0]}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          ) : null}
+          <span className="font-mono text-sm tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
         </div>
+      </header>
 
-        <div className="mt-auto border-t pt-4 text-[11px] leading-5 text-muted-foreground">
-          <p className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck className="size-3.5 text-primary" aria-hidden="true" />Data protected</p>
-          <p className="mt-1">One panelist is audible at a time. Transcript evidence stays attached to this session.</p>
-        </div>
-      </aside>
-
-      <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="relative flex min-w-0 flex-col overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 surface-grid opacity-[0.035]" aria-hidden="true" />
-        <header className="relative flex h-14 shrink-0 items-center gap-3 border-b bg-background/86 px-4 backdrop-blur lg:hidden">
-          <Brand />
-          <div className="ms-auto flex items-center gap-2">
-            <Badge variant="default"><Radio className="size-3" aria-hidden="true" />Live</Badge>
-            <span className="rounded-md border bg-card px-2 py-1 font-mono text-xs">{formatDuration(elapsed)}</span>
-            <ThemeToggle />
-            <Button variant="ghost" size="icon" onClick={() => setMotionEnabled((current) => !current)} aria-label={motionEnabled ? "Pause panel motion" : "Resume panel motion"}>{motionEnabled ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}</Button>
-          </div>
-        </header>
-
-        <div className="relative min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 lg:px-5 xl:px-6">
-          <div className="mx-auto flex min-h-full max-w-[77rem] flex-col gap-3">
-            <div className="flex items-center justify-between gap-4 px-0.5">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Interview room</p>
-                <p className="mt-0.5 text-sm font-medium">{configuredPanel.length} configured interviewers share this session context</p>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {liveContradiction ? <Badge variant="destructive" role="status" aria-live="polite"><TriangleAlert className="size-3" aria-hidden="true" />Contradiction: {liveContradiction.subject}</Badge> : null}
-                <Badge variant={rtcConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><UsersRound className="size-3" aria-hidden="true" />{roomStatus}</Badge>
-              </div>
-            </div>
-
-            <section className="grid grid-cols-2 auto-rows-[clamp(8.5rem,20vh,12.5rem)] gap-2.5 lg:h-[clamp(26rem,56vh,40rem)] lg:grid-cols-3 lg:grid-rows-[1.25fr_1fr] lg:gap-3" aria-label="Live interview video wall">
-              {visualPanel.map((person, visualIndex) => {
-                const configuredIndex = configuredPanel.findIndex((item) => item.id === person.id);
-                const ownsTurn = person.id === activePanelist.id;
-                const state = ownsTurn
-                  ? selectedPresence(agentState, sessionIsDemo)
-                  : sessionIsDemo ? presenceForPanelist(Math.max(0, configuredIndex), idlePhase, false) : "listening";
-                const avatarUid = avatarUidForPanelist(person, storedSession?.connection?.panelists);
-                const track = mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track;
-                return (
-                  <PanelVideoTile
-                    key={person.id}
-                    person={person}
-                    state={state}
-                    selected={state === "speaking"}
-                    track={track}
-                    motionIndex={configuredIndex + idlePhase}
-                    identityIndex={configuredIndex}
-                    className={cn("h-full", visualIndex === 0 && "col-span-2")}
-                  />
-                );
-              })}
-            </section>
-
-            <CandidateVideoTile
-              track={mediaState.localCameraTrack}
-              cameraEnabled={mediaState.cameraEnabled}
-              className="h-[clamp(10rem,23vh,15.25rem)]"
+      <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
+        <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
+            <SpotlightSpeaker
+              person={activePanelist}
+              state={selectedPresence(agentState, sessionIsDemo)}
+              track={mediaState.remoteVideos.find((video) => video.uid === String(avatarUidForPanelist(activePanelist, storedSession?.connection?.panelists)))?.track}
+              className="min-h-[15rem] flex-1"
             />
 
-            <section className="grid gap-3 rounded-xl border bg-card/92 p-3 shadow-[var(--panel-shadow)] backdrop-blur sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-4" aria-labelledby="current-question-title">
+            <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-1" aria-label="Other interviewers">
+              {configuredPanel
+                .filter((person) => person.id !== activePanelist.id)
+                .map((person) => (
+                  <PanelChip
+                    key={person.id}
+                    person={person}
+                    state={sessionIsDemo ? presenceForPanelist(Math.max(0, configuredPanel.findIndex((item) => item.id === person.id)), idlePhase, false) : "listening"}
+                    toneIndex={configuredPanel.findIndex((item) => item.id === person.id)}
+                  />
+                ))}
+            </div>
+          </div>
+
+          <footer className="shrink-0 border-t bg-background px-3 py-3 sm:px-4" aria-labelledby="current-question-title">
+            <div className="mx-auto flex max-w-[64rem] flex-col gap-3">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="default"><AudioLines className="size-3" aria-hidden="true" />{activePanelist.name}</Badge>
-                  <span className="text-[11px] text-muted-foreground">{activePanelist.role}</span>
-                </div>
-                <h2 id="current-question-title" className="mt-2 break-words text-sm font-semibold leading-6 text-pretty sm:text-base">{activeQuestion}</h2>
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">{activePanelist.name}</span> · {activePanelist.role}
+                </p>
+                <h2 id="current-question-title" className="mt-1 break-words text-sm leading-6 text-pretty sm:text-base">{activeQuestion}</h2>
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Current interviewer: {interviewerStatus}.</p>
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Question from {activePanelist.name}: {announcedQuestion}</p>
-                <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><Info className="size-3" aria-hidden="true" />Speak naturally to interrupt. The whole panel keeps the same context.</p>
               </div>
-              <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
-                <AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} />
-                <Button variant="secondary" onClick={openEndDialog}><CircleStop aria-hidden="true" />End</Button>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <div className="min-w-0"><AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} /></div>
+                <div className="flex-1" />
+                <Button ref={evidenceTriggerRef} variant="outline" className="shrink-0 xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog">
+                  <MessageSquareText aria-hidden="true" />Transcript
+                </Button>
+                <Button variant="secondary" className="shrink-0" onClick={openEndDialog}><CircleStop aria-hidden="true" />End</Button>
               </div>
-            </section>
-          </div>
-        </div>
-      </main>
+            </div>
+          </footer>
+        </main>
 
       <aside
         ref={evidenceDrawerRef}
-        className={cn("fixed inset-y-0 end-0 z-30 flex min-h-0 w-[min(22rem,94vw)] flex-col overscroll-contain border-s bg-background pb-[env(safe-area-inset-bottom)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] shadow-2xl xl:static xl:z-auto xl:m-1 xl:ms-0 xl:flex xl:w-auto xl:rounded-xl xl:border xl:p-0 xl:shadow-[var(--panel-shadow)]", detailsOpen ? "flex" : "hidden xl:flex")}
+        className={cn("fixed inset-y-0 end-0 z-30 flex min-h-0 w-[min(22rem,94vw)] flex-col overscroll-contain border-s bg-background pb-[env(safe-area-inset-bottom)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] shadow-2xl xl:static xl:z-auto xl:m-1 xl:ms-0 xl:flex xl:w-[21rem] xl:shrink-0 xl:rounded-xl xl:border xl:p-0 xl:shadow-[var(--panel-shadow)]", detailsOpen ? "flex" : "hidden xl:flex")}
         aria-label="Session evidence"
         aria-labelledby={detailsOpen ? "evidence-title" : undefined}
         aria-modal={detailsOpen ? true : undefined}
@@ -535,12 +448,51 @@ export function LiveInterviewScreen() {
       >
         <h2 id="evidence-title" className="sr-only">Session Evidence</h2>
         <div className="flex min-h-16 items-center border-b px-3">
-          <div className="grid flex-1 grid-cols-2 rounded-lg bg-secondary p-1" role="tablist" aria-label="Evidence views">
+          <div className="grid flex-1 grid-cols-3 rounded-lg bg-secondary p-1" role="tablist" aria-label="Evidence views">
             <button ref={transcriptTabRef} id="evidence-tab-transcript" type="button" role="tab" aria-controls="evidence-panel-transcript" aria-selected={activeTab === "transcript"} tabIndex={activeTab === "transcript" ? 0 : -1} onClick={() => setActiveTab("transcript")} onKeyDown={handleEvidenceTabKeyDown} className={cn("min-h-9 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", activeTab === "transcript" && "bg-card text-foreground shadow-sm")}>Transcript</button>
             <button ref={toolsTabRef} id="evidence-tab-tools" type="button" role="tab" aria-controls="evidence-panel-tools" aria-selected={activeTab === "tools"} tabIndex={activeTab === "tools" ? 0 : -1} onClick={() => setActiveTab("tools")} onKeyDown={handleEvidenceTabKeyDown} className={cn("min-h-9 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", activeTab === "tools" && "bg-card text-foreground shadow-sm")}>Tool activity</button>
+            <button ref={directorTabRef} id="evidence-tab-director" type="button" role="tab" aria-controls="evidence-panel-director" aria-selected={activeTab === "director"} tabIndex={activeTab === "director" ? 0 : -1} onClick={() => setActiveTab("director")} onKeyDown={handleEvidenceTabKeyDown} className={cn("min-h-9 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", activeTab === "director" && "bg-card text-foreground shadow-sm")}>Director</button>
           </div>
           <Button ref={evidenceCloseRef} variant="ghost" size="icon" className="ms-2 xl:hidden" onClick={() => setDetailsOpen(false)} aria-label="Close session evidence"><PanelRightClose aria-hidden="true" /></Button>
         </div>
+
+        {activeTab === "director" ? (
+          <div id="evidence-panel-director" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4" role="tabpanel" aria-labelledby="evidence-tab-director" tabIndex={0}>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Why this interviewer</p>
+            <p className="mt-2 break-words text-sm leading-6 text-muted-foreground">{directorSummary}</p>
+
+            {liveContradiction ? (
+              <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/8 p-3" role="status" aria-live="polite">
+                <p className="flex items-center gap-1.5 text-xs font-semibold text-destructive"><TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />Contradiction caught</p>
+                <p className="mt-1.5 break-words text-xs leading-5 text-muted-foreground">
+                  <span className="font-medium capitalize text-foreground">{liveContradiction.subject}</span>{" "}
+                  was <span className="font-mono">{liveContradiction.earlierClaim}</span>, now{" "}
+                  <span className="font-mono">{liveContradiction.currentClaim}</span>.
+                </p>
+              </div>
+            ) : null}
+
+            {speakerTrail.length > 1 ? (
+              <div className="mt-5 border-t pt-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Floor order</p>
+                <ol className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs leading-5">
+                  {speakerTrail.map((turn, index) => (
+                    <li key={`${turn.panelistId}-${index}`} className="flex items-center gap-1.5">
+                      {index > 0 ? <span aria-hidden="true" className="text-muted-foreground/50">&rarr;</span> : null}
+                      <span className={cn("truncate", index === speakerTrail.length - 1 ? "font-medium text-foreground" : "text-muted-foreground")}>{turn.name.split(" ")[0]}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+
+            <dl className="mt-5 space-y-2 border-t pt-4 text-xs">
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Panel turns</dt><dd className="font-medium tabular-nums">{panelTurnCount}</dd></div>
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Interruptions</dt><dd className="font-medium tabular-nums">{interruptionCount}</dd></div>
+              <div className="flex items-center justify-between gap-3"><dt className="text-muted-foreground">Connection</dt><dd className="font-medium">{roomStatus}</dd></div>
+            </dl>
+          </div>
+        ) : null}
 
         {activeTab === "transcript" ? (
           <div id="evidence-panel-transcript" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4" role="tabpanel" aria-labelledby="evidence-tab-transcript" tabIndex={0}>
@@ -558,7 +510,9 @@ export function LiveInterviewScreen() {
             </div>
             <div className="mt-6 flex items-center gap-2 rounded-lg border bg-card p-3 text-xs text-muted-foreground" role="status" aria-live="polite"><span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden="true" />{displayedTranscript.length ? "Listening for your answer" : "Waiting for the first transcript turn"}</div>
           </div>
-        ) : (
+        ) : null}
+
+        {activeTab === "tools" ? (
           <div id="evidence-panel-tools" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4" role="tabpanel" aria-labelledby="evidence-tab-tools" tabIndex={0}>
             <Alert title="Tools run only when useful"><span>Search, calculation, and evidence actions are role-scoped and stored in the audit trail.</span></Alert>
             <div className="mt-4 space-y-3">
@@ -575,10 +529,9 @@ export function LiveInterviewScreen() {
             </div>
             {!displayedTools.length ? <div className="py-12 text-center"><Gauge className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No tool activity yet</p><p className="mt-1 text-xs text-muted-foreground">Useful calls appear here as the panel works.</p></div> : null}
           </div>
-        )}
+        ) : null}
       </aside>
-
-      <Button ref={evidenceTriggerRef} inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} variant="secondary" size="icon" className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] end-[calc(1rem+env(safe-area-inset-right))] z-20 shadow-xl xl:hidden" onClick={() => setDetailsOpen(true)} aria-label="Open session evidence"><MessageSquareText aria-hidden="true" /></Button>
+      </div>
 
       {endOpen ? (
         <div

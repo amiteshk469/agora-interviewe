@@ -18,7 +18,6 @@ import {
   RemoteAudioTrack,
   useClientEvent,
   useJoin,
-  useLocalCameraTrack,
   useLocalMicrophoneTrack,
   usePublish,
   useRemoteAudioTracks,
@@ -28,7 +27,7 @@ import {
 } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, CameraOff, Radio, Waves } from "lucide-react";
+import { Radio, Waves } from "lucide-react";
 import { Alert, Badge, Button } from "@/components/ui";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
@@ -115,7 +114,6 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [enabled, setEnabled] = useState(true);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
   const [connectionState, setConnectionState] = useState("CONNECTING");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [voiceError, setVoiceError] = useState("");
@@ -124,20 +122,17 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
-  const { localCameraTrack, error: cameraError } = useLocalCameraTrack(true);
   const { videoTracks, error: remoteVideoError } = useRemoteVideoTracks(remoteUsers);
   const { audioTracks, error: remoteAudioError } = useRemoteAudioTracks(remoteUsers);
-  const { error: publishError } = usePublish([localMicrophoneTrack, localCameraTrack]);
+  const { error: publishError } = usePublish([localMicrophoneTrack]);
 
   useEffect(() => {
     onMediaState?.({
-      localCameraTrack,
-      cameraEnabled,
       microphoneEnabled: enabled,
       remoteVideos: videoTracks.map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [cameraEnabled, connectionState, enabled, localCameraTrack, onMediaState, videoTracks]);
+  }, [connectionState, enabled, onMediaState, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -225,7 +220,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     return "ambient";
   }, [agentState, connectionState, isConnected]);
 
-  const sdkError = joinError || microphoneError || cameraError || publishError || remoteAudioError || remoteVideoError;
+  const sdkError = joinError || microphoneError || publishError || remoteAudioError || remoteVideoError;
   const displayedError = voiceError || (sdkError
     ? `${errorMessage(sdkError, "Agora media initialization failed")}. Check browser media permissions, then rejoin from the lobby.`
     : "");
@@ -248,16 +243,6 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
       setVoiceError(`${errorMessage(error, "The microphone could not be updated")}. Check browser permissions and retry.`);
     }
   }, [enabled, localMicrophoneTrack]);
-
-  const toggleCamera = useCallback(async () => {
-    const next = !cameraEnabled;
-    try {
-      if (localCameraTrack) await localCameraTrack.setEnabled(next);
-      setCameraEnabled(next);
-    } catch (error) {
-      setVoiceError(`${errorMessage(error, "The camera could not be updated")}. Check browser permissions and retry.`);
-    }
-  }, [cameraEnabled, localCameraTrack]);
 
   const toggleRoomTone = useCallback(async () => {
     if (roomToneRef.current) {
@@ -282,15 +267,12 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   return (
     <div className="space-y-2">
       {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
-      <div className="flex flex-wrap items-center justify-center gap-2 rounded-xl border bg-card px-3 py-2 shadow-[var(--panel-shadow)]" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
         <div className="size-10 overflow-hidden rounded-md border bg-background" aria-hidden="true"><AgentVisualizer state={visualizerState} size="sm" /></div>
         <Badge variant={displayedError ? "destructive" : isConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><Radio className="size-3" aria-hidden="true" />{connectionStatus}</Badge>
         <div className="conversation-mic-host flex items-center justify-center">
           <MicButtonWithVisualizer isEnabled={enabled} setIsEnabled={setEnabled} track={localMicrophoneTrack} onToggle={toggleMic} aria-label={enabled ? "Mute microphone" : "Unmute microphone"} enabledColor="oklch(0.675 0.175 245)" disabledColor="oklch(0.63 0.205 25)" />
         </div>
-        <Button size="icon" variant={cameraEnabled ? "outline" : "secondary"} onClick={toggleCamera} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"}>
-          {cameraEnabled ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}
-        </Button>
         <Button size="sm" variant={roomToneEnabled ? "secondary" : "outline"} onClick={toggleRoomTone} aria-pressed={roomToneEnabled} title="Play subtle room ambience locally; it is never published to Agora">
           <Waves aria-hidden="true" /><span className="hidden sm:inline">Room tone</span>
         </Button>
