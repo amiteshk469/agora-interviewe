@@ -12,6 +12,7 @@ export type LiveTranscriptTurn = { id: string; uid: string; isLocal: boolean; te
 export type LiveAgentState = "idle" | "listening" | "thinking" | "speaking" | "silent" | null;
 export type LiveMediaState = {
   microphoneEnabled: boolean;
+  candidateSpeaking: boolean;
   remoteVideos: Array<{ uid: string; track: IRemoteVideoTrack }>;
   connectionState: string;
 };

@@ -2,7 +2,7 @@
 
 import type { IRemoteVideoTrack } from "agora-rtc-react";
 import { AvatarVideoDisplay } from "agora-agent-uikit";
-import { Brain, Ear, Hand, MoveDown } from "lucide-react";
+import { Brain, Ear, Hand, Mic, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
 
@@ -125,7 +125,7 @@ export function SpotlightSpeaker({
 }
 
 /** A filmstrip participant: a real tile, not a name chip. */
-export function PanelTile({ person, state, toneIndex }: { person: Panelist; state: PanelPresence; toneIndex?: number }) {
+export function PanelTile({ person, state, toneIndex, isSelf }: { person: Panelist; state: PanelPresence; toneIndex?: number; isSelf?: boolean }) {
   const speaking = state === "speaking";
   return (
     <article
@@ -133,12 +133,12 @@ export function PanelTile({ person, state, toneIndex }: { person: Panelist; stat
         "relative flex h-[5.75rem] w-[8.5rem] shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1 sm:w-[9.5rem]",
         speaking ? "ring-2 ring-primary/60" : "ring-black/5 dark:ring-white/8",
       )}
-      aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}
+      aria-label={isSelf ? `You, ${speaking ? "speaking" : "listening"}` : `${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
       <Avatar person={person} toneIndex={toneIndex} speaking={speaking} size="sm" />
       <p className="max-w-full truncate px-2 text-[11px] font-medium leading-4">{person.name}</p>
-      <span className={cn("absolute end-1.5 top-1.5", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={stateCopy[state]}>
-        {speaking ? <SpeakingBars /> : <PresenceIcon state={state} className="size-3" />}
+      <span className={cn("absolute end-1.5 top-1.5", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : "Your microphone is live") : stateCopy[state]}>
+        {speaking ? <SpeakingBars /> : isSelf ? <Mic className="size-3" aria-hidden="true" /> : <PresenceIcon state={state} className="size-3" />}
       </span>
     </article>
   );

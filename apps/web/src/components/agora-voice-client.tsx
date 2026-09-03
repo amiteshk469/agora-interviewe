@@ -10,8 +10,6 @@ import {
   TurnStatus,
   type UserTranscription,
 } from "agora-agent-client-toolkit";
-import { AgentVisualizer, type AgentVisualizerState } from "agora-agent-uikit";
-import { MicButtonWithVisualizer } from "agora-agent-uikit/rtc";
 import {
   AgoraRTCProvider,
   default as AgoraRTC,
@@ -26,9 +24,10 @@ import {
   useRTCClient,
 } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Radio, Waves } from "lucide-react";
-import { Alert, Badge, Button } from "@/components/ui";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Mic, MicOff, Waves } from "lucide-react";
+import { Alert, Button } from "@/components/ui";
+import { cn } from "@/lib/utils";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
 
@@ -58,6 +57,8 @@ function errorMessage(error: unknown, fallback: string) {
   }
   return fallback;
 }
+
+const CANDIDATE_SPEAKING_LEVEL = 0.06;
 
 type RoomToneGraph = {
   context: AudioContext;
@@ -119,6 +120,8 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   const [voiceError, setVoiceError] = useState("");
   const [roomToneEnabled, setRoomToneEnabled] = useState(false);
   const roomToneRef = useRef<RoomToneGraph | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
+  const [candidateSpeaking, setCandidateSpeaking] = useState(false);
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
@@ -129,10 +132,11 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   useEffect(() => {
     onMediaState?.({
       microphoneEnabled: enabled,
+      candidateSpeaking: enabled && candidateSpeaking,
       remoteVideos: videoTracks.map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [connectionState, enabled, onMediaState, videoTracks]);
+  }, [candidateSpeaking, connectionState, enabled, onMediaState, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -191,6 +195,18 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     roomToneRef.current = null;
   }, []);
 
+  useEffect(() => {
+    // Sampled rather than animated: the ring only needs to show the room is hearing you.
+    const timer = window.setInterval(() => {
+      const level = localMicrophoneTrack && enabled ? localMicrophoneTrack.getVolumeLevel() : 0;
+      setMicLevel(level);
+      // Kept as its own state, not derived, so the room only re-renders when speaking
+      // actually flips rather than on every 120ms sample.
+      setCandidateSpeaking(level > CANDIDATE_SPEAKING_LEVEL);
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [enabled, localMicrophoneTrack]);
+
   useClientEvent(client, "connection-state-change", (current) => setConnectionState(current));
   useClientEvent(client, "token-privilege-will-expire", async () => {
     try {
@@ -211,14 +227,6 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
       setVoiceError(`${errorMessage(error, "Agora credentials could not be renewed")}. Rejoin from the lobby before the connection expires.`);
     }
   });
-
-  const visualizerState = useMemo<AgentVisualizerState>(() => {
-    if (!isConnected) return connectionState === "CONNECTING" || connectionState === "RECONNECTING" ? "joining" : "not-joined";
-    if (agentState === "listening") return "listening";
-    if (agentState === "thinking") return "analyzing";
-    if (agentState === "speaking") return "talking";
-    return "ambient";
-  }, [agentState, connectionState, isConnected]);
 
   const sdkError = joinError || microphoneError || publishError || remoteAudioError || remoteVideoError;
   const displayedError = voiceError || (sdkError
@@ -266,16 +274,50 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
 
   return (
     <div className="space-y-2">
-      {displayedError ? <Alert title="Live Media Needs Attention" variant="destructive"><span className="break-words">{displayedError}</span></Alert> : null}
-      <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Agora live media controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
-        <div className="size-10 overflow-hidden rounded-md border bg-background" aria-hidden="true"><AgentVisualizer state={visualizerState} size="sm" /></div>
-        <Badge variant={displayedError ? "destructive" : isConnected ? "default" : "secondary"} role="status" aria-live="polite" aria-atomic="true"><Radio className="size-3" aria-hidden="true" />{connectionStatus}</Badge>
-        <div className="conversation-mic-host flex items-center justify-center">
-          <MicButtonWithVisualizer isEnabled={enabled} setIsEnabled={setEnabled} track={localMicrophoneTrack} onToggle={toggleMic} aria-label={enabled ? "Mute microphone" : "Unmute microphone"} enabledColor="oklch(0.675 0.175 245)" disabledColor="oklch(0.63 0.205 25)" />
-        </div>
-        <Button size="icon" variant={roomToneEnabled ? "secondary" : "outline"} className="size-11 rounded-full" onClick={toggleRoomTone} aria-pressed={roomToneEnabled} title="Play subtle room ambience locally; it is never published to Agora">
+      {displayedError ? <Alert title="Live audio needs attention" variant="destructive"><span className="break-words [overflow-wrap:anywhere]">{displayedError}</span></Alert> : null}
+      <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Live audio controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
+        {/* Muting is the control people reach for under pressure, so it reads as the
+            primary one: filled when live, destructive when muted, and ringed by the
+            candidate's own speech level so they can see the room is hearing them. */}
+        <button
+          type="button"
+          onClick={toggleMic}
+          aria-pressed={!enabled}
+          aria-label={enabled ? "Mute microphone" : "Unmute microphone"}
+          title={enabled ? "Mute microphone" : "Unmute microphone"}
+          className={cn(
+            "relative grid size-11 place-items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            enabled ? "bg-secondary text-secondary-foreground hover:bg-accent" : "bg-destructive text-white hover:bg-destructive/90",
+          )}
+        >
+          {enabled ? <Mic className="size-5" aria-hidden="true" /> : <MicOff className="size-5" aria-hidden="true" />}
+          {enabled && micLevel > 0.06 ? (
+            <span
+              className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary/70 motion-reduce:hidden"
+              style={{ transform: `scale(${1 + Math.min(micLevel, 1) * 0.28})`, opacity: 0.35 + Math.min(micLevel, 1) * 0.45 }}
+              aria-hidden="true"
+            />
+          ) : null}
+        </button>
+
+        <Button
+          size="icon"
+          variant={roomToneEnabled ? "secondary" : "outline"}
+          className="size-11 rounded-full"
+          onClick={toggleRoomTone}
+          aria-pressed={roomToneEnabled}
+          title="Play quiet room ambience on this device only. It is never sent to the interviewers."
+          aria-label="Toggle room tone"
+        >
           <Waves aria-hidden="true" />
         </Button>
+
+        {/* Connection state only earns space when it needs attention. */}
+        {!isConnected || displayedError ? (
+          <span className="text-xs text-muted-foreground" role="status" aria-live="polite" aria-atomic="true">{connectionStatus}</span>
+        ) : (
+          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{connectionStatus}</span>
+        )}
         {audioTracks.map((track) => <RemoteAudioTrack key={String(track.getUserId())} track={track} play />)}
       </div>
     </div>
