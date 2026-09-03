@@ -58,7 +58,11 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-const CANDIDATE_SPEAKING_LEVEL = 0.06;
+// Speech rises well above room noise, so trigger high and release low, and hold briefly
+// so the gaps between words do not make the tile flicker.
+const SPEAKING_RISE_LEVEL = 0.18;
+const SPEAKING_FALL_LEVEL = 0.08;
+const SPEAKING_HOLD_MS = 500;
 
 type RoomToneGraph = {
   context: AudioContext;
@@ -197,12 +201,15 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
 
   useEffect(() => {
     // Sampled rather than animated: the ring only needs to show the room is hearing you.
+    let spokeAt = 0;
     const timer = window.setInterval(() => {
       const level = localMicrophoneTrack && enabled ? localMicrophoneTrack.getVolumeLevel() : 0;
       setMicLevel(level);
+      const now = Date.now();
+      if (level >= SPEAKING_RISE_LEVEL) spokeAt = now;
       // Kept as its own state, not derived, so the room only re-renders when speaking
       // actually flips rather than on every 120ms sample.
-      setCandidateSpeaking(level > CANDIDATE_SPEAKING_LEVEL);
+      setCandidateSpeaking(level >= SPEAKING_FALL_LEVEL && now - spokeAt < SPEAKING_HOLD_MS);
     }, 120);
     return () => window.clearInterval(timer);
   }, [enabled, localMicrophoneTrack]);
@@ -291,7 +298,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
           )}
         >
           {enabled ? <Mic className="size-5" aria-hidden="true" /> : <MicOff className="size-5" aria-hidden="true" />}
-          {enabled && micLevel > 0.06 ? (
+          {enabled && micLevel > SPEAKING_FALL_LEVEL ? (
             <span
               className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary/70 motion-reduce:hidden"
               style={{ transform: `scale(${1 + Math.min(micLevel, 1) * 0.28})`, opacity: 0.35 + Math.min(micLevel, 1) * 0.45 }}
