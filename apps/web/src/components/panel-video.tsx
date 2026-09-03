@@ -61,15 +61,11 @@ function SpeakingBars({ className }: { className?: string }) {
 }
 
 /** The avatar, with the halo rings that mark whoever currently holds the floor. */
-function Avatar({ person, toneIndex, speaking, size }: { person: Panelist; toneIndex?: number; speaking: boolean; size: "lg" | "sm" }) {
+function Avatar({ person, toneIndex, speaking }: { person: Panelist; toneIndex?: number; speaking: boolean }) {
   return (
-    <span className={cn("relative grid place-items-center", speaking && "speaking-halo", size === "lg" ? "size-24 sm:size-28" : "size-11")}>
+    <span className={cn("relative grid size-12 place-items-center sm:size-16 lg:size-20", speaking && "speaking-halo")}>
       <span
-        className={cn(
-          "grid size-full place-items-center rounded-full font-semibold tracking-[-0.03em]",
-          identityTone(person.id || person.name, toneIndex),
-          size === "lg" ? "text-3xl sm:text-4xl" : "text-sm",
-        )}
+        className={cn("grid size-full place-items-center rounded-full text-base font-semibold tracking-[-0.03em] sm:text-xl lg:text-2xl", identityTone(person.id || person.name, toneIndex))}
         aria-hidden="true"
       >
         {person.initials}
@@ -78,68 +74,61 @@ function Avatar({ person, toneIndex, speaking, size }: { person: Panelist; toneI
   );
 }
 
-export function SpotlightSpeaker({
+export function ParticipantTile({
   person,
   state,
   track,
   toneIndex,
+  isSelf,
   className,
 }: {
   person: Panelist;
   state: PanelPresence;
   track?: IRemoteVideoTrack | null;
   toneIndex?: number;
+  isSelf?: boolean;
   className?: string;
 }) {
   const speaking = state === "speaking";
   return (
     <article
       className={cn(
-        // The spotlight is by definition the speaker, so the halo and meter carry that
-        // state; a heavy accent border on a tile this large only shouts.
-        "relative isolate min-h-0 overflow-hidden rounded-2xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1 ring-black/5 dark:ring-white/8",
+        "relative isolate flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1",
+        speaking ? "ring-2 ring-primary/70" : "ring-black/5 dark:ring-white/8",
         className,
       )}
-      aria-label={`${person.name}, ${person.role}, ${stateCopy[state]}`}
+      aria-label={isSelf ? `You, ${speaking ? "speaking" : "listening"}` : `${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
       {track ? (
         <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="absolute inset-0 size-full" />
       ) : (
         <div className="absolute inset-0 grid place-items-center">
-          <Avatar person={person} toneIndex={toneIndex} speaking={speaking} size="lg" />
+          <Avatar person={person} toneIndex={toneIndex} speaking={speaking} />
         </div>
       )}
 
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 p-4">
+      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-[var(--tile)] via-[var(--tile)]/85 to-transparent p-2.5 pt-6 sm:p-3 sm:pt-8">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold sm:text-base">{person.name}</p>
-          <p className="truncate text-xs text-[var(--tile-muted)]">{person.role}</p>
+          <p className="truncate text-[13px] font-semibold leading-5">{person.name}</p>
+          <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{isSelf ? "Candidate" : person.role}</p>
         </div>
-        <span className={cn("flex shrink-0 items-center gap-1.5 text-xs font-medium", speaking ? "text-primary" : "text-[var(--tile-muted)]")}>
-          {speaking ? <SpeakingBars /> : <PresenceIcon state={state} />}
-          <span className="hidden sm:inline">{stateCopy[state]}</span>
+        <span className={cn("flex shrink-0 items-center gap-1", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : "Your microphone is live") : stateCopy[state]}>
+          {speaking ? <SpeakingBars /> : isSelf ? <Mic className="size-3.5" aria-hidden="true" /> : <PresenceIcon state={state} />}
         </span>
       </div>
     </article>
   );
 }
 
-/** A filmstrip participant: a real tile, not a name chip. */
-export function PanelTile({ person, state, toneIndex, isSelf }: { person: Panelist; state: PanelPresence; toneIndex?: number; isSelf?: boolean }) {
-  const speaking = state === "speaking";
-  return (
-    <article
-      className={cn(
-        "relative flex h-[5.75rem] w-[8.5rem] shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl bg-[var(--tile)] text-[var(--tile-foreground)] ring-1 sm:w-[9.5rem]",
-        speaking ? "ring-2 ring-primary/60" : "ring-black/5 dark:ring-white/8",
-      )}
-      aria-label={isSelf ? `You, ${speaking ? "speaking" : "listening"}` : `${person.name}, ${person.role}, ${stateCopy[state]}`}
-    >
-      <Avatar person={person} toneIndex={toneIndex} speaking={speaking} size="sm" />
-      <p className="max-w-full truncate px-2 text-[11px] font-medium leading-4">{person.name}</p>
-      <span className={cn("absolute end-1.5 top-1.5", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : "Your microphone is live") : stateCopy[state]}>
-        {speaking ? <SpeakingBars /> : isSelf ? <Mic className="size-3" aria-hidden="true" /> : <PresenceIcon state={state} className="size-3" />}
-      </span>
-    </article>
-  );
+/**
+ * Column count by headcount, matching how a meeting client reflows: a short panel sits in
+ * one row, four squares up, and five or six take three across. Tiles stay the same size as
+ * each other at every count, so nobody is reduced to a thumbnail.
+ */
+export function participantGridClass(count: number): string {
+  if (count <= 1) return "grid-cols-1";
+  if (count === 2) return "grid-cols-1 sm:grid-cols-2";
+  if (count === 3) return "grid-cols-2 sm:grid-cols-3";
+  if (count === 4) return "grid-cols-2";
+  return "grid-cols-2 sm:grid-cols-3";
 }

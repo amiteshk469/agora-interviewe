@@ -15,7 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
-import { PanelTile, SpotlightSpeaker, type PanelPresence } from "@/components/panel-video";
+import { ParticipantTile, participantGridClass, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
 import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
@@ -222,6 +222,7 @@ export function LiveInterviewScreen() {
     () => ({ ...defaultPanelists[0], id: "candidate", name: "You", role: "Candidate", initials: "YOU" }),
     [],
   );
+  const participants = useMemo(() => [...configuredPanel, candidateTile], [candidateTile, configuredPanel]);
 
   const latestDirectorBid = useMemo(
     () => [...persistedTools].reverse().find((run) => run.tool_name === "panel.bid"),
@@ -388,27 +389,32 @@ export function LiveInterviewScreen() {
 
       <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
         <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
-          <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4">
-            <SpotlightSpeaker
-              person={activePanelist}
-              state={selectedPresence(agentState, sessionIsDemo)}
-              toneIndex={configuredPanel.findIndex((item) => item.id === activePanelist.id)}
-              track={mediaState.remoteVideos.find((video) => video.uid === String(avatarUidForPanelist(activePanelist, storedSession?.connection?.panelists)))?.track}
-              className="min-h-[15rem] flex-1"
-            />
-
-            <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-1" aria-label="Interview participants">
-              <PanelTile person={candidateTile} state={mediaState.candidateSpeaking ? "speaking" : "listening"} toneIndex={configuredPanel.length} isSelf />
-              {configuredPanel
-                .filter((person) => person.id !== activePanelist.id)
-                .map((person) => (
-                  <PanelTile
+          <div className="flex min-h-0 flex-1 flex-col p-3 sm:p-4">
+            <div
+              className={cn("grid min-h-0 flex-1 place-content-center gap-2 sm:gap-3", participantGridClass(participants.length))}
+              aria-label="Interview participants"
+            >
+              {participants.map((person) => {
+                const isSelf = person.id === candidateTile.id;
+                const configuredIndex = configuredPanel.findIndex((item) => item.id === person.id);
+                const state: PanelPresence = isSelf
+                  ? (mediaState.candidateSpeaking ? "speaking" : "listening")
+                  : person.id === activePanelist.id
+                    ? selectedPresence(agentState, sessionIsDemo)
+                    : sessionIsDemo ? presenceForPanelist(Math.max(0, configuredIndex), idlePhase, false) : "listening";
+                const avatarUid = avatarUidForPanelist(person, storedSession?.connection?.panelists);
+                return (
+                  <ParticipantTile
                     key={person.id}
                     person={person}
-                    state={sessionIsDemo ? presenceForPanelist(Math.max(0, configuredPanel.findIndex((item) => item.id === person.id)), idlePhase, false) : "listening"}
-                    toneIndex={configuredPanel.findIndex((item) => item.id === person.id)}
+                    state={state}
+                    isSelf={isSelf}
+                    toneIndex={isSelf ? configuredPanel.length : configuredIndex}
+                    track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
+                    className="aspect-[5/4] w-full sm:aspect-video"
                   />
-                ))}
+                );
+              })}
             </div>
           </div>
 
