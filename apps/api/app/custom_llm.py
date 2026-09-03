@@ -17,8 +17,10 @@ from app.core.database import Db
 from app.domain import (
     PLATFORM_INVARIANTS,
     PanelDirector,
+    apply_host_directive,
     compile_agent_prompt,
     delimit_untrusted,
+    describe_code_buffer,
     detect_metric_claim,
     find_metric_contradiction,
     record_metric_claim,
@@ -500,6 +502,7 @@ async def panel_chat_completions(
         forced_panelist_id = x_roundcraft_panelist_id
 
     replayed_bid: ToolRun | None = None
+    host_question: str | None = None
     if forced_panelist_id:
         selected = next(
             (item for item in panel if item.id == forced_panelist_id),
@@ -543,6 +546,8 @@ async def panel_chat_completions(
             decision = PanelDirector.choose_next(panel, state, candidate_text)
             selected = next(item for item in panel if item.id == decision.next_speaker_id)
             state.panelist_question_counts[selected.id] = state.panelist_question_counts.get(selected.id, 0) + 1
+            # A co-hosting human takes the floor ahead of the director objective.
+            decision, host_question = apply_host_directive(decision, state)
     if selected is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Selected logical panelist is unavailable")
     state.current_speaker_id = selected.id
@@ -626,6 +631,7 @@ async def panel_chat_completions(
             if contradiction is not None
             else None
         ),
+        "host_question": host_question,
         "enabled_tools": role_tools,
         "tool_audits": tool_audits,
         "replayed_candidate_turn": replayed_bid is not None,
@@ -667,6 +673,7 @@ async def panel_chat_completions(
         panel_bid.result = metadata
         await db.commit()
 
+    code_context = describe_code_buffer(state)
     template_behavior = selected.template_behavior
     scoring_focus = [criterion.label for criterion in selected.role_rubric]
     if not scoring_focus:
@@ -702,6 +709,7 @@ async def panel_chat_completions(
                 else None
             ),
             delimit_untrusted("panelist-knowledge", selected.knowledge_prompt) if selected.knowledge_prompt else None,
+            delimit_untrusted("candidate-editor", code_context) if code_context else None,
             *tool_context,
             PLATFORM_INVARIANTS,
         )

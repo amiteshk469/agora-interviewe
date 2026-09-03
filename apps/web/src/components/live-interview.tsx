@@ -5,28 +5,37 @@ import {
   BookOpen,
   Check,
   CircleStop,
+  Code2,
   FileSearch,
   Gauge,
+  Link2,
   MessageSquareText,
   PanelRightClose,
   TimerReset,
   TriangleAlert,
+  UserRoundCheck,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
+import { CodePane } from "@/components/code-pane";
 import { ParticipantTile, participantGridClass, participantGridHeightClass, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
 import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
+  createSessionInvite,
   demoModeEnabled,
   endInterviewSession,
   generateSessionReport,
+  listRolePacks,
   listSessionToolRuns,
   persistSessionTurn,
+  readHostPresence,
   readLiveSession,
+  type HostPresence,
+  type RolePack,
   type SessionToolRun,
   type StoredLiveSession,
 } from "@/lib/api";
@@ -104,6 +113,10 @@ export function LiveInterviewScreen() {
   const [endError, setEndError] = useState("");
   const [storedSession, setStoredSession] = useState<StoredLiveSession | null>(null);
   const [persistedTools, setPersistedTools] = useState<SessionToolRun[]>([]);
+  const [rolePack, setRolePack] = useState<RolePack | null>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [hostPresence, setHostPresence] = useState<HostPresence | null>(null);
+  const [inviteState, setInviteState] = useState<"idle" | "copying" | "copied" | "error">("idle");
   const persistedTurns = useRef(new Set<string>());
   const pendingTurnWrites = useRef(new Set<Promise<unknown>>());
   const stoppedSessionId = useRef("");
@@ -195,6 +208,34 @@ export function LiveInterviewScreen() {
     };
   }, [storedSession]);
 
+  // Which track this interview is for decides whether there is a coding round.
+  useEffect(() => {
+    const profession = (storedSession?.configSnapshot as { profession?: string } | undefined)?.profession;
+    if (!storedSession || storedSession.demo || !profession) return;
+    let cancelled = false;
+    void listRolePacks()
+      .then((packs) => {
+        if (!cancelled) setRolePack(packs.find((pack) => pack.id === profession) ?? null);
+      })
+      .catch((error) => console.warn("Role pack lookup failed", error));
+    return () => { cancelled = true; };
+  }, [storedSession]);
+
+  // A human interviewer can arrive part-way through, so the room keeps watching.
+  useEffect(() => {
+    if (!storedSession || storedSession.demo) return;
+    let cancelled = false;
+    const poll = () => void readHostPresence(storedSession.sessionId)
+      .then((presence) => { if (!cancelled) setHostPresence(presence); })
+      .catch(() => undefined);
+    poll();
+    const timer = window.setInterval(poll, 6000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [storedSession]);
+
   const configuredPanel = useMemo<Panelist[]>(() => {
     const snapshot = storedSession?.configSnapshot as { panel?: PanelSnapshot[] } | undefined;
     if (!snapshot?.panel?.length) return defaultPanelists;
@@ -267,6 +308,22 @@ export function LiveInterviewScreen() {
       void write.finally(() => pendingTurnWrites.current.delete(write));
     });
   }, [storedSession]);
+
+  async function copyInviteLink() {
+    if (!storedSession || storedSession.demo) return;
+    setInviteState("copying");
+    try {
+      const invite = await createSessionInvite(storedSession.sessionId);
+      const link = new URL(invite.join_path, window.location.origin).toString();
+      await navigator.clipboard.writeText(link);
+      setInviteState("copied");
+      window.setTimeout(() => setInviteState("idle"), 4000);
+    } catch (error) {
+      console.warn("Invite link could not be created", error);
+      setInviteState("error");
+      window.setTimeout(() => setInviteState("idle"), 4000);
+    }
+  }
 
   function selectEvidenceTab(tab: EvidenceTab) {
     setActiveTab(tab);
@@ -366,6 +423,15 @@ export function LiveInterviewScreen() {
     ? `${activePanelist.name} is speaking`
     : `${activePanelist.name} is ${agentState || (rtcConnected ? "listening" : "waiting for audio")}`;
   const backgroundInert = detailsOpen || endOpen;
+  const coding = rolePack?.supports_coding ? rolePack.coding : null;
+  const canInvite = Boolean(storedSession && !storedSession.demo);
+  const inviteLabel = inviteState === "copied"
+    ? "Link copied"
+    : inviteState === "error"
+      ? "Link failed"
+      : inviteState === "copying"
+        ? "Creating link"
+        : "Invite interviewer";
 
   return (
     <div className="flex min-h-[100dvh] flex-col overflow-x-hidden bg-background pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] xl:h-[100dvh] xl:overflow-hidden">
@@ -383,15 +449,33 @@ export function LiveInterviewScreen() {
               <span className="hidden sm:inline">Contradiction: </span>{liveContradiction.subject}
             </Badge>
           ) : null}
+          {hostPresence ? (
+            <Badge variant="outline" role="status" aria-live="polite" title={`${hostPresence.display_name} joined this interview`}>
+              <UserRoundCheck className="size-3" aria-hidden="true" />
+              <span className="max-w-[9rem] truncate">{hostPresence.display_name}</span>
+            </Badge>
+          ) : null}
+          {canInvite ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2 text-xs"
+              onClick={() => void copyInviteLink()}
+              disabled={inviteState === "copying"}
+            >
+              <Link2 className="size-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">{inviteLabel}</span>
+            </Button>
+          ) : null}
           <span className="font-mono text-sm tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
         <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
-          <div className="flex min-h-0 flex-1 flex-col justify-center p-3 sm:p-4">
+          <div className={cn("flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4", codeOpen ? "justify-start" : "justify-center")}>
             <div
-              className={cn("mx-auto grid min-h-0 w-full flex-1 auto-rows-fr gap-2 sm:gap-3", participantGridClass(participants.length), participantGridHeightClass(participants.length))}
+              className={cn("mx-auto grid min-h-0 w-full auto-rows-fr gap-2 sm:gap-3", codeOpen ? "shrink-0" : "flex-1", participantGridClass(participants.length, codeOpen), participantGridHeightClass(participants.length, codeOpen))}
               aria-label="Interview participants"
             >
               {participants.map((person) => {
@@ -411,11 +495,22 @@ export function LiveInterviewScreen() {
                     isSelf={isSelf}
                     toneIndex={isSelf ? configuredPanel.length : configuredIndex}
                     track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
+                    compact={codeOpen}
                     className="size-full"
                   />
                 );
               })}
             </div>
+
+            {coding && codeOpen ? (
+              <CodePane
+                sessionId={storedSession?.demo ? undefined : storedSession?.sessionId}
+                languages={coding.languages}
+                defaultLanguage={coding.default_language}
+                prompt={coding.prompt}
+                className="mx-auto min-h-[16rem] w-full flex-1"
+              />
+            ) : null}
           </div>
 
           <footer className="shrink-0 border-t bg-background px-3 py-3 sm:px-4" aria-labelledby="current-question-title">
@@ -430,6 +525,18 @@ export function LiveInterviewScreen() {
               </div>
               <div className="flex min-w-0 flex-wrap items-center justify-center gap-2">
                 <div className="min-w-0"><AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} /></div>
+                {coding ? (
+                  <Button
+                    variant={codeOpen ? "default" : "outline"}
+                    size="icon"
+                    className="h-11 w-14 shrink-0 rounded-xl"
+                    onClick={() => setCodeOpen((open) => !open)}
+                    aria-pressed={codeOpen}
+                    aria-label={codeOpen ? "Hide the code editor" : "Show the code editor"}
+                  >
+                    <Code2 aria-hidden="true" />
+                  </Button>
+                ) : null}
                 <Button ref={evidenceTriggerRef} variant="outline" size="icon" className="h-11 w-14 shrink-0 rounded-xl xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog" aria-label="Open transcript">
                   <MessageSquareText aria-hidden="true" />
                 </Button>
