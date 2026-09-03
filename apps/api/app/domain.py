@@ -524,3 +524,50 @@ def _selection_rationale(
     if not reasons:
         reasons.append("it keeps rubric coverage balanced")
     return f"{selected.display_name} takes the floor because " + "; ".join(reasons) + "."
+
+
+# Enough of the editor for a panelist to read and challenge, without letting a
+# long file crowd out the transcript in the model's context window.
+CODE_CONTEXT_MAX_LINES = 120
+CODE_CONTEXT_MAX_CHARS = 6000
+
+
+def describe_code_buffer(state: PanelState) -> str | None:
+    """Render the candidate's editor for the panel, or None when there is nothing to read."""
+    buffer = state.code_buffer
+    if buffer is None or not buffer.content.strip():
+        return None
+    lines = buffer.content.splitlines()
+    shown = lines[:CODE_CONTEXT_MAX_LINES]
+    truncated = len(lines) > len(shown)
+    body = "\n".join(shown)[:CODE_CONTEXT_MAX_CHARS]
+    header = f"The candidate is writing {buffer.language or 'code'} in the shared editor ({len(lines)} lines)."
+    footer = "[editor truncated]" if truncated or len(body) < len("\n".join(shown)) else ""
+    return "\n".join(value for value in (header, body, footer) if value)
+
+
+def apply_host_directive(decision: PanelDecision, state: PanelState) -> tuple[PanelDecision, str | None]:
+    """Let the human interviewer take the floor for one turn.
+
+    A queued human question outranks the director's own objective: the point of
+    inviting a person in is that they can steer. It is consumed once so the panel
+    returns to its own line of questioning afterwards.
+    """
+    host = state.host
+    if host is None or not host.pending_question:
+        return decision, None
+    question = host.pending_question.strip()
+    host.pending_question = None
+    if not question:
+        return decision, None
+    who = host.display_name or "the human interviewer"
+    return (
+        decision.model_copy(
+            update={
+                "action": "ask",
+                "suggested_question": question,
+                "rationale": f"Relaying a question from {who}, who is co-hosting this panel.",
+            }
+        ),
+        question,
+    )

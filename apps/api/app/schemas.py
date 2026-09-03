@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.role_packs import DEFAULT_ROLE_PACK_ID, ROLE_PACK_IDS, SUPPORTED_LANGUAGES
+
 INTERVIEWER_TOOL_NAMES = frozenset({"knowledge_search", "calculator", "web_search"})
 
 
@@ -217,14 +219,24 @@ class PanelistInput(ApiModel):
 
 class InterviewConfigCreate(ApiModel):
     title: str = Field(default="Product Management mock interview", min_length=2, max_length=160)
-    profession: Literal["product_management"] = "product_management"
+    # The hiring track. Each id resolves to a role pack that supplies the default
+    # panel, rubric, and tools when the caller does not override them.
+    profession: str = Field(default=DEFAULT_ROLE_PACK_ID, max_length=60)
     job_description_id: UUID | None = None
     # None means "use the JD recommendation, or balanced when no JD was uploaded".
     difficulty: Difficulty | None = None
     duration_minutes: int = Field(default=45, ge=10, le=120)
     panel: list[PanelistInput] | None = None
     rubric: list[RubricCriterion] | None = None
-    enabled_tools: list[str] = Field(default_factory=lambda: ["knowledge_search", "calculator"])
+    # None means "take the role pack's tools".
+    enabled_tools: list[str] | None = None
+
+    @field_validator("profession")
+    @classmethod
+    def known_role_pack(cls, value: str) -> str:
+        if value not in ROLE_PACK_IDS:
+            raise ValueError(f"Unknown role pack: {value}")
+        return value
 
     @model_validator(mode="after")
     def validate_panel(self) -> Self:
@@ -401,6 +413,33 @@ class MetricClaimRecord(ApiModel):
     excerpt: str
 
 
+class CodeBufferState(ApiModel):
+    """The candidate's editor as the panel last saw it."""
+
+    language: str = ""
+    content: str = ""
+    updated_at: datetime | None = None
+
+
+class HostTurnRecord(ApiModel):
+    id: str
+    mode: Literal["chat", "ask"]
+    text: str
+    author: str
+    created_at: datetime
+
+
+class HostState(ApiModel):
+    """The human interviewer sharing the room, when one has joined."""
+
+    display_name: str = ""
+    joined_at: datetime | None = None
+    messages: list[HostTurnRecord] = Field(default_factory=list)
+    # Set when the human asks the panel to put a question. The next panelist to
+    # speak must ask it, which is what "leading" the panel means here.
+    pending_question: str | None = None
+
+
 class PanelState(ApiModel):
     current_speaker_id: str | None = None
     pending_panelist_id: str | None = None
@@ -411,6 +450,8 @@ class PanelState(ApiModel):
     panelist_question_counts: dict[str, int] = Field(default_factory=dict)
     metric_claims: list[MetricClaimRecord] = Field(default_factory=list)
     last_question: str | None = None
+    code_buffer: CodeBufferState | None = None
+    host: HostState | None = None
 
 
 class PanelDecision(ApiModel):
@@ -513,3 +554,94 @@ class ChatCompletionRequest(ApiModel):
 
 ConnectionConfig.model_rebuild()
 PanelDispatchOut.model_rebuild()
+
+
+class RolePackCoding(ApiModel):
+    languages: list[str]
+    default_language: str
+    prompt: str
+
+
+class RolePackOut(ApiModel):
+    id: str
+    label: str
+    family: str
+    summary: str
+    panel: list[dict[str, Any]]
+    rubric: list[dict[str, Any]]
+    enabled_tools: list[str]
+    levels: list[str]
+    supports_coding: bool
+    coding: RolePackCoding | None = None
+
+
+class CodeBufferUpdate(ApiModel):
+    """A snapshot of the candidate's editor, pushed as they work."""
+
+    language: str = Field(min_length=1, max_length=40)
+    content: str = Field(default="", max_length=40_000)
+
+    @field_validator("language")
+    @classmethod
+    def known_language(cls, value: str) -> str:
+        lowered = value.lower()
+        if lowered not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {value}")
+        return lowered
+
+
+class CodeBufferOut(ApiModel):
+    language: str
+    content: str
+    line_count: int
+    updated_at: datetime | None = None
+
+
+class SessionInviteOut(ApiModel):
+    """A shareable link that lets one human interviewer join an owned session."""
+
+    token: str
+    join_path: str
+    expires_at: datetime
+
+
+class GuestPanelist(ApiModel):
+    id: str
+    display_name: str
+    role: str
+
+
+class GuestSessionOut(ApiModel):
+    session_id: UUID
+    title: str
+    role_pack: str
+    status: str
+    display_name: str
+    connection: "ConnectionConfig"
+    panel: list[GuestPanelist]
+    supports_coding: bool
+
+
+class HostMessageCreate(ApiModel):
+    """What the human interviewer sends into a live room.
+
+    "chat" is a side note the candidate reads. "ask" hands the human's question
+    to the panel so it is spoken aloud and lands in the transcript as a turn.
+    """
+
+    mode: Literal["chat", "ask"] = "chat"
+    text: str = Field(min_length=1, max_length=2_000, pattern=r"\S")
+
+
+class HostMessageOut(ApiModel):
+    id: str
+    mode: Literal["chat", "ask"]
+    text: str
+    author: str
+    created_at: datetime
+
+
+class HostPresenceOut(ApiModel):
+    display_name: str
+    joined_at: datetime
+    messages: list[HostMessageOut]
