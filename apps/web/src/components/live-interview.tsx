@@ -77,6 +77,7 @@ function trapFocus(event: ReactKeyboardEvent, container: HTMLElement | null) {
 
 const initialMedia: LiveMediaState = {
   microphoneEnabled: false,
+  candidateSpeaking: false,
   remoteVideos: [],
   connectionState: "DISCONNECTED",
 };
@@ -217,6 +218,10 @@ export function LiveInterviewScreen() {
     });
   }, [storedSession]);
   const sessionIsDemo = Boolean(storedSession?.demo || (!storedSession && demoModeEnabled));
+  const candidateTile = useMemo(
+    () => ({ ...defaultPanelists[0], id: "candidate", name: "You", role: "Candidate", initials: "YOU" }),
+    [],
+  );
 
   const latestDirectorBid = useMemo(
     () => [...persistedTools].reverse().find((run) => run.tool_name === "panel.bid"),
@@ -392,7 +397,8 @@ export function LiveInterviewScreen() {
               className="min-h-[15rem] flex-1"
             />
 
-            <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-1" aria-label="Other interviewers">
+            <div className="flex shrink-0 items-center gap-2 overflow-x-auto pb-1" aria-label="Interview participants">
+              <PanelTile person={candidateTile} state={mediaState.candidateSpeaking ? "speaking" : "listening"} toneIndex={configuredPanel.length} isSelf />
               {configuredPanel
                 .filter((person) => person.id !== activePanelist.id)
                 .map((person) => (
