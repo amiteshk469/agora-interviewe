@@ -140,7 +140,10 @@ export function participantGridClass(count: number): string {
  * pushes the grid under the footer. Bounding the grid by row count instead means rows always
  * share what is actually there, and tiles stay landscape without overflowing.
  */
-export function participantGridHeightClass(count: number): string {
+export function participantGridHeightClass(count: number, compact = false): string {
   const rows = count <= 3 ? 1 : count === 4 ? 2 : 2;
+  // With the editor open the faces become a strip: the candidate is looking at
+  // their code, and the panel only needs to stay glanceable.
+  if (compact) return rows === 1 ? "max-h-[8rem]" : "max-h-[14rem]";
   return rows === 1 ? "max-h-[19rem]" : "max-h-[38rem]";
 }
