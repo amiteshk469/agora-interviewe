@@ -129,10 +129,6 @@ class Settings(BaseSettings):
     agora_agent_idle_timeout_seconds: int = Field(default=30, ge=5, le=3600)
     agora_session_expires_seconds: int = Field(default=3600, ge=60, le=86400)
     agora_webhook_secret: str = ""
-    # Signs the human-interviewer invite links. Left empty, the invite service
-    # derives a key from the Agora LLM secret under its own domain label, so the
-    # feature ships without a new required environment variable.
-    session_invite_secret: str = ""
     # End-of-speech detection. "semantic" lets Agora decide the candidate has finished
     # rather than cutting them off after a fixed silence, which matters when they pause
     # mid-answer to think. "vad" restores the previous fixed-silence behavior.

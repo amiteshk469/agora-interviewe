@@ -58,14 +58,6 @@
   --tile: #f8f9f9;
   --tile-foreground: #252728;
   --tile-muted: #6b7073;
-  /* Shared editor. The keyword hue stays in the vermilion family so the coding
-     round reads as part of the same product, not a bolted-on IDE. */
-  --code-surface: #f3f4f5;
-  --code-gutter: #9aa1a5;
-  --code-comment: #6d7a74;
-  --code-string: #1a7350;
-  --code-number: #8f5216;
-  --code-keyword: #a5342a;
 }
 
 :root[data-theme="dark"] {
@@ -95,12 +87,6 @@
   --tile: #1d2121;
   --tile-foreground: #f0f1ef;
   --tile-muted: #9aa2a0;
-  --code-surface: #15191a;
-  --code-gutter: #6b7472;
-  --code-comment: #7e8c86;
-  --code-string: #67d29b;
-  --code-number: #e2a76f;
-  --code-keyword: #ff8f81;
 }
 
 * {
