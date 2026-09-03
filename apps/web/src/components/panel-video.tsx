@@ -132,3 +132,15 @@ export function participantGridClass(count: number): string {
   if (count === 4) return "grid-cols-2";
   return "grid-cols-2 sm:grid-cols-3";
 }
+
+/**
+ * Cap the grid so rows can never total more than the stage.
+ *
+ * Sizing tiles by aspect ratio lets two rows compute taller than the space available, which
+ * pushes the grid under the footer. Bounding the grid by row count instead means rows always
+ * share what is actually there, and tiles stay landscape without overflowing.
+ */
+export function participantGridHeightClass(count: number): string {
+  const rows = count <= 3 ? 1 : count === 4 ? 2 : 2;
+  return rows === 1 ? "max-h-[19rem]" : "max-h-[38rem]";
+}

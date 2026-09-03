@@ -293,14 +293,14 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
           aria-label={enabled ? "Mute microphone" : "Unmute microphone"}
           title={enabled ? "Mute microphone" : "Unmute microphone"}
           className={cn(
-            "relative grid size-11 place-items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            "relative grid h-11 w-14 place-items-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
             enabled ? "bg-secondary text-secondary-foreground hover:bg-accent" : "bg-destructive text-white hover:bg-destructive/90",
           )}
         >
           {enabled ? <Mic className="size-5" aria-hidden="true" /> : <MicOff className="size-5" aria-hidden="true" />}
           {enabled && micLevel > SPEAKING_FALL_LEVEL ? (
             <span
-              className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary/70 motion-reduce:hidden"
+              className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-primary/70 motion-reduce:hidden"
               style={{ transform: `scale(${1 + Math.min(micLevel, 1) * 0.28})`, opacity: 0.35 + Math.min(micLevel, 1) * 0.45 }}
               aria-hidden="true"
             />
@@ -310,7 +310,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
         <Button
           size="icon"
           variant={roomToneEnabled ? "secondary" : "outline"}
-          className="size-11 rounded-full"
+          className="h-11 w-14 rounded-xl"
           onClick={toggleRoomTone}
           aria-pressed={roomToneEnabled}
           title="Play quiet room ambience on this device only. It is never sent to the interviewers."

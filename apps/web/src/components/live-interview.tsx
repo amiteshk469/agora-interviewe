@@ -15,7 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
-import { ParticipantTile, participantGridClass, type PanelPresence } from "@/components/panel-video";
+import { ParticipantTile, participantGridClass, participantGridHeightClass, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
 import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
@@ -389,9 +389,9 @@ export function LiveInterviewScreen() {
 
       <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
         <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
-          <div className="flex min-h-0 flex-1 flex-col p-3 sm:p-4">
+          <div className="flex min-h-0 flex-1 flex-col justify-center p-3 sm:p-4">
             <div
-              className={cn("grid min-h-0 flex-1 place-content-center gap-2 sm:gap-3", participantGridClass(participants.length))}
+              className={cn("mx-auto grid min-h-0 w-full flex-1 auto-rows-fr gap-2 sm:gap-3", participantGridClass(participants.length), participantGridHeightClass(participants.length))}
               aria-label="Interview participants"
             >
               {participants.map((person) => {
@@ -411,7 +411,7 @@ export function LiveInterviewScreen() {
                     isSelf={isSelf}
                     toneIndex={isSelf ? configuredPanel.length : configuredIndex}
                     track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
-                    className="aspect-[5/4] w-full sm:aspect-video"
+                    className="size-full"
                   />
                 );
               })}
@@ -430,10 +430,10 @@ export function LiveInterviewScreen() {
               </div>
               <div className="flex min-w-0 flex-wrap items-center justify-center gap-2">
                 <div className="min-w-0"><AgoraLivePanel prepared={storedSession} onTranscript={handleLiveTranscript} onAgentState={setAgentState} onMediaState={setMediaState} /></div>
-                <Button ref={evidenceTriggerRef} variant="outline" size="icon" className="size-11 shrink-0 rounded-full xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog" aria-label="Open transcript">
+                <Button ref={evidenceTriggerRef} variant="outline" size="icon" className="h-11 w-14 shrink-0 rounded-xl xl:hidden" onClick={() => setDetailsOpen(true)} aria-haspopup="dialog" aria-label="Open transcript">
                   <MessageSquareText aria-hidden="true" />
                 </Button>
-                <Button variant="destructive" size="icon" className="size-11 shrink-0 rounded-full" onClick={openEndDialog} aria-label="End interview">
+                <Button variant="destructive" size="icon" className="h-11 w-14 shrink-0 rounded-xl" onClick={openEndDialog} aria-label="End interview">
                   <CircleStop aria-hidden="true" />
                 </Button>
               </div>
