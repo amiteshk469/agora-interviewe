@@ -61,11 +61,11 @@ function SpeakingBars({ className }: { className?: string }) {
 }
 
 /** The avatar, with the halo rings that mark whoever currently holds the floor. */
-function Avatar({ person, toneIndex, speaking }: { person: Panelist; toneIndex?: number; speaking: boolean }) {
+function Avatar({ person, toneIndex, speaking, compact }: { person: Panelist; toneIndex?: number; speaking: boolean; compact?: boolean }) {
   return (
-    <span className={cn("relative grid size-12 place-items-center sm:size-16 lg:size-20", speaking && "speaking-halo")}>
+    <span className={cn("relative grid place-items-center", compact ? "size-9" : "size-12 sm:size-16 lg:size-20", speaking && "speaking-halo")}>
       <span
-        className={cn("grid size-full place-items-center rounded-full text-base font-semibold tracking-[-0.03em] sm:text-xl lg:text-2xl", identityTone(person.id || person.name, toneIndex))}
+        className={cn("grid size-full place-items-center rounded-full font-semibold tracking-[-0.03em]", compact ? "text-xs" : "text-base sm:text-xl lg:text-2xl", identityTone(person.id || person.name, toneIndex))}
         aria-hidden="true"
       >
         {person.initials}
@@ -80,6 +80,7 @@ export function ParticipantTile({
   track,
   toneIndex,
   isSelf,
+  compact,
   className,
 }: {
   person: Panelist;
@@ -87,6 +88,7 @@ export function ParticipantTile({
   track?: IRemoteVideoTrack | null;
   toneIndex?: number;
   isSelf?: boolean;
+  compact?: boolean;
   className?: string;
 }) {
   const speaking = state === "speaking";
@@ -103,14 +105,14 @@ export function ParticipantTile({
         <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="absolute inset-0 size-full" />
       ) : (
         <div className="absolute inset-0 grid place-items-center">
-          <Avatar person={person} toneIndex={toneIndex} speaking={speaking} />
+          <Avatar person={person} toneIndex={toneIndex} speaking={speaking} compact={compact} />
         </div>
       )}
 
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-[var(--tile)] via-[var(--tile)]/85 to-transparent p-2.5 pt-6 sm:p-3 sm:pt-8">
+      <div className={cn("absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-[var(--tile)] via-[var(--tile)]/85 to-transparent", compact ? "p-2 pt-4" : "p-2.5 pt-6 sm:p-3 sm:pt-8")}>
         <div className="min-w-0">
-          <p className="truncate text-[13px] font-semibold leading-5">{person.name}</p>
-          <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{isSelf ? "Candidate" : person.role}</p>
+          <p className={cn("truncate font-semibold", compact ? "text-[11px] leading-4" : "text-[13px] leading-5")}>{person.name}</p>
+          {compact ? null : <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{isSelf ? "Candidate" : person.role}</p>}
         </div>
         <span className={cn("flex shrink-0 items-center gap-1", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : "Your microphone is live") : stateCopy[state]}>
           {speaking ? <SpeakingBars /> : isSelf ? <Mic className="size-3.5" aria-hidden="true" /> : <PresenceIcon state={state} />}
@@ -125,7 +127,13 @@ export function ParticipantTile({
  * one row, four squares up, and five or six take three across. Tiles stay the same size as
  * each other at every count, so nobody is reduced to a thumbnail.
  */
-export function participantGridClass(count: number): string {
+export function participantGridClass(count: number, compact = false): string {
+  // With the editor open everyone shares a single row, the way a coding-interview
+  // client keeps faces present without taking the screen from the code.
+  if (compact) {
+    const columns = ["grid-cols-1", "grid-cols-1", "grid-cols-2", "grid-cols-3", "grid-cols-4", "grid-cols-5", "grid-cols-6"];
+    return columns[Math.min(Math.max(count, 1), 6)];
+  }
   if (count <= 1) return "grid-cols-1";
   if (count === 2) return "grid-cols-1 sm:grid-cols-2";
   if (count === 3) return "grid-cols-2 sm:grid-cols-3";
@@ -140,7 +148,10 @@ export function participantGridClass(count: number): string {
  * pushes the grid under the footer. Bounding the grid by row count instead means rows always
  * share what is actually there, and tiles stay landscape without overflowing.
  */
-export function participantGridHeightClass(count: number): string {
+export function participantGridHeightClass(count: number, compact = false): string {
   const rows = count <= 3 ? 1 : count === 4 ? 2 : 2;
+  // A fixed height, not a cap: the strip no longer flexes, so auto-rows-fr has
+  // nothing to divide unless the row track is given a size of its own.
+  if (compact) return "h-[6.5rem]";
   return rows === 1 ? "max-h-[19rem]" : "max-h-[38rem]";
 }
