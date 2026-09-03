@@ -77,7 +77,10 @@ type PreUploadSnapshot = {
   activePrompt: string;
 };
 
-const targetLevelLabels: Record<TargetLevel, string> = {
+const TARGET_LEVELS: TargetLevel[] = ["associate", "pm", "senior", "lead"];
+
+// Used until the role pack catalogue loads, and if it ever fails to.
+const fallbackLevelLabels: Record<TargetLevel, string> = {
   associate: "Associate PM",
   pm: "Product Manager",
   senior: "Senior Product Manager",
@@ -188,6 +191,17 @@ export function SetupWizard() {
         : "Built-in";
   const panelIds = useMemo(() => new Set(panel.map((person) => person.id)), [panel]);
   const selectedRolePack = useMemo(() => rolePacks.find((pack) => pack.id === rolePackId) ?? null, [rolePackId, rolePacks]);
+  const targetLevelLabels = useMemo<Record<TargetLevel, string>>(() => {
+    const levels = selectedRolePack?.levels;
+    if (!levels || levels.length !== TARGET_LEVELS.length) return fallbackLevelLabels;
+    return Object.fromEntries(TARGET_LEVELS.map((level, index) => [level, levels[index]])) as Record<TargetLevel, string>;
+  }, [selectedRolePack]);
+  // The rubric is what the panel actually scores, so it is the honest list of
+  // things this interview can focus on.
+  const focusOptions = useMemo(() => {
+    if (!selectedRolePack) return ["Product sense and analytics", "Product strategy", "Execution and delivery", "Behavioral leadership", "Mixed product interview"];
+    return [...selectedRolePack.rubric.map((item) => item.label), `Mixed ${selectedRolePack.label.toLowerCase()} interview`];
+  }, [selectedRolePack]);
 
   function markDirty() {
     dirtyRef.current = true;
@@ -424,6 +438,8 @@ export function SetupWizard() {
     // track needs, and every one of those stays editable in the next steps.
     hydrateRecommendedPanel(pack.panel);
     setEnabledTools(pack.enabled_tools);
+    // The previous track's focus is not on this one's menu, so re-anchor it.
+    setFocus(pack.rubric[0]?.label ?? `Mixed ${pack.label.toLowerCase()} interview`);
     if (documentState === "ready") setJdDisposition("edit");
   }
 
@@ -685,8 +701,8 @@ export function SetupWizard() {
                     ) : null}
                   </div>
                 ) : null}
-                <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option>Product sense and analytics</option><option>Product strategy</option><option>Execution and delivery</option><option>Behavioral leadership</option><option>Mixed product interview</option></Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
-                <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="associate">Associate PM</option><option value="pm">Product Manager</option><option value="senior">Senior Product Manager</option><option value="lead">Lead or Group PM</option></Select></Field></div>
+                <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{focusOptions.map((option) => <option key={option} value={option}>{option}</option>)}</Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
+                <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{TARGET_LEVELS.map((level) => <option key={level} value={level}>{targetLevelLabels[level]}</option>)}</Select></Field></div>
                 <label className="flex items-start gap-3 rounded-lg border bg-background p-4"><input name="allow_interruption" type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={allowInterruption} onChange={(event) => { setAllowInterruption(event.target.checked); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }} /><span><span className="block text-sm font-medium">Allow natural candidate interruption</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">The candidate can speak over a panelist, and the active interviewer will stop cleanly.</span></span></label>
               </CardContent>
             </Card>

@@ -570,6 +570,7 @@ class RolePackOut(ApiModel):
     panel: list[dict[str, Any]]
     rubric: list[dict[str, Any]]
     enabled_tools: list[str]
+    levels: list[str]
     supports_coding: bool
     coding: RolePackCoding | None = None
 

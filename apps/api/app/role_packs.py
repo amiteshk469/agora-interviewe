@@ -39,6 +39,10 @@ class RolePack:
     panel: list[dict[str, Any]]
     rubric: list[dict[str, Any]]
     enabled_tools: list[str] = field(default_factory=lambda: ["knowledge_search", "calculator"])
+    # The four seniority tiers this track hires at, weakest to strongest. The
+    # wizard shows these instead of a product ladder, so an SDE interview never
+    # tells its panel the candidate is targeting a Senior Product Manager role.
+    levels: tuple[str, str, str, str] = ("Entry level", "Mid level", "Senior", "Lead")
     coding: CodingProfile | None = None
 
     @property
@@ -54,6 +58,7 @@ class RolePack:
             "panel": self.panel,
             "rubric": self.rubric,
             "enabled_tools": list(self.enabled_tools),
+            "levels": list(self.levels),
             "supports_coding": self.supports_coding,
             "coding": self.coding.as_dict() if self.coding else None,
         }
@@ -102,6 +107,12 @@ _PRODUCT_MANAGEMENT = RolePack(
     label="Product Management",
     family="Product & Strategy",
     summary="Product sense, prioritization, and metric judgment for associate and senior PM loops.",
+    levels=(
+        "Associate PM",
+        "Product Manager",
+        "Senior Product Manager",
+        "Lead or Group PM",
+    ),
     panel=[
         _panelist(
             "", "hiring-manager", "Maya Chen", "Hiring Manager",
@@ -136,6 +147,12 @@ _SOFTWARE_ENGINEERING = RolePack(
     label="Software Engineering",
     family="Engineering",
     summary="Data structures, system design, and code quality for SDE and full-stack graduate loops.",
+    levels=(
+        "Intern or graduate",
+        "Software Engineer",
+        "Senior Software Engineer",
+        "Staff or Lead Engineer",
+    ),
     panel=[
         _panelist(
             "swe", "eng-manager", "Arjun Mehta", "Engineering Manager",
@@ -196,6 +213,12 @@ _DATA_SCIENCE = RolePack(
     label="Data Science & Analytics",
     family="Data & AI",
     summary="Metric selection, experiment design, and SQL fluency for analyst and data scientist loops.",
+    levels=(
+        "Graduate analyst",
+        "Data Scientist",
+        "Senior Data Scientist",
+        "Lead Data Scientist",
+    ),
     panel=[
         _panelist(
             "ds", "ds-lead", "Ananya Krishnan", "Data Science Lead",
@@ -246,6 +269,12 @@ _MACHINE_LEARNING = RolePack(
     label="Machine Learning & AI",
     family="Data & AI",
     summary="Modelling judgment, evaluation, and deployment reality for ML, NLP, and applied AI loops.",
+    levels=(
+        "Intern or graduate",
+        "ML Engineer",
+        "Senior ML Engineer",
+        "Staff ML Engineer",
+    ),
     panel=[
         _panelist(
             "ml", "ml-manager", "Vikram Desai", "ML Engineering Manager",
@@ -306,6 +335,12 @@ _QUANTITATIVE_FINANCE = RolePack(
     label="Quantitative Finance",
     family="Finance & Trading",
     summary="Probability, mental maths, and strategy reasoning for quant research and trading loops.",
+    levels=(
+        "Intern or graduate",
+        "Quantitative Analyst",
+        "Senior Quantitative Researcher",
+        "Desk Lead",
+    ),
     panel=[
         _panelist(
             "quant", "desk-head", "Rohan Malhotra", "Desk Head",
@@ -351,6 +386,12 @@ _CONSULTING = RolePack(
     label="Consulting & Business Analysis",
     family="Product & Strategy",
     summary="Case structuring, market sizing, and synthesis for consulting and business analyst loops.",
+    levels=(
+        "Business Analyst",
+        "Consultant",
+        "Senior Consultant",
+        "Engagement Manager",
+    ),
     panel=[
         _panelist(
             "con", "partner", "Elena Rossi", "Partner",
@@ -396,6 +437,12 @@ _HARDWARE_VLSI = RolePack(
     label="Hardware & VLSI",
     family="Engineering",
     summary="Digital design, verification, and timing for ASIC, RTL, and physical design loops.",
+    levels=(
+        "Graduate Design Engineer",
+        "Design Engineer",
+        "Senior Design Engineer",
+        "Staff or Lead Engineer",
+    ),
     panel=[
         _panelist(
             "vlsi", "design-manager", "Sanjay Pillai", "Design Manager",
@@ -446,6 +493,12 @@ _EMBEDDED_SYSTEMS = RolePack(
     label="Embedded Systems",
     family="Engineering",
     summary="Firmware, real-time constraints, and hardware interfacing for embedded and robotics loops.",
+    levels=(
+        "Graduate Firmware Engineer",
+        "Embedded Engineer",
+        "Senior Embedded Engineer",
+        "Firmware Lead",
+    ),
     panel=[
         _panelist(
             "emb", "firmware-manager", "Nikhil Joshi", "Firmware Manager",
@@ -496,6 +549,12 @@ _CLOUD_DEVOPS = RolePack(
     label="Cloud & DevOps",
     family="Engineering",
     summary="Reliability, automation, and incident response for SRE, platform, and cloud loads.",
+    levels=(
+        "Graduate Cloud Engineer",
+        "Cloud or DevOps Engineer",
+        "Senior Site Reliability Engineer",
+        "Platform Lead",
+    ),
     panel=[
         _panelist(
             "cloud", "platform-manager", "Deepa Menon", "Platform Engineering Manager",
@@ -541,6 +600,12 @@ _CORE_ENGINEERING = RolePack(
     label="Core & Mechanical Engineering",
     family="Core Engineering",
     summary="Engineering fundamentals, manufacturing judgment, and project depth for core graduate roles.",
+    levels=(
+        "Graduate Trainee Engineer",
+        "Engineer",
+        "Senior Engineer",
+        "Engineering Lead",
+    ),
     panel=[
         _panelist(
             "core", "plant-manager", "Harish Nair", "Plant Operations Manager",

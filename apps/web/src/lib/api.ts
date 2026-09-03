@@ -379,6 +379,7 @@ export type RolePack = {
   panel: ProductPanelist[];
   rubric: Array<{ key: string; label: string; weight: number; description?: string }>;
   enabled_tools: string[];
+  levels: string[];
   supports_coding: boolean;
   coding: RolePackCoding | null;
 };
@@ -402,7 +403,7 @@ export function readSessionCode(sessionId: string) {
 
 export function saveSessionCode(sessionId: string, language: string, content: string) {
   return productRequest<CodeBuffer>(`/sessions/${sessionId}/code`, {
-    method: "PUT",
+    method: "POST",
     body: JSON.stringify({ language, content }),
   });
 }

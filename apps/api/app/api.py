@@ -1461,7 +1461,9 @@ async def read_code_buffer(session_id: UUID, db: Db, user: CurrentUser) -> CodeB
     return _code_buffer_out(_read_panel_state(session))
 
 
-@router.put(
+# POST rather than PUT: the deployment's CORS policy admits GET and POST only,
+# and every other mutating route in this API is a POST.
+@router.post(
     "/sessions/{session_id}/code",
     response_model=CodeBufferOut,
     tags=["Interview sessions"],

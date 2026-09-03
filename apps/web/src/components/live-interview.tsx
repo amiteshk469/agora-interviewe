@@ -475,7 +475,7 @@ export function LiveInterviewScreen() {
         <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
           <div className={cn("flex min-h-0 flex-1 flex-col gap-3 p-3 sm:p-4", codeOpen ? "justify-start" : "justify-center")}>
             <div
-              className={cn("mx-auto grid min-h-0 w-full auto-rows-fr gap-2 sm:gap-3", codeOpen ? "shrink-0" : "flex-1", participantGridClass(participants.length), participantGridHeightClass(participants.length, codeOpen))}
+              className={cn("mx-auto grid min-h-0 w-full auto-rows-fr gap-2 sm:gap-3", codeOpen ? "shrink-0" : "flex-1", participantGridClass(participants.length, codeOpen), participantGridHeightClass(participants.length, codeOpen))}
               aria-label="Interview participants"
             >
               {participants.map((person) => {
@@ -495,6 +495,7 @@ export function LiveInterviewScreen() {
                     isSelf={isSelf}
                     toneIndex={isSelf ? configuredPanel.length : configuredIndex}
                     track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
+                    compact={codeOpen}
                     className="size-full"
                   />
                 );

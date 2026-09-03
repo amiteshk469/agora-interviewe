@@ -187,7 +187,7 @@ export function HostConsole({ token }: { token: string }) {
   }
 
   return (
-    <main className="flex min-h-[100dvh] flex-col bg-background">
+    <main className="flex h-[100dvh] flex-col overflow-hidden bg-background">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium leading-5">{session.title}</p>
@@ -201,7 +201,7 @@ export function HostConsole({ token }: { token: string }) {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:flex-row lg:p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden lg:p-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3" aria-label="Interview transcript">
           <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Transcript</h2>
@@ -228,12 +228,13 @@ export function HostConsole({ token }: { token: string }) {
             <CodeView
               source={code?.content ?? ""}
               language={code?.language || "python"}
-              className="max-h-[18rem] shrink-0"
+              // The transcript is the thread to follow; the editor is reference.
+              className="h-[40%] min-h-[10rem] shrink-0"
             />
           ) : null}
         </section>
 
-        <aside className="flex min-h-0 w-full flex-col gap-3 lg:w-[24rem] lg:shrink-0" aria-label="Your notes and questions">
+        <aside className="flex min-h-0 w-full shrink-0 flex-col gap-3 lg:w-[24rem]" aria-label="Your notes and questions">
           {pendingQuestion ? (
             <Alert title="Queued for the panel">
               <span className="text-xs">{pendingQuestion}</span>

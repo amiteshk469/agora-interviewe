@@ -146,7 +146,7 @@ async def test_code_round_trips_and_counts_its_lines(
 ) -> None:
     session = await _session_for(client, auth_headers, "software_engineering")
 
-    written = await client.put(
+    written = await client.post(
         f"/v1/sessions/{session['id']}/code",
         headers=auth_headers,
         json={"language": "python", "content": "def solve(nums):\n    return sorted(nums)\n"},
@@ -164,7 +164,7 @@ async def test_a_track_without_a_coding_round_refuses_the_editor(
 ) -> None:
     session = await _session_for(client, auth_headers, "consulting")
 
-    response = await client.put(
+    response = await client.post(
         f"/v1/sessions/{session['id']}/code",
         headers=auth_headers,
         json={"language": "python", "content": "print(1)"},
@@ -178,7 +178,7 @@ async def test_a_language_the_track_does_not_interview_in_is_refused(
 ) -> None:
     session = await _session_for(client, auth_headers, "data_science")
 
-    response = await client.put(
+    response = await client.post(
         f"/v1/sessions/{session['id']}/code",
         headers=auth_headers,
         json={"language": "verilog", "content": "module top(); endmodule"},
