@@ -1,6 +1,6 @@
 # RoundCraft
 
-RoundCraft is a full mock-interview product covering ten hiring tracks, from software engineering and data science to quant, consulting, VLSI, and core engineering. It runs one Agora Conversational AI session in a shared RTC/RTM channel and presents two to five configurable, logical interviewer roles. A silent Panel Director chooses the role, prompt, voice, and tools for every candidate turn, so panelists can speak in any contextual order without duplicate audible agents or a handoff chain.
+RoundCraft is a full mock-interview product for Product Management candidates. It runs one Agora Conversational AI session in a shared RTC/RTM channel and presents two to five configurable, logical interviewer roles. A silent Panel Director chooses the role, prompt, voice, and tools for every candidate turn, so panelists can speak in any contextual order without duplicate audible agents or a handoff chain.
 
 ## Repository layout
 
@@ -53,53 +53,6 @@ OpenAPI: `http://localhost:8000/docs`
 | Data and auth | Supabase - Auth, Postgres with RLS, private Storage |
 | Tooling | pnpm workspaces, uv, Ruff, mypy, pytest, Vitest, ESLint, GitHub Actions |
 
-## Interview tracks
-
-An interview is defined by its panel, rubric, and tools, so a hiring track is a
-**role pack** that supplies all three. Ten ship with the product, drawn from a
-campus placement board so the tracks match what graduates are actually hired for:
-
-| Track | Panel | Editor |
-| --- | --- | --- |
-| Product Management | Hiring Manager, Product Sense, Analytics | — |
-| Software Engineering | Engineering Manager, Staff Engineer, Systems Architect | Python, Java, C++, JS/TS, Go, Rust, C#, SQL |
-| Data Science & Analytics | DS Lead, Product Analyst, Business Stakeholder | SQL, Python, R |
-| Machine Learning & AI | ML Manager, Research Scientist, Applied Scientist | Python, SQL, C++ |
-| Quantitative Finance | Desk Head, Quant Researcher, Quant Developer | Python, C++, SQL |
-| Consulting & Business Analysis | Partner, Engagement Manager, Client Executive | — |
-| Hardware & VLSI | Design Manager, RTL Lead, Verification Lead | Verilog, SystemVerilog, VHDL, C++, Python |
-| Embedded Systems | Firmware Manager, Embedded Engineer, Hardware Lead | C, C++, Python, Rust, Verilog |
-| Cloud & DevOps | Platform Manager, SRE, Infrastructure Engineer | Bash, Python, YAML, Go, SQL |
-| Core & Mechanical Engineering | Plant Manager, Design Engineer, Graduate Lead | — |
-
-A pack is a starting point, never a lock: the panel, rubric, prompts, and tools
-it seats all stay editable in setup, and an uploaded JD still overrides it.
-
-### The shared editor
-
-On a coding track the room gains a Code control. Opening it drops the panel to a
-strip and hands the stage to an editor whose contents are pushed to the session
-as the candidate types, then given to the speaking panelist as delimited
-untrusted context. The panel can therefore challenge the code while it is being
-written rather than after it is described.
-
-The editor is built into the product rather than installed: syntax highlighting
-is a tested tokenizer rendering React elements, so nothing the candidate types
-can escape into the page. **Code is read, not run** — there is no sandbox and no
-execution.
-
-### Inviting a human interviewer
-
-A live session can mint a signed invite link. The guest opens `/join/<token>`,
-joins the same Agora channel listen-only (no microphone is requested), and gets
-the live transcript, a read-only view of the editor, and two ways to speak: a
-note the candidate reads, or a question the panel asks next in its own voice. A
-queued human question outranks the director's objective for exactly one turn.
-
-The invite is a bearer credential, so it names one session, expires in six hours,
-and is signed with a key derived under its own domain label — a leaked link
-cannot be replayed against anything else.
-
 ## Known limitations
 
 These are current, deliberate, and stated so the product is not read as claiming more than it does.
@@ -112,15 +65,6 @@ These are current, deliberate, and stated so the product is not read as claiming
 - **Assessment depends on an external model.** If the provider is unavailable the report generation endpoint returns 503 with `Retry-After` rather than producing an unsupported score.
 - **Semantic end-of-speech is not yet validated against live production audio.** `AGORA_END_OF_SPEECH_MODE=vad` restores fixed-silence turn taking without a redeploy.
 - **The calculator returns full decimal precision.** Values are rounded for display only; the audited tool result keeps the exact figure.
-- **The shared editor does not execute code.** The panel reads the buffer and
-  challenges it; there is no runner, no test harness, and no sandbox.
-- **Syntax highlighting is heuristic.** A compact tokenizer covers comments,
-  strings, numbers, and keywords. It is not a parser and does not resolve types
-  or scope.
-- **One human interviewer per session, and the invite is the credential.** Anyone
-  holding the link can join until it expires; there is no per-guest identity.
-- **The guest follows by transcript polling, not a live socket.** Their view can
-  trail the room by a couple of seconds.
 - **Free-tier API hosting can cold start.** The first request after an idle period is slow, which matters for a live demo.
 
 RoundCraft is practice-only software. It is not a hiring decision, and it must never be used to assist a candidate during a real interview.
@@ -134,10 +78,10 @@ RoundCraft is practice-only software. It is not a hiring decision, and it must n
 
 ## Product rules
 
-- An interview belongs to one of ten hiring tracks. Product Management is the default; every track is defined by its panel, rubric, and tools rather than by a hardcoded profession.
+- Product profession is Product Management.
 - Candidates may optionally upload a JD. JD-based recommendations are always editable and never silently applied.
 - Built-in interviewer prompts are immutable. Editing one creates a new custom version.
 - A panel has two to five logical interviewer identities backed by one Agora voice agent, with exactly one audible speaker at a time.
 - Optional avatar mode decorates the shared active speaker through an external provider supported by Agora AgentKit. Every logical panelist still has an animated identity-tile fallback, then audio-only fallback.
-- There is no automated human-review or escalation workflow. Missing support is represented as `insufficient_evidence` and converted into replay drills. A human interviewer may join a live session by invite, but they participate in the interview rather than reviewing its output.
+- There is no human-review or escalation workflow. Missing support is represented as `insufficient_evidence` and converted into replay drills.
 - Every scored assessment item links to transcript or tool evidence.

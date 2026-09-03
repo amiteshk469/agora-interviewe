@@ -67,37 +67,6 @@ export interface PanelistInput {
   interruption_style?: string;
 }
 
-/** The hiring tracks the panel can interview for. */
-export type RolePackId =
-  | "product_management"
-  | "software_engineering"
-  | "data_science"
-  | "machine_learning"
-  | "quantitative_finance"
-  | "consulting"
-  | "hardware_vlsi"
-  | "embedded_systems"
-  | "cloud_devops"
-  | "core_engineering";
-
-export interface RolePackCoding {
-  languages: string[];
-  default_language: string;
-  prompt: string;
-}
-
-export interface RolePack {
-  id: RolePackId;
-  label: string;
-  family: string;
-  summary: string;
-  panel: PanelistInput[];
-  rubric: RubricCriterion[];
-  enabled_tools: string[];
-  supports_coding: boolean;
-  coding: RolePackCoding | null;
-}
-
 export interface RubricCriterion {
   key: string;
   label: string;
@@ -107,7 +76,7 @@ export interface RubricCriterion {
 
 export interface InterviewConfigCreate {
   title?: string;
-  profession?: RolePackId | string;
+  profession?: "product_management";
   job_description_id?: UUID | null;
   difficulty?: Difficulty;
   duration_minutes?: number;
@@ -120,7 +89,7 @@ export interface InterviewConfigOut {
   id: UUID;
   job_description_id: UUID | null;
   title: string;
-  profession: RolePackId | string;
+  profession: "product_management" | string;
   difficulty: Difficulty | string;
   duration_minutes: number;
   panel: PanelistInput[];

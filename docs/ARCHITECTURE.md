@@ -15,11 +15,6 @@ Shared browser contracts and configuration live in `packages/`. Supabase owns pr
 flowchart TB
     subgraph browser["Candidate browser"]
         UI["Next.js app on Vercel<br/>identity tiles, transcript, tool evidence"]
-        EDIT["Shared editor<br/>coding tracks only"]
-    end
-
-    subgraph guest["Human interviewer - by invite"]
-        HOST["Join console<br/>listen-only audio, transcript, editor view"]
     end
 
     subgraph agora["Agora - real-time voice layer"]
@@ -31,7 +26,6 @@ flowchart TB
     end
 
     subgraph api["FastAPI on Render"]
-        PACKS["Role packs<br/>panel, rubric, tools, editor per track"]
         LLM["Custom LLM endpoint<br/>OpenAI-compatible, bearer verified"]
         DIR["Panel Director - silent<br/>picks ONE speaker per turn, non-linear"]
         TOOLS["Role-scoped tools<br/>knowledge search, calculator, web search"]
@@ -56,10 +50,6 @@ flowchart TB
     VAD -.->|"barge-in, end of turn"| AGENT
     AGENT -->|"one call per candidate turn"| LLM
     LLM --> DIR
-    PACKS -->|"seats the panel at setup"| UI
-    EDIT -->|"buffer snapshot, delimited as untrusted"| LLM
-    HOST -->|"queued question outranks the director for one turn"| DIR
-    HOST <-->|"listen-only"| RTC
     DIR -->|"selected role prompt + voice + allowed tools"| TOOLS
     TOOLS --> GROQ
     TOOLS --> FC
@@ -76,7 +66,7 @@ flowchart TB
     classDef agoraStyle fill:#e8f1fb,stroke:#2f6fbb,color:#10263f
     classDef apiStyle fill:#fdeeea,stroke:#c4462c,color:#3d1108
     class RTC,AGENT,STT,TTS,VAD agoraStyle
-    class LLM,DIR,TOOLS,EVID,ASSESS,PACKS apiStyle
+    class LLM,DIR,TOOLS,EVID,ASSESS apiStyle
 ```
 
 The critical constraint: **exactly one physical Agora agent** carries two to five *logical*
@@ -91,7 +81,6 @@ Agora only ever renders one audible speaker.
 Candidate browser
   ├─ HTTPS ───────────────► Next.js on Vercel
   │                           └─ authenticated API calls
-  ├─ shared editor ───────► session code buffer (coding tracks only)
   ├─ RTC audio/video ─────► one shared Agora RTC/RTM channel
   └─ RTM events ◄─────────►   ├─ one ConvoAI voice agent
                               ├─ 2-5 logical panel identities
@@ -99,13 +88,7 @@ Candidate browser
                               └─ director-aware custom LLM SSE calls
                                       │
                                       ▼
-Human interviewer (by signed invite, optional)
-  ├─ listen-only RTC ─────► the same Agora channel
-  └─ HTTPS ───────────────► guest routes: transcript, editor view, note, or a
-                            question the panel asks on the next turn
-
 FastAPI on Render
-  ├─ role packs: panel, rubric, tools, and editor per hiring track
   ├─ Panel Director and persona prompts
   ├─ JD/resume ingestion and retrieval
   ├─ role-scoped tools and audit records
@@ -119,15 +102,13 @@ FastAPI on Render
 
 ## Live interview flow
 
-1. The candidate picks a hiring track. The role pack for that track seats a default panel, rubric, and tool set, and declares whether the interview has a coding round. From there they select two to five interviewers from immutable defaults, edit a fork, or create a custom profile.
-2. The candidate may upload a JD. The API stores the private original in Supabase Storage, extracts/indexes its text, then returns editable recommendations for panel roles, prompts, rubric weights, difficulty, tools, and domain context. A JD recommendation outranks the role pack; anything the candidate edited outranks both.
+1. The candidate selects two to five interviewers from immutable defaults, edits a fork, or creates a custom profile.
+2. The candidate may upload a JD. The API stores the private original in Supabase Storage, extracts/indexes its text, then returns editable recommendations for panel roles, prompts, rubric weights, difficulty, tools, and domain context. Without a JD, curated PM defaults are used.
 3. Starting an interview snapshots the configuration, creates one unguessable channel, issues a short-lived candidate token, allocates the shared publisher plus logical tile identities, and starts exactly one Agora AgentKit session. A failed start is stopped before the product session is marked failed.
 4. The browser joins the channel once and renders the logical participant roster. Agora carries candidate audio and the active interviewer output; automatic VAD and barge-in keep the agent listening without client-side speech-boundary choreography.
 5. Each candidate turn reaches the custom LLM gateway once. The silent Panel Director applies expertise, evidence-gap, repetition, coverage, and pending-speaker rules, then may select any panelist, including the current one. Sequences such as 1 → 3 → 1 are valid.
 6. The selected role's immutable invariants, editable prompt, knowledge, behavior, difficulty, and allowlisted tools are assembled into that turn's system instruction. First-packet metadata selects the role's MiniMax voice while Agora keeps one physical speaking session.
 7. Eligible roles may use JD/transcript knowledge search, deterministic calculation, or configured current-information search. Tool inputs and outputs are audited before their bounded context is added to the response.
-7b. On a coding track the candidate's editor is pushed to the session as they type and handed to the speaking panelist as delimited untrusted context, truncated to 120 lines. The panel reads the buffer; it is never executed.
-7c. A human interviewer holding a signed invite may join the same channel listen-only. A question they submit is stored on the session and consumed by the next turn, where it replaces the director's objective for exactly one turn before the panel resumes its own line.
 8. Agora RTM and signed webhooks update transcripts, interruption state, and the durable logical-participant mapping. An optional forced-dispatch endpoint uses `agent_think` for controlled drills without changing the normal automatic-VAD path.
 9. On stop, the API leaves the shared agent once, reconciles persisted turns with Agora history, calculates transcript-linked rubric scores, and generates replay drills. Unsupported criteria become `insufficient_evidence`; there is no human-review queue.
 
@@ -155,7 +136,6 @@ FastAPI on Render
 | JD, resume, reports, optional media | Private Supabase Storage | Signed URLs and owner-scoped policies only. |
 | Extracted document chunks | Postgres + pgvector | Uploaded text is untrusted content, never system instructions. |
 | Transcript turns | Postgres | Keyed by interview and Agora `turn_id`, including interrupted status. |
-| Candidate editor and co-host state | Postgres, inside the session's live state | The buffer, the human interviewer's presence, their notes, and any question queued for the panel. Bounded and replaced per turn, not an append-only log. |
 | Tools and evidence | Postgres | Every scored item links to transcript and optionally tool evidence. |
 | Agora webhooks | Postgres | HMAC verified and idempotent by notice ID. |
 
@@ -166,8 +146,6 @@ FastAPI on Render
 - RLS protects candidate-owned rows and Storage objects; API access does not replace database policies.
 - JD/resume contents are not sent to web search. Retrieved text is delimited as data and cannot change system instructions or tool permissions.
 - Tools use strict schemas, role allowlists, timeouts, output limits, and audit rows. Calculations are deterministic and never use `eval`.
-- Human-interviewer invites are bearer credentials and are scoped accordingly: one session, a six-hour expiry, HMAC-SHA256 over the claims, and a signing key derived from the deployment secret under a fixed domain label so it cannot verify anything else. Guest routes are separate from owner routes and can only read the session they name, never enumerate or mutate it.
-- The candidate's editor is untrusted candidate input. It is delimited before it reaches the model, capped in length, and rendered to the panel as text — it is never executed, and on the guest's screen it is rendered as React elements rather than HTML.
 - Render is public only at the network layer because Agora needs HTTPS callbacks. Product endpoints still require JWTs or service-specific credentials.
 
 ## Scale and failure behavior

@@ -7,7 +7,6 @@ import {
   ArrowRight,
   Bot,
   Check,
-  Code2,
   Copy,
   FileText,
   LoaderCircle,
@@ -32,17 +31,14 @@ import {
   demoModeEnabled,
   forkPromptTemplate,
   listPromptTemplates,
-  listRolePacks,
   readLiveSession,
   saveLiveSession,
   startInterviewSession,
   uploadJobDescription,
   type JobDescriptionResponse,
   type PromptTemplateRecord,
-  type RolePack,
 } from "@/lib/api";
 import { interruptionStyle, interviewerCallableTools, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata, type SetupDifficulty, type TargetLevel } from "@/lib/setup-preferences";
-import { languageLabel } from "@/lib/code-highlight";
 import { cn } from "@/lib/utils";
 
 const steps = ["Role", "Documents", "Panel", "Prompts", "Review"];
@@ -77,10 +73,7 @@ type PreUploadSnapshot = {
   activePrompt: string;
 };
 
-const TARGET_LEVELS: TargetLevel[] = ["associate", "pm", "senior", "lead"];
-
-// Used until the role pack catalogue loads, and if it ever fails to.
-const fallbackLevelLabels: Record<TargetLevel, string> = {
+const targetLevelLabels: Record<TargetLevel, string> = {
   associate: "Associate PM",
   pm: "Product Manager",
   senior: "Senior Product Manager",
@@ -169,8 +162,6 @@ export function SetupWizard() {
   const [saveError, setSaveError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [enabledTools, setEnabledTools] = useState(["knowledge_search", "calculator"]);
-  const [rolePacks, setRolePacks] = useState<RolePack[]>([]);
-  const [rolePackId, setRolePackId] = useState("product_management");
   const inputRef = useRef<HTMLInputElement>(null);
   const fileFeedbackRef = useRef<HTMLDivElement>(null);
   const preferencesAppliedFor = useRef<string | null>(user?.id ?? null);
@@ -190,18 +181,6 @@ export function SetupWizard() {
         ? "Private"
         : "Built-in";
   const panelIds = useMemo(() => new Set(panel.map((person) => person.id)), [panel]);
-  const selectedRolePack = useMemo(() => rolePacks.find((pack) => pack.id === rolePackId) ?? null, [rolePackId, rolePacks]);
-  const targetLevelLabels = useMemo<Record<TargetLevel, string>>(() => {
-    const levels = selectedRolePack?.levels;
-    if (!levels || levels.length !== TARGET_LEVELS.length) return fallbackLevelLabels;
-    return Object.fromEntries(TARGET_LEVELS.map((level, index) => [level, levels[index]])) as Record<TargetLevel, string>;
-  }, [selectedRolePack]);
-  // The rubric is what the panel actually scores, so it is the honest list of
-  // things this interview can focus on.
-  const focusOptions = useMemo(() => {
-    if (!selectedRolePack) return ["Product sense and analytics", "Product strategy", "Execution and delivery", "Behavioral leadership", "Mixed product interview"];
-    return [...selectedRolePack.rubric.map((item) => item.label), `Mixed ${selectedRolePack.label.toLowerCase()} interview`];
-  }, [selectedRolePack]);
 
   function markDirty() {
     dirtyRef.current = true;
@@ -349,14 +328,6 @@ export function SetupWizard() {
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    void listRolePacks()
-      .then((packs) => { if (!cancelled) setRolePacks(packs); })
-      .catch((error) => console.warn("Role packs could not be loaded", error));
-    return () => { cancelled = true; };
-  }, []);
-
   function updatePanel(id: string, patch: Partial<Panelist>) {
     setPanel((current) => current.map((person) => person.id === id ? { ...person, ...patch } : person));
     setSaveError("");
@@ -426,21 +397,6 @@ export function SetupWizard() {
       setPromptNames({});
       setPromptTemplateIds(assigned.promptTemplateIds);
     }
-  }
-
-  function chooseRolePack(id: string) {
-    const pack = rolePacks.find((item) => item.id === id);
-    setRolePackId(id);
-    setSaveError("");
-    markDirty();
-    if (!pack) return;
-    // The pack is a starting point: it seats a panel and picks the tools that
-    // track needs, and every one of those stays editable in the next steps.
-    hydrateRecommendedPanel(pack.panel);
-    setEnabledTools(pack.enabled_tools);
-    // The previous track's focus is not on this one's menu, so re-anchor it.
-    setFocus(pack.rubric[0]?.label ?? `Mixed ${pack.label.toLowerCase()} interview`);
-    if (documentState === "ready") setJdDisposition("edit");
   }
 
   function applyRecommendedPanel() {
@@ -633,7 +589,7 @@ export function SetupWizard() {
     try {
       const config = await createInterviewConfig({
         title: title.trim(),
-        profession: rolePackId,
+        profession: "product_management",
         job_description_id: documentState === "ready" && jdDisposition !== "ignore" && documentId !== "demo-jd" ? documentId : undefined,
         difficulty,
         duration_minutes: Number(duration),
@@ -669,40 +625,8 @@ export function SetupWizard() {
               <CardHeader><CardTitle id="wizard-step-title" className="text-xl">What are you preparing for?</CardTitle><CardDescription>These settings shape the starting difficulty and default rubric. You can still change every interviewer later.</CardDescription></CardHeader>
               <CardContent className="space-y-5">
                 <Field label="Interview name" required><Input name="interview_name" value={title} onChange={(event) => { setTitle(event.target.value); setSaveError(""); markDirty(); }} placeholder="Name this interview…" /></Field>
-                {rolePacks.length ? (
-                  <Field label="Hiring track" hint="Seats a panel and rubric built for this role. Everything stays editable.">
-                    <Select name="role_pack" value={rolePackId} onChange={(event) => chooseRolePack(event.target.value)}>
-                      {[...new Set(rolePacks.map((pack) => pack.family))].map((family) => (
-                        <optgroup key={family} label={family}>
-                          {rolePacks.filter((pack) => pack.family === family).map((pack) => (
-                            <option key={pack.id} value={pack.id}>{pack.label}</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </Select>
-                  </Field>
-                ) : null}
-                {selectedRolePack ? (
-                  <div className="rounded-lg border bg-background p-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium">{selectedRolePack.label}</p>
-                      {selectedRolePack.supports_coding ? (
-                        <Badge variant="outline"><Code2 className="size-3" aria-hidden="true" />Coding round</Badge>
-                      ) : null}
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{selectedRolePack.summary}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Panel: {selectedRolePack.panel.map((person) => person.role).join(", ")}
-                    </p>
-                    {selectedRolePack.coding ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Editor languages: {selectedRolePack.coding.languages.map((value) => languageLabel(value)).join(", ")}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-                <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{focusOptions.map((option) => <option key={option} value={option}>{option}</option>)}</Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
-                <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{TARGET_LEVELS.map((level) => <option key={level} value={level}>{targetLevelLabels[level]}</option>)}</Select></Field></div>
+                <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option>Product sense and analytics</option><option>Product strategy</option><option>Execution and delivery</option><option>Behavioral leadership</option><option>Mixed product interview</option></Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
+                <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="associate">Associate PM</option><option value="pm">Product Manager</option><option value="senior">Senior Product Manager</option><option value="lead">Lead or Group PM</option></Select></Field></div>
                 <label className="flex items-start gap-3 rounded-lg border bg-background p-4"><input name="allow_interruption" type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={allowInterruption} onChange={(event) => { setAllowInterruption(event.target.checked); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }} /><span><span className="block text-sm font-medium">Allow natural candidate interruption</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">The candidate can speak over a panelist, and the active interviewer will stop cleanly.</span></span></label>
               </CardContent>
             </Card>
