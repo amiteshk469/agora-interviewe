@@ -1,20 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Headphones, Loader2, MessageSquareText, Mic, MicOff, Send, Volume2, VolumeX } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, Code2, Copy, Headphones, Loader2, MessageSquareText, Mic, MicOff, PhoneOff, Send, UserRound, Volume2, VolumeX } from "lucide-react";
 import { CodeView } from "@/components/code-pane";
-import { Alert, Badge, Button, Card } from "@/components/ui";
+import { PanelIdentity } from "@/components/panel-video";
+import { Alert, Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
 import {
   joinSessionAsHost,
   heartbeatHostSession,
+  endInterviewSession,
+  generateSessionReport,
   leaveHostSession,
   readGuestView,
   renewHostSessionToken,
+  sendHostCodingTask,
   sendHostMessage,
+  type CandidatePresence,
   type CodeBuffer,
+  type CodingTask,
   type GuestSession,
   type GuestView,
+  type GuestInvitePreview,
   type HostMessage,
+  type SessionInvite,
 } from "@/lib/api";
 import { mergeRecordsById, panelistIdForAgoraUid } from "@/lib/live-panel";
 import { joinHostRtcRoom, type HostRtcHandle } from "@/lib/host-rtc";
@@ -36,15 +45,26 @@ function speakerLabel(turn: Turn, session: GuestSession | null) {
   return match?.display_name ?? "Panel";
 }
 
-export function HostConsole({ token }: { token: string }) {
+export function HostConsole({ token, preview, autoJoinName, ownerSessionId, candidateInvite }: { token: string; preview?: GuestInvitePreview; autoJoinName?: string; ownerSessionId?: string; candidateInvite?: SessionInvite }) {
+  const router = useRouter();
   const [name, setName] = useState("");
   const [session, setSession] = useState<GuestSession | null>(null);
   const [joining, setJoining] = useState(false);
+  const [prejoinMicrophoneReady, setPrejoinMicrophoneReady] = useState(false);
+  const [testingPrejoinMicrophone, setTestingPrejoinMicrophone] = useState(false);
   const [error, setError] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [code, setCode] = useState<CodeBuffer | null>(null);
   const [messages, setMessages] = useState<HostMessage[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState<CandidatePresence | null>(null);
+  const [codingTask, setCodingTask] = useState<CodingTask | null>(null);
+  const [codingQuestion, setCodingQuestion] = useState("");
+  const [codingHints, setCodingHints] = useState("");
+  const [codingLanguage, setCodingLanguage] = useState("python");
+  const [sendingTask, setSendingTask] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState(false);
+  const [ending, setEnding] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
@@ -58,6 +78,7 @@ export function HostConsole({ token }: { token: string }) {
   const statusRef = useRef("");
   const lastSequence = useRef(0);
   const transcriptEnd = useRef<HTMLDivElement>(null);
+  const autoJoinStarted = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -69,15 +90,15 @@ export function HostConsole({ token }: { token: string }) {
     };
   }, []);
 
-  const join = useCallback(async (event: FormEvent) => {
-    event.preventDefault();
+  const joinRoom = useCallback(async (displayName: string) => {
     setJoining(true);
     setRtcReady(false);
     setError("");
     try {
-      const joined = await joinSessionAsHost(token, name.trim() || "Guest interviewer");
+      const joined = await joinSessionAsHost(token, displayName.trim() || "Guest interviewer");
       if (!mounted.current) return;
       setSession(joined);
+      setCodingLanguage(joined.coding?.default_language || "python");
       statusRef.current = joined.status;
       setStatus(joined.status);
       try {
@@ -103,7 +124,36 @@ export function HostConsole({ token }: { token: string }) {
     } finally {
       setJoining(false);
     }
-  }, [name, token]);
+  }, [token]);
+
+  const join = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    await joinRoom(name);
+  }, [joinRoom, name]);
+
+  const testPrejoinMicrophone = useCallback(async () => {
+    setTestingPrejoinMicrophone(true);
+    setError("");
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (!stream.getAudioTracks().length) throw new Error("No microphone was found");
+      setPrejoinMicrophoneReady(true);
+    } catch (cause) {
+      setPrejoinMicrophoneReady(false);
+      setError(cause instanceof Error ? cause.message : "Microphone permission could not be verified.");
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+      setTestingPrejoinMicrophone(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!autoJoinName || autoJoinStarted.current) return;
+    autoJoinStarted.current = true;
+    setName(autoJoinName);
+    void joinRoom(autoJoinName);
+  }, [autoJoinName, joinRoom]);
 
   useEffect(() => {
     if (!session) return;
@@ -126,6 +176,8 @@ export function HostConsole({ token }: { token: string }) {
         }
         setStatus(view.status);
         setCode(view.code);
+        setCandidate(view.candidate ?? null);
+        setCodingTask(view.coding_task ?? null);
         setMessages((current) => mergeRecordsById(current, view.messages));
         setPendingQuestion(view.pending_question);
         if (view.turns.length) {
@@ -186,6 +238,54 @@ export function HostConsole({ token }: { token: string }) {
     }
   }, [draft, sending, token]);
 
+  const openCodingTask = useCallback(async () => {
+    const question = codingQuestion.trim();
+    if (!question || sendingTask) return;
+    setSendingTask(true);
+    setError("");
+    try {
+      const task = await sendHostCodingTask(
+        token,
+        question,
+        codingLanguage,
+        codingHints.split("\n").map((hint) => hint.trim()).filter(Boolean),
+      );
+      setCodingTask(task);
+      setCodingQuestion("");
+      setCodingHints("");
+    } catch (taskError) {
+      setError(taskError instanceof Error ? taskError.message : "The coding task could not be opened.");
+    } finally {
+      setSendingTask(false);
+    }
+  }, [codingHints, codingLanguage, codingQuestion, sendingTask, token]);
+
+  const copyCandidateInvite = useCallback(async () => {
+    if (!candidateInvite) return;
+    try {
+      await navigator.clipboard.writeText(new URL(candidateInvite.join_path, window.location.origin).toString());
+      setCopiedInvite(true);
+      window.setTimeout(() => setCopiedInvite(false), 1600);
+    } catch {
+      setError("Copy was blocked. Return to the lobby to copy the candidate link manually.");
+    }
+  }, [candidateInvite]);
+
+  const finishInterview = useCallback(async () => {
+    if (!ownerSessionId || ending) return;
+    if (!window.confirm("End this interview for everyone and create the assessment report?")) return;
+    setEnding(true);
+    setError("");
+    try {
+      await endInterviewSession(ownerSessionId);
+      await generateSessionReport(ownerSessionId);
+      router.push(`/reports/${ownerSessionId}`);
+    } catch (endError) {
+      setError(endError instanceof Error ? endError.message : "The interview could not be ended.");
+      setEnding(false);
+    }
+  }, [ending, ownerSessionId, router]);
+
   const toggleAudio = useCallback(() => {
     setAudioMuted((muted) => {
       rtc.current?.setMuted(!muted);
@@ -212,33 +312,31 @@ export function HostConsole({ token }: { token: string }) {
   }, [microphoneBusy, microphoneEnabled]);
 
   if (!session) {
+    if (autoJoinName) {
+      return <main className="grid min-h-[100dvh] place-items-center bg-background p-6"><div className="text-center"><Loader2 className="mx-auto size-6 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" /><h1 className="mt-4 text-lg font-semibold">Opening interviewer control room</h1><p className="mt-1 text-sm text-muted-foreground">Connecting your private seat to Agora.</p>{error ? <div className="mt-4 max-w-md"><Alert variant="destructive" title="Could not join">{error}</Alert><Button className="mt-3" onClick={() => { autoJoinStarted.current = false; void joinRoom(autoJoinName); }}>Try again</Button></div> : null}</div></main>;
+    }
     return (
-      <main className="mx-auto flex min-h-[100dvh] max-w-md flex-col justify-center gap-6 p-6">
-        <div>
-          <h1 className="text-xl font-semibold">Join as interviewer</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            You can hear the room, speak directly to the candidate, follow the transcript, and hand
-            the AI panel a question to ask next.
-          </p>
+      <main className="grid min-h-[100dvh] place-items-center bg-background p-5 sm:p-8">
+        <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_23rem]">
+          <section className="surface-grid rounded-2xl border bg-card p-6 sm:p-9">
+            <Badge variant="secondary">{preview?.role_pack || "Live interview"}</Badge>
+            <h1 className="mt-5 text-3xl font-semibold tracking-tight">{preview?.title || "Join as interviewer"}</h1>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">Hear the room, speak directly to the candidate, follow the evidence transcript, lead the AI panel, and open coding questions.</p>
+            {preview?.panel?.length ? <div className="mt-7 grid gap-2 sm:grid-cols-2">{preview.panel.map((member, index) => <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-3"><PanelIdentity seed={member.id} toneIndex={index} initials={member.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2)} className="size-9 text-[10px]" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{member.display_name}</span><span className="block truncate text-xs text-muted-foreground">{member.role}</span></span></div>)}</div> : null}
+          </section>
+          <Card>
+            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Your microphone stays off until you explicitly enable it inside the room.</CardDescription></CardHeader>
+            <CardContent>
+              <form onSubmit={join} className="flex flex-col gap-3">
+                <label className="text-sm font-medium" htmlFor="host-name">Your name</label>
+                <input id="host-name" name="host_name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Interviewer name…" autoComplete="name" className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                <Button type="button" variant={prejoinMicrophoneReady ? "secondary" : "outline"} onClick={() => void testPrejoinMicrophone()} disabled={testingPrejoinMicrophone}>{testingPrejoinMicrophone ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : prejoinMicrophoneReady ? <Check className="size-4" aria-hidden="true" /> : <Mic className="size-4" aria-hidden="true" />}{testingPrejoinMicrophone ? "Testing microphone" : prejoinMicrophoneReady ? "Microphone ready" : "Test microphone"}</Button>
+                <Button type="submit" size="lg" disabled={joining}>{joining ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Headphones className="size-4" aria-hidden="true" />}{joining ? "Joining interview" : "Join interview"}</Button>
+              </form>
+              {error ? <div className="mt-4"><Alert variant="destructive" title="Could not join">{error}</Alert></div> : null}
+            </CardContent>
+          </Card>
         </div>
-        <form onSubmit={join} className="flex flex-col gap-3">
-          <label className="text-sm font-medium" htmlFor="host-name">
-            Your name
-          </label>
-          <input
-            id="host-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Amitesh"
-            autoComplete="name"
-            className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <Button type="submit" disabled={joining}>
-            {joining ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Headphones className="size-4" aria-hidden />}
-            {joining ? "Joining" : "Join the interview"}
-          </Button>
-        </form>
-        {error ? <Alert variant="destructive" title="Could not join">{error}</Alert> : null}
       </main>
     );
   }
@@ -251,6 +349,7 @@ export function HostConsole({ token }: { token: string }) {
           <p className="text-xs text-muted-foreground">{session.role_pack}</p>
         </div>
         <div className="ms-auto flex items-center gap-2">
+          {candidate ? <Badge variant="outline"><span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />{candidate.display_name} joined</Badge> : ownerSessionId ? <Badge variant="secondary">Waiting for candidate</Badge> : null}
           <Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge>
           {updatesDelayed ? <Badge variant="destructive" role="status">Updates delayed</Badge> : null}
           <Button variant="ghost" size="icon" onClick={toggleAudio} disabled={!rtcReady} aria-pressed={audioMuted} aria-label={audioMuted ? "Unmute the room" : "Mute the room"}>
@@ -267,11 +366,17 @@ export function HostConsole({ token }: { token: string }) {
           >
             {microphoneBusy ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden /> : microphoneEnabled ? <Mic className="size-4" aria-hidden /> : <MicOff className="size-4" aria-hidden />}
           </Button>
+          {candidateInvite ? <Button variant="ghost" size="icon" onClick={() => void copyCandidateInvite()} aria-label="Copy candidate invitation" title="Copy candidate invitation">{copiedInvite ? <Check className="size-4" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}</Button> : null}
+          {ownerSessionId ? <Button variant="destructive" size="sm" onClick={() => void finishInterview()} disabled={ending}>{ending ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <PhoneOff className="size-4" aria-hidden="true" />}End</Button> : null}
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden lg:p-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3" aria-label="Interview transcript">
+          <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4" aria-label="People in the interview">
+            {session.panel.map((member, index) => <div key={member.id} className="flex min-w-0 items-center gap-2 rounded-xl border bg-card p-3"><PanelIdentity seed={member.id} toneIndex={index} initials={member.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2)} className="size-9 text-[10px]" /><span className="min-w-0"><span className="block truncate text-xs font-medium">{member.display_name}</span><span className="block truncate text-[10px] text-muted-foreground">AI · {member.role}</span></span></div>)}
+            <div className={cn("flex min-w-0 items-center gap-2 rounded-xl border p-3", candidate ? "border-primary/40 bg-primary/5" : "border-dashed bg-card")}><span className="grid size-9 shrink-0 place-items-center rounded-full bg-secondary"><UserRound className="size-4" aria-hidden="true" /></span><span className="min-w-0"><span className="block truncate text-xs font-medium">{candidate?.display_name || "Candidate"}</span><span className="block truncate text-[10px] text-muted-foreground">{candidate ? "In the room" : "Waiting to join"}</span></span></div>
+          </div>
           <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Transcript</h2>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -310,6 +415,24 @@ export function HostConsole({ token }: { token: string }) {
             </Alert>
           ) : null}
 
+          {session.supports_coding ? (
+            <Card className="shrink-0 p-0">
+              <div className="border-b px-3 py-2"><h2 className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Code2 className="size-3.5" aria-hidden="true" />Coding task</h2></div>
+              <div className="space-y-2 p-3">
+                {codingTask ? <div className="rounded-lg border bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline">Open · {codingTask.language}</Badge><span className="text-[10px] text-muted-foreground">Candidate sees this now</span></div><p className="mt-2 text-xs leading-5">{codingTask.question}</p></div> : null}
+                <label className="sr-only" htmlFor="coding-question">Coding question</label>
+                <textarea id="coding-question" name="coding_question" autoComplete="off" value={codingQuestion} onChange={(event) => setCodingQuestion(event.target.value)} rows={3} placeholder="Write the coding problem the candidate should solve…" className="w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                <div className="grid grid-cols-[8rem_1fr] gap-2">
+                  <label className="sr-only" htmlFor="coding-language">Language</label>
+                  <select id="coding-language" name="coding_language" autoComplete="off" value={codingLanguage} onChange={(event) => setCodingLanguage(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">{(session.coding?.languages ?? ["python"]).map((language) => <option key={language} value={language}>{language}</option>)}</select>
+                  <label className="sr-only" htmlFor="coding-hints">Optional hints</label>
+                  <input id="coding-hints" name="coding_hints" autoComplete="off" value={codingHints} onChange={(event) => setCodingHints(event.target.value)} placeholder="Optional hint…" className="h-9 min-w-0 rounded-md border bg-background px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                </div>
+                <Button className="w-full" size="sm" onClick={() => void openCodingTask()} disabled={!codingQuestion.trim() || sendingTask}>{sendingTask ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Code2 aria-hidden="true" />}Open candidate editor</Button>
+              </div>
+            </Card>
+          ) : null}
+
           <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Your messages</h2>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -340,6 +463,8 @@ export function HostConsole({ token }: { token: string }) {
             </label>
             <textarea
               id="host-draft"
+              name="host_message"
+              autoComplete="off"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               rows={3}

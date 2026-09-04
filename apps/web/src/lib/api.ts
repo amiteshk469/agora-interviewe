@@ -13,7 +13,7 @@ export type AgoraPanelParticipant = {
   panelist_id: string;
   agent_uid: string;
   avatar_uid?: string | null;
-  video_mode: "live" | "portrait" | "audio";
+  video_mode: "avatar" | "static" | "audio" | "live" | "portrait";
 };
 
 export const demoModeEnabled = process.env.NEXT_PUBLIC_DEMO_MODE === "true" && process.env.NODE_ENV !== "production";
@@ -201,6 +201,7 @@ export type ProductPanelist = {
 export type InterviewConfigPayload = {
   title: string;
   profession: string;
+  interview_mode?: "candidate_practice" | "interviewer_led";
   job_description_id?: string;
   difficulty?: "supportive" | "balanced" | "challenging" | "executive";
   duration_minutes: number;
@@ -417,6 +418,17 @@ export type SessionInvite = {
   token: string;
   join_path: string;
   expires_at: string;
+  seat: "interviewer" | "candidate";
+};
+
+export type CodingTask = {
+  id: string;
+  question: string;
+  language: string;
+  hints: string[];
+  author: string;
+  created_at: string;
+  active: boolean;
 };
 
 export type HostMessage = {
@@ -434,12 +446,29 @@ export type HostPresence = {
   messages: HostMessage[];
 };
 
+export type CandidatePresence = {
+  display_name: string;
+  joined_at: string;
+  last_seen_at: string;
+};
+
 export function createSessionInvite(sessionId: string) {
   return productRequest<SessionInvite>(`/sessions/${sessionId}/invite`, { method: "POST" });
 }
 
+export function createScopedSessionInvite(sessionId: string, seat: "interviewer" | "candidate") {
+  return productRequest<SessionInvite>(`/sessions/${sessionId}/invites`, {
+    method: "POST",
+    body: JSON.stringify({ seat }),
+  });
+}
+
 export function readHostPresence(sessionId: string) {
   return productRequest<HostPresence | null>(`/sessions/${sessionId}/host`);
+}
+
+export function readCandidatePresence(sessionId: string) {
+  return productRequest<CandidatePresence | null>(`/sessions/${sessionId}/candidate`);
 }
 
 /** The guest's side of the room. These calls carry the invite, not a signed-in user. */
@@ -448,11 +477,25 @@ export type GuestSession = {
   title: string;
   role_pack: string;
   status: string;
+  seat: "interviewer" | "candidate";
   display_name: string;
   connection: AgoraConfig;
-  panel: Array<{ id: string; display_name: string; role: string }>;
+  panel: Array<{ id: string; display_name: string; role: string; avatar_image?: string | null }>;
   supports_coding: boolean;
+  coding: RolePackCoding | null;
   heartbeat_interval_seconds: number;
+};
+
+export type GuestInvitePreview = {
+  session_id: string;
+  title: string;
+  role_pack: string;
+  interview_mode: "candidate_practice" | "interviewer_led";
+  status: string;
+  seat: "interviewer" | "candidate";
+  panel: GuestSession["panel"];
+  supports_coding: boolean;
+  coding: RolePackCoding | null;
 };
 
 export type GuestView = {
@@ -468,6 +511,8 @@ export type GuestView = {
   code: CodeBuffer;
   messages: HostMessage[];
   pending_question: string | null;
+  candidate?: CandidatePresence | null;
+  coding_task?: CodingTask | null;
 };
 
 async function guestRequest<T>(path: string, init?: RequestInit) {
@@ -479,6 +524,10 @@ async function guestRequest<T>(path: string, init?: RequestInit) {
   const detail = body && typeof body === "object" && "detail" in body ? body.detail : undefined;
   if (!response.ok) throw new Error(detail ? String(detail) : `Request failed with ${response.status}`);
   return body as T;
+}
+
+export function previewSessionInvite(token: string) {
+  return guestRequest<GuestInvitePreview>(`/guest/invites/${encodeURIComponent(token)}`);
 }
 
 export function joinSessionAsHost(token: string, displayName: string) {
@@ -516,4 +565,78 @@ export function sendHostMessage(token: string, mode: "chat" | "ask", text: strin
     method: "POST",
     body: JSON.stringify({ mode, text }),
   });
+}
+
+export function sendHostCodingTask(token: string, question: string, language: string, hints: string[]) {
+  return guestRequest<CodingTask>(`/guest/sessions/${encodeURIComponent(token)}/coding-task`, {
+    method: "POST",
+    body: JSON.stringify({ question, language, hints }),
+  });
+}
+
+export function joinSessionAsCandidate(token: string, displayName: string) {
+  const search = new URLSearchParams({ display_name: displayName });
+  return guestRequest<GuestSession>(`/guest/candidates/${encodeURIComponent(token)}?${search}`);
+}
+
+export function renewCandidateSessionToken(token: string) {
+  return guestRequest<AgoraConfig>(`/guest/candidates/${encodeURIComponent(token)}/token`, { method: "POST" });
+}
+
+export function heartbeatCandidateSession(token: string) {
+  return guestRequest<{ connected: true; last_seen_at: string }>(
+    `/guest/candidates/${encodeURIComponent(token)}/heartbeat`,
+    { method: "POST" },
+  );
+}
+
+export function leaveCandidateSession(token: string) {
+  return guestRequest<void>(`/guest/candidates/${encodeURIComponent(token)}/leave`, {
+    method: "POST",
+    keepalive: true,
+  });
+}
+
+export function readCandidateGuestView(token: string, afterSequence = 0) {
+  const search = new URLSearchParams({ after_sequence: String(afterSequence) });
+  return guestRequest<GuestView>(`/guest/candidates/${encodeURIComponent(token)}/state?${search}`);
+}
+
+export function readCandidateGuestCode(token: string) {
+  return guestRequest<CodeBuffer>(`/guest/candidates/${encodeURIComponent(token)}/code`);
+}
+
+export function saveCandidateGuestCode(token: string, language: string, content: string) {
+  return guestRequest<CodeBuffer>(`/guest/candidates/${encodeURIComponent(token)}/code`, {
+    method: "POST",
+    body: JSON.stringify({ language, content }),
+  });
+}
+
+export function persistCandidateGuestTurn(token: string, turn: {
+  agora_turn_id: string;
+  content: string;
+  interrupted?: boolean;
+}) {
+  return guestRequest<unknown>(`/guest/candidates/${encodeURIComponent(token)}/turns`, {
+    method: "POST",
+    body: JSON.stringify(turn),
+  });
+}
+
+export type InterviewerRoom = {
+  sessionId: string;
+  hostToken: string;
+  candidateInvite: SessionInvite;
+};
+
+export function saveInterviewerRoom(room: InterviewerRoom) {
+  window.sessionStorage.setItem("roundcraft.interviewer_room", JSON.stringify(room));
+}
+
+export function readInterviewerRoom(): InterviewerRoom | null {
+  if (typeof window === "undefined") return null;
+  const value = window.sessionStorage.getItem("roundcraft.interviewer_room");
+  if (!value) return null;
+  try { return JSON.parse(value) as InterviewerRoom; } catch { return null; }
 }

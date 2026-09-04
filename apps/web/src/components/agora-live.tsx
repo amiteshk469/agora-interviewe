@@ -51,7 +51,7 @@ function waitForRtmConnected(client: RTMClient, timeoutMs = 800) {
   });
 }
 
-export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaState }: { prepared?: StoredLiveSession | null; onTranscript?: (turns: LiveTranscriptTurn[]) => void; onAgentState?: (state: LiveAgentState) => void; onMediaState?: (state: LiveMediaState) => void }) {
+export function AgoraLivePanel({ prepared, renewConnection, onTranscript, onAgentState, onMediaState }: { prepared?: StoredLiveSession | null; renewConnection?: () => Promise<AgoraConfig>; onTranscript?: (turns: LiveTranscriptTurn[]) => void; onAgentState?: (state: LiveAgentState) => void; onMediaState?: (state: LiveMediaState) => void }) {
   const [config, setConfig] = useState<AgoraConfig | null>(null);
   const [rtm, setRtm] = useState<RTMClient | null>(null);
   const [phase, setPhase] = useState<"demo" | "connecting" | "live" | "error">("demo");
@@ -67,10 +67,14 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
       mounted.current = false;
       const activeRtm = rtmRef.current;
       rtmRef.current = null;
-      void activeRtm?.logout().catch(() => undefined);
+      if (activeRtm) {
+        void activeRtm.unsubscribe(prepared?.connection?.channel_name ?? "")
+          .catch(() => undefined)
+          .then(() => activeRtm.logout().catch(() => undefined));
+      }
       if (demoAgentId.current) void stopAgoraAgent(demoAgentId.current).catch(() => undefined);
     };
-  }, []);
+  }, [prepared?.connection?.channel_name]);
 
   const connectPrepared = useCallback(async () => {
     if (!prepared?.connection) return;
@@ -147,7 +151,7 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
   }, []);
 
   if (phase === "live" && config && rtm) {
-    return <AgoraVoiceClient config={config} sessionId={prepared?.demo ? undefined : prepared?.sessionId} rtmClient={rtm} onTranscript={onTranscript} onAgentState={onAgentState} onMediaState={onMediaState} />;
+    return <AgoraVoiceClient config={config} sessionId={renewConnection ? undefined : prepared?.demo ? undefined : prepared?.sessionId} renewConnection={renewConnection} rtmClient={rtm} onTranscript={onTranscript} onAgentState={onAgentState} onMediaState={onMediaState} />;
   }
 
   const status = phase === "connecting"

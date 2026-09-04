@@ -11,6 +11,7 @@ import {
   Code2,
   Copy,
   FileText,
+  GraduationCap,
   LoaderCircle,
   LockKeyhole,
   Plus,
@@ -18,6 +19,7 @@ import {
   Sparkles,
   Trash2,
   UploadCloud,
+  UsersRound,
   WandSparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
@@ -67,6 +69,7 @@ const panelBehaviorOptions = ["Probes assumptions", "Challenges metrics", "Finds
 type DocumentState = "empty" | "processing" | "ready" | "error" | "skipped";
 type MicrophoneStatus = "idle" | "testing" | "ready" | "error";
 type PromptMode = "forked" | "custom";
+export type InterviewMode = "candidate_practice" | "interviewer_led";
 type PreUploadSnapshot = {
   focus: string;
 };
@@ -163,11 +166,12 @@ function resolveRecommendedPanel(recommended: readonly PanelRecommendation[] | u
   return { ...assigned, promptSlugs };
 }
 
-export function SetupWizard() {
+export function SetupWizard({ initialMode = "candidate_practice" }: { initialMode?: InterviewMode }) {
   const router = useRouter();
   const { user } = useAuth();
   const initialDefaults = setupDefaultsFromMetadata(user?.user_metadata);
   const [step, setStep] = useState(0);
+  const [interviewMode, setInterviewMode] = useState<InterviewMode>(initialMode);
   const [title, setTitle] = useState(initialDefaults.title);
   const [focus, setFocus] = useState("Product sense and analytics");
   const [duration, setDuration] = useState(initialDefaults.duration);
@@ -697,6 +701,7 @@ export function SetupWizard() {
       const config = await createInterviewConfig({
         title: title.trim(),
         profession: rolePackId,
+        interview_mode: interviewMode,
         job_description_id: documentState === "ready" && jdDisposition !== "ignore" && documentId !== "demo-jd" ? documentId : undefined,
         difficulty,
         duration_minutes: Number(duration),
@@ -706,12 +711,12 @@ export function SetupWizard() {
       const session = await createInterviewSession(config.id);
       saveLiveSession({ sessionId: session.id, agentId: "", configSnapshot: session.config_snapshot, demo: false });
       clearDirty();
-      router.push("/interview/lobby");
+      router.push(interviewMode === "interviewer_led" ? "/interview/host-lobby" : "/interview/lobby");
     } catch (cause) {
       if (demoModeEnabled) {
         saveLiveSession({ sessionId: "demo-session", agentId: "", demo: true });
         clearDirty();
-        router.push("/interview/lobby");
+        router.push(interviewMode === "interviewer_led" ? "/interview/host-lobby" : "/interview/lobby");
       } else {
         setSaveError(cause instanceof Error ? cause.message : "Interview configuration could not be saved");
       }
@@ -721,7 +726,7 @@ export function SetupWizard() {
   }
 
   return (
-    <AppShell screen="setup" title="Create interview" description="Configure the role, optional context, panel behavior, and prompt knowledge before entering the lobby.">
+    <AppShell screen="setup" title="Create interview" description={interviewMode === "interviewer_led" ? "Configure an AI-assisted interview, then invite and assess a candidate." : "Configure the role, optional context, panel behavior, and prompt knowledge before entering the lobby."}>
       <div className="mb-8"><Stepper steps={steps} current={step} /></div>
       {notice ? <div className="mb-5"><Alert title="Setup updated" onDismiss={() => setNotice("")}>{notice}</Alert></div> : null}
       {saveError && step !== 4 ? <div className="mb-5"><Alert title="Configuration needs attention" variant="destructive"><span>{saveError}</span></Alert></div> : null}
@@ -731,6 +736,21 @@ export function SetupWizard() {
             <Card className="enter">
               <CardHeader><CardTitle id="wizard-step-title" className="text-xl">Choose your target role</CardTitle><CardDescription>Your role sets the panel, rubric, tools, and coding workspace. You can edit the details after choosing.</CardDescription></CardHeader>
               <CardContent className="space-y-5">
+                <fieldset>
+                  <legend className="text-sm font-medium">Who is running this interview?</legend>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">Both modes use the same configurable AI panel, live transcript, tools, coding workspace, and assessment.</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="cursor-pointer">
+                      <input type="radio" name="interview_mode" value="candidate_practice" checked={interviewMode === "candidate_practice"} onChange={() => { setInterviewMode("candidate_practice"); markDirty(); }} className="peer sr-only" />
+                      <span className={cn("flex min-h-28 items-start gap-3 rounded-lg border bg-background p-4 transition-colors hover:border-primary/50 peer-focus-visible:ring-2 peer-focus-visible:ring-ring", interviewMode === "candidate_practice" && "border-primary bg-primary/5 ring-1 ring-primary/20")}><GraduationCap className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" /><span><span className="block text-sm font-medium">Practice as candidate</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">Take the interview yourself and optionally invite a human interviewer.</span></span></span>
+                    </label>
+                    <label className="cursor-pointer">
+                      <input type="radio" name="interview_mode" value="interviewer_led" checked={interviewMode === "interviewer_led"} onChange={() => { setInterviewMode("interviewer_led"); markDirty(); }} className="peer sr-only" />
+                      <span className={cn("flex min-h-28 items-start gap-3 rounded-lg border bg-background p-4 transition-colors hover:border-primary/50 peer-focus-visible:ring-2 peer-focus-visible:ring-ring", interviewMode === "interviewer_led" && "border-primary bg-primary/5 ring-1 ring-primary/20")}><UsersRound className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" /><span><span className="block text-sm font-medium">Interview a candidate</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">Share a Meet-style link, lead the AI panel, and watch coding live.</span></span></span>
+                    </label>
+                  </div>
+                </fieldset>
+                <Separator />
                 {rolePacksLoading ? <div className="grid min-h-48 place-items-center rounded-lg border border-dashed bg-background" aria-busy="true"><div className="text-center"><LoaderCircle className="mx-auto size-5 animate-spin text-primary" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Loading interview roles</p></div></div> : null}
                 {rolePacksError ? <div className="space-y-3"><Alert title="Interview roles could not be loaded" variant="destructive"><span>{rolePacksError}</span></Alert><Button variant="secondary" onClick={() => { setRolePacksLoading(true); setRolePacksError(""); setRolePacksReload((value) => value + 1); }}>Try again</Button></div> : null}
                 {!rolePacksLoading && !rolePacksError && rolePacks.length ? <>
@@ -877,7 +897,7 @@ export function SetupWizard() {
               <Card>
                 <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle id="wizard-step-title" className="text-xl">Ready for the lobby</CardTitle><CardDescription className="mt-1">Review the configuration snapshot that will stay attached to this interview.</CardDescription></div><Badge variant="default"><Check aria-hidden="true" />Ready</Badge></div></CardHeader>
                 <CardContent className="space-y-5">
-                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Target role</p><p className="mt-1 text-sm font-medium">{selectedRolePack?.label ?? rolePackId}</p></div><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · refining role` : "Role defaults only"}</p></div></div>
+                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Mode</p><p className="mt-1 text-sm font-medium">{interviewMode === "interviewer_led" ? "You interview a candidate" : "You practice as candidate"}</p></div><div><p className="text-xs text-muted-foreground">Target role</p><p className="mt-1 text-sm font-medium">{selectedRolePack?.label ?? rolePackId}</p></div><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · refining role` : "Role defaults only"}</p></div></div>
                   <Separator />
                   <div><p className="mb-3 text-xs text-muted-foreground">Panel sequence is decided live</p><div className="flex flex-wrap gap-2">{panel.map((person) => <div key={person.id} className="flex items-center gap-2 rounded-md border bg-background p-2 pe-3"><Avatar initials={person.initials} src={person.avatarImage} className="size-7" /><span><span className="block text-xs font-medium">{person.name}</span><span className="block text-[10px] capitalize text-muted-foreground">{person.role} · {panelDifficulty[person.id] ?? difficulty}</span></span></div>)}</div></div>
                   <Separator />
@@ -887,7 +907,7 @@ export function SetupWizard() {
                 </CardContent>
               </Card>
               {saveError ? <Alert title="Configuration could not be saved" variant="destructive"><span>{saveError}</span></Alert> : null}
-              <div className="flex justify-end"><Button size="lg" loading={saving} onClick={finalizeConfiguration}>Save and enter lobby<ArrowRight aria-hidden="true" /></Button></div>
+              <div className="flex justify-end"><Button size="lg" loading={saving} onClick={finalizeConfiguration}>{interviewMode === "interviewer_led" ? "Save and invite candidate" : "Save and enter lobby"}<ArrowRight aria-hidden="true" /></Button></div>
             </div>
           ) : null}
         </section>
@@ -895,7 +915,7 @@ export function SetupWizard() {
         <aside className="hidden xl:block">
           <Card className="sticky top-20">
             <CardHeader><CardTitle className="text-sm">Configuration snapshot</CardTitle></CardHeader>
-            <CardContent className="space-y-4 text-sm"><div><div className="flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">Target role</p>{step === 0 ? null : <Button size="sm" variant="ghost" onClick={() => setStep(0)}>Change</Button>}</div><p className="mt-1 font-medium">{selectedRolePack?.label ?? "Select a role"}</p></div><div><p className="text-xs text-muted-foreground">Focus</p><p className="mt-1">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Panel</p><p className="mt-1">{panel.length} interviewers</p></div><div><p className="text-xs text-muted-foreground">JD refinement</p><p className="mt-1">{documentState === "ready" && jdDisposition !== "ignore" ? "Applied to selected role" : "Not applied"}</p></div><Separator /><div className="space-y-2"><CheckRow muted>One audible speaker</CheckRow><CheckRow muted>Adaptive follow-ups</CheckRow><CheckRow muted>Evidence-linked report</CheckRow></div></CardContent>
+            <CardContent className="space-y-4 text-sm"><div><p className="text-xs text-muted-foreground">Mode</p><p className="mt-1 font-medium">{interviewMode === "interviewer_led" ? "Interviewer workspace" : "Candidate practice"}</p></div><div><div className="flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">Target role</p>{step === 0 ? null : <Button size="sm" variant="ghost" onClick={() => setStep(0)}>Change</Button>}</div><p className="mt-1 font-medium">{selectedRolePack?.label ?? "Select a role"}</p></div><div><p className="text-xs text-muted-foreground">Focus</p><p className="mt-1">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Panel</p><p className="mt-1">{panel.length} interviewers</p></div><div><p className="text-xs text-muted-foreground">JD refinement</p><p className="mt-1">{documentState === "ready" && jdDisposition !== "ignore" ? "Applied to selected role" : "Not applied"}</p></div><Separator /><div className="space-y-2"><CheckRow muted>One audible speaker</CheckRow><CheckRow muted>Adaptive follow-ups</CheckRow><CheckRow muted>Evidence-linked report</CheckRow></div></CardContent>
           </Card>
         </aside>
       </div>

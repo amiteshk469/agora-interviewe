@@ -115,6 +115,7 @@ class InterviewConfig(TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(160))
     profession: Mapped[str] = mapped_column(String(60), default="product_management")
+    interview_mode: Mapped[str] = mapped_column(String(32), default="candidate_practice")
     difficulty: Mapped[str] = mapped_column(String(20), default="balanced")
     duration_minutes: Mapped[int] = mapped_column(Integer, default=45)
     panel: Mapped[list[dict[str, Any]]] = mapped_column(JSON)

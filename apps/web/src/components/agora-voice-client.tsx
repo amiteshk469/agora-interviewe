@@ -30,10 +30,12 @@ import { Alert, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
+import { renewAgoraSeatTokens } from "@/lib/agora-seat";
 
 type Props = {
   config: AgoraConfig;
   sessionId?: string;
+  renewConnection?: () => Promise<AgoraConfig>;
   rtmClient: RTMClient;
   onTranscript?: (turns: LiveTranscriptTurn[]) => void;
   onAgentState?: (state: LiveAgentState) => void;
@@ -115,7 +117,7 @@ export default function AgoraVoiceClient(props: Props) {
   return <AgoraRTCProvider client={client}><VoiceChannel {...props} /></AgoraRTCProvider>;
 }
 
-function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState, onMediaState }: Props) {
+function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscript, onAgentState, onMediaState }: Props) {
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [enabled, setEnabled] = useState(true);
@@ -242,6 +244,10 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   useClientEvent(client, "connection-state-change", (current) => setConnectionState(current));
   useClientEvent(client, "token-privilege-will-expire", async () => {
     try {
+      if (renewConnection) {
+        await renewAgoraSeatTokens(renewConnection, client, rtmClient);
+        return;
+      }
       if (sessionId) {
         const next = await renewInterviewSessionToken(sessionId);
         await client.renewToken(next.token);

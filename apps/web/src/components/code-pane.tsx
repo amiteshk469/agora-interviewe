@@ -3,7 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type SyntheticEvent } from "react";
 import { Check, ChevronRight, CloudUpload, FileCode2, Lightbulb, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import { codingHintsForQuestion, cursorPosition, indentSelection, languageLabel, lineNumbers, tokenize, type TokenKind } from "@/lib/code-highlight";
-import { readSessionCode, saveSessionCode } from "@/lib/api";
+import { readSessionCode, saveSessionCode, type CodeBuffer } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const SYNC_DEBOUNCE_MS = 900;
@@ -49,6 +49,8 @@ const RESTORE_ERROR_MESSAGE = "Saved code could not be restored. Editing is paus
 
 type CodePaneProps = {
   sessionId?: string;
+  loadCode?: () => Promise<CodeBuffer>;
+  saveCode?: (language: string, content: string) => Promise<unknown>;
   languages: string[];
   defaultLanguage: string;
   prompt: string;
@@ -72,6 +74,26 @@ export async function restoreSessionCodeForEditor(
 ): Promise<RestoreResult> {
   try {
     const buffer = await readSessionCode(sessionId);
+    return {
+      status: "ready",
+      snapshot: {
+        language: supportedLanguages.includes(buffer.language) ? buffer.language : defaultLanguage,
+        content: buffer.content ?? "",
+      },
+      hasSavedVersion: Boolean(buffer.updated_at),
+    };
+  } catch {
+    return { status: "failed" };
+  }
+}
+
+async function restoreCodeForEditor(
+  loadCode: () => Promise<CodeBuffer>,
+  supportedLanguages: readonly string[],
+  defaultLanguage: string,
+): Promise<RestoreResult> {
+  try {
+    const buffer = await loadCode();
     return {
       status: "ready",
       snapshot: {
@@ -119,13 +141,24 @@ export function CodeView({ source, language, className }: { source: string; lang
 }
 
 export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodePane(
-  { sessionId, languages, defaultLanguage, prompt, question, hints, className },
+  { sessionId, loadCode, saveCode, languages, defaultLanguage, prompt, question, hints, className },
   ref,
 ) {
+  const persistent = Boolean(sessionId || (loadCode && saveCode));
+  const loadBuffer = useCallback(() => {
+    if (loadCode) return loadCode();
+    if (sessionId) return readSessionCode(sessionId);
+    return Promise.reject(new Error("No code store is configured"));
+  }, [loadCode, sessionId]);
+  const saveBuffer = useCallback((language: string, content: string) => {
+    if (saveCode) return saveCode(language, content);
+    if (sessionId) return saveSessionCode(sessionId, language, content);
+    return Promise.resolve();
+  }, [saveCode, sessionId]);
   const [language, setLanguage] = useState(defaultLanguage);
   const [source, setSource] = useState("");
-  const [sync, setSync] = useState<SyncState>(sessionId ? "loading" : "idle");
-  const [restoreState, setRestoreState] = useState<RestoreState>(sessionId ? "loading" : "ready");
+  const [sync, setSync] = useState<SyncState>(persistent ? "loading" : "idle");
+  const [restoreState, setRestoreState] = useState<RestoreState>(persistent ? "loading" : "ready");
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [hintProgress, setHintProgress] = useState({ task: "", count: 0 });
@@ -135,7 +168,7 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
   const highlightRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
-  const hydratedRef = useRef(!sessionId);
+  const hydratedRef = useRef(!persistent);
   const dirtyRef = useRef(false);
   const mountedRef = useRef(true);
   const snapshotRef = useRef<EditorSnapshot>({ language: defaultLanguage, content: "" });
@@ -154,11 +187,11 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
   useEffect(() => {
     let cancelled = false;
     dirtyRef.current = false;
-    hydratedRef.current = !sessionId;
+    hydratedRef.current = !persistent;
     queuedRef.current = null;
     savedRef.current = null;
-    if (!sessionId) return;
-    void restoreSessionCodeForEditor(sessionId, languageKey.split("|"), defaultLanguage)
+    if (!persistent) return;
+    void restoreCodeForEditor(loadBuffer, languageKey.split("|"), defaultLanguage)
       .then((result) => {
         if (cancelled) return;
         if (result.status === "failed") {
@@ -183,15 +216,15 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
       });
     return () => { cancelled = true; };
     // languageKey changes only when the role pack's actual options change.
-  }, [defaultLanguage, languageKey, restoreAttempt, sessionId]);
+  }, [defaultLanguage, languageKey, loadBuffer, persistent, restoreAttempt]);
 
   const enqueueSave = useCallback((snapshot: EditorSnapshot) => {
-    if (!sessionId) return Promise.resolve();
+    if (!persistent) return Promise.resolve();
     queuedRef.current = snapshot;
     if (mountedRef.current) setSync("saving");
     const request = saveChainRef.current
       .catch(() => undefined)
-      .then(() => saveSessionCode(sessionId, snapshot.language, snapshot.content));
+      .then(() => saveBuffer(snapshot.language, snapshot.content));
     saveChainRef.current = request;
     void request
       .then(() => {
@@ -217,24 +250,24 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
         }
       });
     return request;
-  }, [sessionId]);
+  }, [persistent, saveBuffer]);
 
   const saveNow = useCallback(() => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
     const snapshot = snapshotRef.current;
-    if (!sessionId || !hydratedRef.current || !dirtyRef.current) return;
+    if (!persistent || !hydratedRef.current || !dirtyRef.current) return;
     if (sameSnapshot(queuedRef.current, snapshot)) return;
     if (sameSnapshot(savedRef.current, snapshot) && queuedRef.current === null) return;
     void enqueueSave(snapshot);
-  }, [enqueueSave, sessionId]);
+  }, [enqueueSave, persistent]);
 
   const flush = useCallback(async () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
     const snapshot = snapshotRef.current;
     if (
-      sessionId
+      persistent
       && hydratedRef.current
       && dirtyRef.current
       && !sameSnapshot(queuedRef.current, snapshot)
@@ -244,12 +277,12 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
       return;
     }
     await saveChainRef.current;
-  }, [enqueueSave, sessionId]);
+  }, [enqueueSave, persistent]);
 
   useImperativeHandle(ref, () => ({ flush }), [flush]);
 
   useEffect(() => {
-    if (!sessionId || !hydratedRef.current || !dirtyRef.current) return;
+    if (!persistent || !hydratedRef.current || !dirtyRef.current) return;
     const snapshot = { language, content: source };
     if (sameSnapshot(queuedRef.current, snapshot)) return;
     if (sameSnapshot(savedRef.current, snapshot) && queuedRef.current === null) {
@@ -267,7 +300,7 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       timerRef.current = null;
     };
-  }, [enqueueSave, language, sessionId, source]);
+  }, [enqueueSave, language, persistent, source]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -275,14 +308,14 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
       mountedRef.current = false;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       const snapshot = snapshotRef.current;
-      if (!sessionId || !hydratedRef.current || !dirtyRef.current || sameSnapshot(queuedRef.current, snapshot)) return;
+      if (!persistent || !hydratedRef.current || !dirtyRef.current || sameSnapshot(queuedRef.current, snapshot)) return;
       if (sameSnapshot(savedRef.current, snapshot) && queuedRef.current === null) return;
       queuedRef.current = snapshot;
       saveChainRef.current = saveChainRef.current
         .catch(() => undefined)
-        .then(() => saveSessionCode(sessionId, snapshot.language, snapshot.content));
+        .then(() => saveBuffer(snapshot.language, snapshot.content));
     };
-  }, [sessionId]);
+  }, [persistent, saveBuffer]);
 
   const syncScroll = useCallback(() => {
     const textarea = textareaRef.current;

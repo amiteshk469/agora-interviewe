@@ -283,12 +283,22 @@ async def test_selected_track_stays_authoritative_when_a_jd_suggests_another(
 # --- the shared editor ------------------------------------------------------
 
 
-async def _session_for(client: AsyncClient, headers: dict[str, str], profession: str) -> dict[str, Any]:
+async def _session_for(
+    client: AsyncClient,
+    headers: dict[str, str],
+    profession: str,
+    *,
+    interview_mode: str = "candidate_practice",
+) -> dict[str, Any]:
     config = (
         await client.post(
             "/v1/interview-configs",
             headers=headers,
-            json={"title": f"{profession} loop", "profession": profession},
+            json={
+                "title": f"{profession} loop",
+                "profession": profession,
+                "interview_mode": interview_mode,
+            },
         )
     ).json()
     return (
@@ -384,6 +394,18 @@ def test_an_invite_verifies_only_with_its_own_secret() -> None:
     assert str(read_invite(token, SECRET).session_id) == SESSION_UUID
     with pytest.raises(InviteError):
         read_invite(token, "a-completely-different-secret-value")
+
+
+def test_invite_claims_keep_candidate_and_interviewer_permissions_separate() -> None:
+    candidate_token, _ = mint_invite(  # type: ignore[arg-type]
+        SESSION_UUID,
+        SECRET,
+        seat="candidate",
+    )
+    host_token, _ = mint_invite(SESSION_UUID, SECRET)  # type: ignore[arg-type]
+
+    assert read_invite(candidate_token, SECRET).seat == "candidate"
+    assert read_invite(host_token, SECRET).seat == "interviewer"
 
 
 def test_a_tampered_invite_is_rejected() -> None:
@@ -485,6 +507,126 @@ async def test_an_invite_admits_a_guest_who_can_then_lead_the_panel(
     assert presence.status_code == 200
     assert presence.json()["display_name"] == "Amitesh"
     assert presence.json()["messages"][0]["mode"] == "ask"
+
+
+async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_seat(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    session = await _session_for(
+        client,
+        auth_headers,
+        "software_engineering",
+        interview_mode="interviewer_led",
+    )
+    invite = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "candidate"},
+    )
+    assert invite.status_code == 200, invite.text
+    assert invite.json()["seat"] == "candidate"
+    candidate_token = invite.json()["token"]
+
+    preview = await client.get(f"/v1/guest/invites/{candidate_token}")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["status"] == "configured"
+    assert preview.json()["interview_mode"] == "interviewer_led"
+    assert preview.json()["coding"]["default_language"] == "python"
+    assert (await client.get(f"/v1/guest/candidates/{candidate_token}")).status_code == 409
+
+    started = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        headers=auth_headers,
+        json={},
+    )
+    assert started.status_code == 200, started.text
+    candidate_uid = str(started.json()["session"]["user_uid"])
+
+    joined = await client.get(
+        f"/v1/guest/candidates/{candidate_token}",
+        params={"display_name": "Riya"},
+    )
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["seat"] == "candidate"
+    assert joined.json()["connection"]["uid"] == candidate_uid
+    assert len(joined.json()["connection"]["panelists"]) == 3
+
+    renewed = await client.post(f"/v1/guest/candidates/{candidate_token}/token")
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["uid"] == candidate_uid
+    assert (await client.post(f"/v1/guest/candidates/{candidate_token}/heartbeat")).status_code == 200
+    presence = await client.get(f"/v1/sessions/{session['id']}/candidate", headers=auth_headers)
+    assert presence.status_code == 200
+    assert presence.json()["display_name"] == "Riya"
+
+    host_invite = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "interviewer"},
+    )
+    host_token = host_invite.json()["token"]
+    assert (await client.get(f"/v1/guest/sessions/{host_token}", params={"display_name": "Amitesh"})).status_code == 200
+    assert (await client.get(f"/v1/guest/sessions/{candidate_token}")).status_code == 403
+    assert (await client.get(f"/v1/guest/candidates/{host_token}")).status_code == 403
+
+    task = await client.post(
+        f"/v1/guest/sessions/{host_token}/coding-task",
+        json={
+            "question": "Return the first pair of indices whose values sum to the target.",
+            "language": "python",
+            "hints": ["Consider a value-to-index map."],
+        },
+    )
+    assert task.status_code == 201, task.text
+    candidate_view = await client.get(f"/v1/guest/candidates/{candidate_token}/state")
+    assert candidate_view.status_code == 200
+    assert candidate_view.json()["coding_task"]["id"] == task.json()["id"]
+
+    code = await client.post(
+        f"/v1/guest/candidates/{candidate_token}/code",
+        json={"language": "python", "content": "def two_sum(values, target):\n    return []"},
+    )
+    assert code.status_code == 200, code.text
+    host_view = await client.get(f"/v1/guest/sessions/{host_token}/state")
+    assert host_view.json()["code"]["content"].startswith("def two_sum")
+    assert host_view.json()["candidate"]["display_name"] == "Riya"
+
+    turn = await client.post(
+        f"/v1/guest/candidates/{candidate_token}/turns",
+        json={
+            "agora_turn_id": "candidate-agora-turn-1",
+            "content": "I will use a hash map to keep the solution linear.",
+        },
+    )
+    assert turn.status_code == 201, turn.text
+    duplicate = await client.post(
+        f"/v1/guest/candidates/{candidate_token}/turns",
+        json={
+            "agora_turn_id": "candidate-agora-turn-1",
+            "content": "I will use a hash map to keep the solution linear.",
+        },
+    )
+    assert duplicate.status_code == 201
+    assert duplicate.json()["id"] == turn.json()["id"]
+
+    assert (await client.post(f"/v1/guest/candidates/{candidate_token}/leave")).status_code == 204
+    assert (await client.get(f"/v1/sessions/{session['id']}/candidate", headers=auth_headers)).json() is None
+
+
+async def test_candidate_invite_is_rejected_for_candidate_owned_practice(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+
+    response = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "candidate"},
+    )
+
+    assert response.status_code == 409
 
 
 async def test_a_forged_invite_admits_nobody(client: AsyncClient) -> None:

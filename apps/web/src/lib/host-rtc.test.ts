@@ -39,6 +39,7 @@ const session = {
   title: "Practice interview",
   role_pack: "Software engineer",
   status: "live",
+  seat: "interviewer",
   display_name: "Human host",
   connection: {
     app_id: "app-id",
@@ -49,6 +50,7 @@ const session = {
   },
   panel: [],
   supports_coding: true,
+  coding: { languages: ["python"], default_language: "python", prompt: "Solve the coding problem." },
   heartbeat_interval_seconds: 10,
 } satisfies GuestSession;
 
