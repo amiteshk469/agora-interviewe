@@ -5,6 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 export type AuthStatus = "loading" | "authenticated" | "anonymous" | "error";
+export type AccountType = "candidate" | "recruiter";
 
 type AuthResult = { confirmationRequired: boolean };
 
@@ -25,12 +26,14 @@ type AuthContextValue = {
   status: AuthStatus;
   session: Session | null;
   user: User | null;
+  accountType: AccountType;
+  workspaceHome: "/candidate" | "/recruiter";
   displayName: string;
   initials: string;
   error: string;
   refresh: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (name: string, email: string, password: string, nextPath?: string) => Promise<AuthResult>;
+  signUp: (name: string, email: string, password: string, accountType: AccountType, nextPath?: string) => Promise<AuthResult>;
   signOut: () => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
@@ -55,6 +58,10 @@ function identityFor(user: User | null) {
     .map((part) => part[0]?.toUpperCase())
     .join("") || "C";
   return { displayName, initials };
+}
+
+function accountTypeFor(user: User | null): AccountType {
+  return user?.user_metadata?.roundcraft_account_type === "recruiter" ? "recruiter" : "candidate";
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -130,13 +137,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     applySession(result.data.session);
   }, [applySession]);
 
-  const signUp = useCallback(async (name: string, email: string, password: string, nextPath = "/dashboard") => {
+  const signUp = useCallback(async (name: string, email: string, password: string, accountType: AccountType, nextPath = accountType === "recruiter" ? "/recruiter" : "/candidate") => {
     const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
     const result = await getSupabaseBrowserClient().auth.signUp({
       email,
       password,
       options: {
-        data: { display_name: name.trim(), full_name: name.trim() },
+        data: { display_name: name.trim(), full_name: name.trim(), roundcraft_account_type: accountType },
         emailRedirectTo: redirectTo,
       },
     });
@@ -183,10 +190,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const identity = useMemo(() => identityFor(user), [user]);
+  const accountType = accountTypeFor(user);
+  const workspaceHome = accountType === "recruiter" ? "/recruiter" as const : "/candidate" as const;
   const value = useMemo<AuthContextValue>(() => ({
     status,
     session,
     user,
+    accountType,
+    workspaceHome,
     error,
     refresh,
     signIn,
@@ -196,7 +207,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     updatePassword,
     updateProfile,
     ...identity,
-  }), [error, identity, refresh, sendPasswordReset, session, signIn, signOut, signUp, status, updatePassword, updateProfile, user]);
+  }), [accountType, error, identity, refresh, sendPasswordReset, session, signIn, signOut, signUp, status, updatePassword, updateProfile, user, workspaceHome]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

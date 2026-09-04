@@ -82,6 +82,69 @@ The logo crop was reviewed separately because the user explicitly rejected the p
 ## Final result
 
 final result: passed
+
+---
+
+# Dual-audience landing QA
+
+## Comparison target
+
+- Source visual truth path: `/Users/amitesh/Projects/agora/docs/qa/landing-reference.png`
+- Implementation screenshot path: `/Users/amitesh/Projects/agora/docs/qa/landing-implementation-qa.jpg`
+- Full-view comparison evidence: `/Users/amitesh/Projects/agora/docs/qa/landing-comparison-qa.jpg`
+- Route and state: `/`, light theme, signed-out, dual candidate/recruiter landing state
+
+## Viewport and normalization
+
+- Source pixels: 1536 × 1024.
+- Implementation CSS viewport: 907 × 705.
+- Browser capture pixels: 907 × 705; the in-app-browser export was already normalized to the CSS viewport, so it was treated as a 1:1 capture.
+- The source and implementation intentionally differ in viewport because the selected reference is a fixed 1536 × 1024 concept while the available in-app browser is 907 × 705. The comparison montage preserves each image's aspect ratio and fits both into equal 1100 × 735 evidence cells. Findings therefore concern hierarchy, composition, typography, assets, and visible responsiveness rather than pixel offsets.
+
+## Full-view comparison evidence
+
+The combined evidence preserves the selected concept's decisive qualities: a near-white editorial field, compact navigation, oversized black grotesk headline, a single vermilion acoustic path crossing the hero, restrained supporting copy, and low-chrome calls to action. The implementation adapts the concept to the expanded product by making the two valid journeys explicit—candidate practice and recruiter-led interviews—without introducing faces, generic SaaS card stacks, or competing decorative elements.
+
+The source's central speech card was intentionally omitted. It described only the practice-panel journey and would obscure the dual-audience message at the narrower viewport; the live adaptive-panel behavior is explained immediately below and demonstrated in the later product sections.
+
+## Focused region comparison evidence
+
+A separate crop was not needed: the headline, generated acoustic asset, labels, navigation, supporting copy, and both primary actions are readable at full resolution in the combined input. The reference and implementation logo marks were also clearly visible at that scale.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the implementation retains the reference's oversized, tightly tracked black display type and quieter UI/body hierarchy. At 907px the headline wraps into two balanced lines without clipping; small navigation and signal labels remain legible.
+- Spacing and layout rhythm: the hero maintains generous negative space, a narrow header, a single visual axis, and clear separation between the acoustic path, explanatory copy, and actions. Both audience actions remain above the fold at the verified viewport.
+- Colors and visual tokens: warm near-white, deep charcoal, muted grey, and vermilion map directly to the selected direction. Borders and secondary surfaces stay deliberately quiet.
+- Image quality and asset fidelity: the acoustic path is a real transparent raster asset generated for its measured 1800 × 500 production slot. Its fine strands remain sharp and no transparency halo or stretched crop is visible. No human or AI-generated face assets are used.
+- Copy and content: headline and evidence language remain product-specific. Candidate and recruiter actions, navigation, and supporting text accurately describe the two separate workflows.
+- Icons and controls: the existing RoundCraft raster mark and Lucide controls retain one consistent stroke language. Both audience CTAs, navigation anchors, sign-in, and theme control have clear accessible labels/focus behavior.
+- Accessibility and responsiveness: semantic links/buttons and visible focus treatment are preserved; reduced-motion styling remains available. The verified 907 × 705 layout has no horizontal overflow, overlap, clipped controls, or hidden primary action.
+
+## Comparison history
+
+### Pass 1
+
+- Earlier P2: at the 907 × 705 browser viewport, the acoustic asset's fixed tablet height pushed the second CTA below the fold and its lower strands collided with the supporting paragraph.
+- Fixes: reduced tablet hero vertical padding and visual minimum height, constrained the acoustic image to a centered measured wrapper, and moved every node label inside that wrapper so it scales with the artwork.
+- Post-fix visual evidence: `docs/qa/landing-implementation-qa.jpg` and `docs/qa/landing-comparison-qa.jpg` show the full headline, path, paragraph, and both audience actions without collision or clipping.
+
+## Primary interactions tested
+
+- Candidate and recruiter navigation anchors.
+- Candidate sign-up route with candidate account type selected.
+- Recruiter sign-up route with recruiter account type selected.
+- Light/dark theme toggle.
+- Browser console checked after the final landing render: no errors or warnings.
+
+## Findings
+
+- No actionable P0, P1, or P2 visual differences remain.
+- P3 follow-up: capture a second reference-matched 1536 × 1024 browser pass when that viewport becomes available; the current unequal-view comparison is sufficient for hierarchy and responsive correctness but not pixel-level measurement.
+
+## Final result
+
+final result: passed
 ---
 
 # Interviewer shared-room regression QA

@@ -98,6 +98,27 @@ class JobDescription(TimestampMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class CandidateResume(TimestampMixin, Base):
+    __tablename__ = "candidate_resumes"
+    __table_args__ = (
+        CheckConstraint("size_bytes >= 0", name="candidate_resumes_size_nonnegative"),
+        Index("candidate_resumes_user_created_idx", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    # The owner is the signed-in candidate for practice sessions, or the
+    # recruiter who issued the private candidate invite for hiring sessions.
+    user_id: Mapped[UUID] = mapped_column(Uuid, index=True)
+    original_filename: Mapped[str] = mapped_column(String(255))
+    storage_path: Mapped[str] = mapped_column(Text, unique=True)
+    mime_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="ready", index=True)
+    raw_text: Mapped[str] = mapped_column(Text, default="")
+    extracted: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class InterviewConfig(TimestampMixin, Base):
     __tablename__ = "interview_configs"
     __table_args__ = (
@@ -112,6 +133,9 @@ class InterviewConfig(TimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(Uuid, index=True)
     job_description_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("job_descriptions.id", ondelete="SET NULL"), index=True
+    )
+    candidate_resume_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("candidate_resumes.id", ondelete="SET NULL"), index=True
     )
     title: Mapped[str] = mapped_column(String(160))
     profession: Mapped[str] = mapped_column(String(60), default="product_management")
@@ -137,6 +161,9 @@ class InterviewSession(TimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(Uuid, index=True)
     interview_config_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("interview_configs.id", ondelete="RESTRICT"), index=True
+    )
+    candidate_resume_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("candidate_resumes.id", ondelete="SET NULL"), index=True
     )
     status: Mapped[str] = mapped_column(String(20), default="configured", index=True)
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)

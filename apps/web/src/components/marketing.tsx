@@ -1,142 +1,131 @@
-"use client";
-
+import Image from "next/image";
 import Link from "next/link";
 import {
+  ArrowDownRight,
   ArrowRight,
-  AudioLines,
   Check,
-  ChevronRight,
-  CircleStop,
+  FileCheck2,
   FileText,
-  Mic2,
   ShieldCheck,
   Sparkles,
+  UsersRound,
 } from "lucide-react";
 import { Brand } from "@/components/app-shell";
-import { Avatar, Badge, Button, Card, CheckRow, Separator } from "@/components/ui";
-import { defaultPanelists, featureSignals } from "@/data/demo";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { Badge, Button } from "@/components/ui";
 
-export function PanelSequence() {
+const candidateSignup = "/auth/sign-up?audience=candidate&next=%2Fcandidate";
+const recruiterSignup = "/auth/sign-up?audience=recruiter&next=%2Frecruiter";
+
+function EditorialIndex({ children }: { children: string }) {
+  return <span className="font-mono text-xs tracking-[0.16em] text-muted-foreground">{children}</span>;
+}
+
+function CandidateDocument() {
   return (
-    <div className="relative mx-auto w-full max-w-xl overflow-hidden rounded-xl border bg-card shadow-2xl shadow-black/30">
-      <div className="flex items-center justify-between border-b px-4 py-3">
-        <div className="flex items-center gap-2"><span className="size-2 rounded-full bg-primary" aria-hidden="true" /><span className="text-sm font-medium">Adaptive panel in session</span></div>
-        <Badge variant="outline"><AudioLines className="size-3" aria-hidden="true" />Agora live</Badge>
+    <div className="landing-document relative mx-auto aspect-[4/3] w-full max-w-xl" aria-hidden="true">
+      <div className="absolute inset-x-[13%] inset-y-[7%] rotate-[-4deg] border border-foreground/18 bg-background" />
+      <div className="absolute inset-x-[8%] inset-y-[4%] rotate-[2deg] border border-foreground/25 bg-card" />
+      <div className="absolute inset-x-[18%] inset-y-0 border border-foreground/40 bg-background p-[8%] shadow-[0_28px_65px_rgb(0_0_0/0.12)]">
+        <div className="flex items-center justify-between border-b border-foreground/20 pb-4"><span className="font-mono text-[10px] tracking-[0.14em]">CANDIDATE CONTEXT</span><FileCheck2 className="size-4 text-primary" /></div>
+        <p className="mt-8 text-2xl font-semibold leading-tight sm:text-3xl">Bring the role.<br />Bring your CV.</p>
+        <div className="mt-10 space-y-3"><span className="block h-px w-full bg-foreground/20" /><span className="block h-px w-[82%] bg-foreground/20" /><span className="block h-px w-[65%] bg-foreground/20" /></div>
+        <div className="mt-9 flex gap-2"><span className="border border-primary/35 px-2 py-1 font-mono text-[9px] text-primary">ROLE MATCHED</span><span className="border border-foreground/20 px-2 py-1 font-mono text-[9px]">PRIVATE</span></div>
       </div>
-      <div className="grid min-h-[24rem] md:grid-cols-[9rem_1fr]">
-        <div className="border-b p-3 md:border-b-0 md:border-e">
-          <p className="mb-3 text-xs font-medium text-muted-foreground">Panel</p>
-          <div className="grid grid-cols-3 gap-2 md:grid-cols-1">
-            {defaultPanelists.map((person, index) => <div key={person.id} className={`flex items-center gap-2 rounded-md p-2 ${index === 2 ? "bg-primary/10" : ""}`}><Avatar initials={person.initials} active={index === 2} className="size-8" /><span className="hidden min-w-0 md:block"><span className="block truncate text-xs font-medium">{person.name.split(" ")[0]}</span><span className="block truncate text-[10px] text-muted-foreground">{person.role}</span></span></div>)}
-          </div>
-        </div>
-        <div className="flex flex-col justify-between p-5">
-          <div>
-            <div className="flex items-center justify-between gap-3"><Badge variant="default">Leah selected next</Badge><span className="font-mono text-[11px] text-muted-foreground">05:08</span></div>
-            <p className="mt-5 text-lg font-medium leading-7">“You called pulse feedback a guardrail. Why is it not the outcome itself?”</p>
-            <div className="mt-6 rounded-lg border bg-background p-3">
-              <p className="text-xs font-medium text-muted-foreground">Director reasoning</p>
-              <p className="mt-1 text-sm leading-6">The bar raiser detected a contradiction. The next speaker changed from Analytics to Bar Raiser, with Strategy still free to return later.</p>
-            </div>
-          </div>
-          <div className="mt-7 flex items-center gap-3 border-t pt-4">
-            <span className="grid size-10 place-items-center rounded-full bg-primary text-primary-foreground" aria-hidden="true"><Mic2 className="size-4" /></span>
-            <div className="flex h-8 flex-1 items-center justify-center gap-1" aria-hidden="true">
-              {[12, 20, 8, 26, 16, 30, 10, 22, 14, 18].map((height, index) => <span key={`${height}-${index}`} className="w-0.5 rounded-full bg-primary" style={{ height }} />)}
-            </div>
-            <span className="grid size-10 place-items-center rounded-full border bg-secondary text-muted-foreground" aria-hidden="true"><CircleStop className="size-4" /></span>
-          </div>
-        </div>
+    </div>
+  );
+}
+
+function RecruiterRoom() {
+  const seats = ["Hiring", "Domain", "Bar raiser", "Human"];
+  return (
+    <div className="mx-auto w-full max-w-xl border border-white/25 bg-[#111313] p-4 text-white shadow-[0_32px_75px_rgb(0_0_0/0.28)]" aria-hidden="true">
+      <div className="flex items-center justify-between border-b border-white/15 pb-3"><span className="font-mono text-[10px] tracking-[0.14em] text-white/60">LIVE INTERVIEW ROOM</span><span className="flex items-center gap-2 text-[10px] text-white/60"><span className="size-1.5 rounded-full bg-[#f04432]" /> Agora live</span></div>
+      <div className="grid grid-cols-2 gap-2 py-4">
+        {seats.map((seat, index) => <div key={seat} className={`min-h-28 border p-3 ${index === 1 ? "border-[#f04432] bg-[#f04432]/10" : "border-white/15 bg-white/[0.035]"}`}><span className={`grid size-8 place-items-center rounded-full border font-mono text-[10px] ${index === 1 ? "border-[#f04432] text-[#ff7668]" : "border-white/20 text-white/65"}`}>{seat.slice(0, 2).toUpperCase()}</span><p className="mt-7 text-xs font-medium">{seat}</p><p className="mt-1 text-[10px] text-white/45">{index === 3 ? "You, in the room" : index === 1 ? "Speaking now" : "Following context"}</p></div>)}
       </div>
+      <div className="flex items-center justify-between border-t border-white/15 pt-3"><span className="text-[11px] text-white/55">Candidate CV and live evidence open</span><span className="font-mono text-[10px] text-[#ff7668]">LIVE 18:42</span></div>
     </div>
   );
 }
 
 export function MarketingPage() {
   return (
-    <div className="min-h-[100dvh] overflow-hidden bg-background">
-      <a href="#marketing-main" className="sr-only z-50 rounded-md bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:start-4 focus:top-4">Skip to content</a>
-      <header className="fixed inset-x-0 top-0 z-40 border-b bg-background/82 backdrop-blur-xl">
-        <nav className="mx-auto flex h-16 max-w-7xl items-center gap-7 px-4 sm:px-6" aria-label="Main navigation">
+    <div className="landing-shell min-h-[100dvh] overflow-hidden bg-background">
+      <a href="#marketing-main" className="sr-only z-50 bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:start-4 focus:top-4">Skip to content</a>
+      <header className="fixed inset-x-0 top-0 z-40 border-b border-foreground/10 bg-background/90 backdrop-blur-xl">
+        <nav className="mx-auto flex h-16 max-w-[94rem] items-center gap-8 px-5 sm:px-8" aria-label="Main navigation">
           <Brand href="/" />
-          <div className="hidden items-center gap-6 text-sm text-muted-foreground md:flex"><a href="#how-it-works" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">How it works</a><a href="#assessment" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Assessment</a><a href="#panel" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Panel</a></div>
-          <div className="ms-auto flex items-center gap-2"><Button variant="ghost" asChild className="hidden sm:inline-flex"><Link href="/auth/sign-in">Sign in</Link></Button><Button asChild><Link href="/auth/sign-up?next=%2Fsetup">Start practicing<ArrowRight aria-hidden="true" /></Link></Button></div>
+          <div className="hidden items-center gap-7 text-sm md:flex"><a href="#candidates" className="landing-link">Candidates</a><a href="#recruiters" className="landing-link">Recruiters</a><a href="#how-it-works" className="landing-link">How it works</a><a href="#evidence" className="landing-link">Evidence</a></div>
+          <div className="ms-auto flex items-center gap-1 sm:gap-2"><ThemeToggle /><Button variant="ghost" asChild className="hidden sm:inline-flex"><Link href="/auth/sign-in">Sign in</Link></Button><Button asChild><Link href="/auth/sign-up">Get started<ArrowRight aria-hidden="true" /></Link></Button></div>
         </nav>
       </header>
 
       <main id="marketing-main">
-        <section className="relative min-h-[100dvh] pt-16">
-          <div className="surface-grid pointer-events-none absolute inset-0 opacity-70" aria-hidden="true" />
-          <div className="relative mx-auto grid min-h-[calc(100dvh-4rem)] max-w-7xl items-center gap-14 px-4 py-16 sm:px-6 lg:grid-cols-[0.82fr_1.18fr] lg:py-20">
-            <div className="max-w-xl enter">
-              <Badge variant="outline"><Sparkles className="size-3" aria-hidden="true" />AI panel interviews, built for practice</Badge>
-              <h1 className="mt-6 text-balance text-4xl font-semibold leading-[1.06] tracking-[-0.045em] sm:text-5xl lg:text-6xl">Practice the interview that will not follow a script.</h1>
-              <p className="mt-5 max-w-lg text-pretty text-base leading-7 text-muted-foreground sm:text-lg">A configurable panel that interrupts, remembers, challenges, and shows the exact evidence behind every assessment.</p>
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href="/auth/sign-up?next=%2Fsetup">Build your panel<ArrowRight aria-hidden="true" /></Link></Button><Button size="lg" variant="secondary" asChild><Link href="/reports/demo">View an evidence report</Link></Button></div>
-            </div>
-            <div className="enter [animation-delay:100ms]"><PanelSequence /></div>
-          </div>
-        </section>
-
-        <section className="border-y bg-card/40" aria-label="Product capabilities">
-          <div className="mx-auto grid max-w-7xl grid-cols-2 gap-px px-4 py-5 text-center text-xs text-muted-foreground sm:grid-cols-4 sm:px-6">
-            {[
-              "2 to 5 configurable panelists",
-              "Live interruption handling",
-              "Transcript-linked evidence",
-              "Fully autonomous practice",
-            ].map((item) => <div key={item} className="flex items-center justify-center gap-2 px-3 py-2"><Check className="size-3.5 text-primary" aria-hidden="true" />{item}</div>)}
-          </div>
-        </section>
-
-        <section id="how-it-works" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:py-32">
-          <div className="max-w-2xl"><h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Prepared for your role. Responsive to your answer.</h2><p className="mt-4 text-base leading-7 text-muted-foreground">Start from proven defaults or configure every interviewer. The panel changes direction when your answer calls for it.</p></div>
-          <div className="mt-14 grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
-            <div className="space-y-8">
-              {featureSignals.map((feature, index) => { const Icon = feature.icon; return <div key={feature.title} className="grid grid-cols-[2.5rem_1fr] gap-4"><div className="grid size-10 place-items-center rounded-md border bg-card"><Icon className="size-4 text-primary" aria-hidden="true" /></div><div><div className="flex items-center gap-2"><span className="font-mono text-xs text-muted-foreground">0{index + 1}</span><h3 className="font-semibold">{feature.title}</h3></div><p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">{feature.text}</p></div></div>; })}
-            </div>
-            <Card className="overflow-hidden">
-              <div className="border-b p-5"><div className="flex items-center justify-between"><div><p className="font-medium">Configure from a job description</p><p className="mt-1 text-sm text-muted-foreground">Optional, editable, and private</p></div><FileText className="size-5 text-primary" aria-hidden="true" /></div></div>
-              <div className="space-y-4 p-5">
-                <div className="rounded-lg border border-dashed bg-background p-5 text-center"><FileText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">senior-pm-growth.pdf</p><p className="mt-1 text-xs text-muted-foreground">Role signals extracted</p></div>
-                <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-md bg-secondary p-3"><p className="text-xs text-muted-foreground">Recommended panel</p><p className="mt-1 text-sm font-medium">Growth, Analytics, Bar Raiser</p></div><div className="rounded-md bg-secondary p-3"><p className="text-xs text-muted-foreground">Rubric emphasis</p><p className="mt-1 text-sm font-medium">Experiment design, execution</p></div></div>
-                <CheckRow muted>Accept, edit, or ignore every recommendation.</CheckRow>
-              </div>
-            </Card>
-          </div>
-        </section>
-
-        <section id="panel" className="border-y bg-card/35">
-          <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:py-32">
-            <div className="grid gap-12 lg:grid-cols-[1fr_0.9fr] lg:items-center">
-              <div className="relative min-h-[22rem] overflow-hidden rounded-xl border bg-background p-5">
-                <div className="absolute inset-0 surface-grid opacity-40" aria-hidden="true" />
-                <div className="relative space-y-4">
-                  {[0, 2, 0, 1].map((personIndex, index) => { const person = defaultPanelists[personIndex]; return <div key={`${person.id}-${index}`} className={`flex items-center gap-3 rounded-lg border bg-card p-3 ${index === 2 ? "ms-10" : index === 3 ? "ms-20" : ""}`}><Avatar initials={person.initials} active={index === 2} /><div className="min-w-0 flex-1"><p className="text-sm font-medium">{person.name}</p><p className="truncate text-xs text-muted-foreground">{index === 0 ? "opens product strategy" : index === 1 ? "tests the metric choice" : index === 2 ? "returns to challenge the new claim" : "follows the quantitative gap"}</p></div><ChevronRight className="size-4 text-muted-foreground" aria-hidden="true" /></div>; })}
+        <section className="landing-hero relative flex min-h-[min(58rem,100dvh)] items-center border-b border-foreground/10 pt-16">
+          <div className="mx-auto w-full max-w-[94rem] px-5 pb-8 pt-12 sm:px-8 lg:pb-20 lg:pt-20">
+            <Badge variant="outline" className="enter rounded-none border-foreground/20 bg-background/75"><Sparkles className="size-3" aria-hidden="true" />One adaptive interview engine. Two serious workflows.</Badge>
+            <div className="relative mt-7 min-h-[26rem] sm:min-h-[20rem] lg:min-h-[37rem]">
+              <h1 className="landing-display relative z-10 max-w-[89rem] text-[clamp(4.2rem,10.2vw,10.5rem)] font-semibold leading-[0.82] tracking-[-0.075em]">The next question<br /><span className="ms-[0.02em]">is never random.</span></h1>
+              <div className="landing-signal pointer-events-none absolute inset-x-[-13rem] top-[7.4rem] z-20 sm:top-[7rem] lg:top-[10.6rem]" aria-hidden="true">
+                <div className="relative mx-auto w-[58rem] max-w-none lg:w-full">
+                  <Image src="/brand/landing-acoustic-path.png" alt="" width={1800} height={500} priority className="h-auto w-full" />
+                  <span className="absolute left-[15%] top-[19%] font-mono text-[10px] text-primary sm:text-xs">Leah</span>
+                  <span className="absolute left-[31%] top-[75%] font-mono text-[10px] text-primary sm:text-xs">Marcus</span>
+                  <span className="absolute left-[49%] top-[4%] font-mono text-[10px] text-primary sm:text-xs">Priya</span>
+                  <span className="absolute left-[67%] top-[76%] font-mono text-[10px] text-primary sm:text-xs">Jordan</span>
+                  <span className="absolute left-[84%] top-[24%] font-mono text-[10px] text-primary sm:text-xs">Ravi</span>
                 </div>
               </div>
-              <div><h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">A panel, not a queue.</h2><p className="mt-4 text-base leading-7 text-muted-foreground">There is no fixed handoff. A silent director considers context, coverage, contradictions, and urgency after every answer, then selects one speaker.</p><div className="mt-7 space-y-3"><CheckRow>Panelist 1 can return after panelist 3.</CheckRow><CheckRow>Only one interviewer speaks at a time.</CheckRow><CheckRow>Every panelist shares the same evidence memory.</CheckRow></div></div>
+              <div className="landing-transcript absolute left-[43%] top-[48%] z-30 hidden w-80 border border-white/15 bg-[#0b0d0d] px-5 py-4 font-mono text-[12px] leading-5 text-white shadow-2xl lg:block"><span className="text-[#ff7668]">Priya › </span>You called pulse feedback a guardrail. Why is it not the outcome itself?<span className="ms-1 inline-block h-4 w-0.5 animate-pulse bg-[#f04432] align-middle" /></div>
+            </div>
+            <div className="relative z-30 mt-3 grid gap-7 border-t border-foreground/15 pt-6 lg:grid-cols-[1fr_auto] lg:items-end">
+              <p className="max-w-2xl text-lg leading-8 text-muted-foreground sm:text-xl">Practice with an adaptive AI panel, or run structured interviews with AI beside you. Both paths share context, react live, and turn the transcript into evidence.</p>
+              <div className="flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href={candidateSignup}>Practice an interview<ArrowRight aria-hidden="true" /></Link></Button><Button size="lg" variant="secondary" asChild><Link href={recruiterSignup}>Run an interview<ArrowRight aria-hidden="true" /></Link></Button></div>
             </div>
           </div>
         </section>
 
-        <section id="assessment" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:py-32">
-          <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:items-center">
-            <div><ShieldCheck className="size-7 text-primary" aria-hidden="true" /><h2 className="mt-5 text-3xl font-semibold tracking-tight sm:text-4xl">If the transcript does not prove it, the report does not score it.</h2><p className="mt-4 leading-7 text-muted-foreground">Every competency links to the candidate turns that support the assessment. Uncovered areas are marked insufficient evidence and become replay drills.</p><Button variant="secondary" asChild className="mt-7"><Link href="/reports/demo">Explore the report<ArrowRight aria-hidden="true" /></Link></Button></div>
-            <Card className="p-5 sm:p-7">
-              <div className="flex items-end justify-between"><div><p className="text-sm text-muted-foreground">Overall readiness</p><p className="mt-1 text-5xl font-semibold tracking-tight">81<span className="text-xl text-muted-foreground">/100</span></p></div><Badge variant="default">Strong signal</Badge></div>
-              <Separator className="my-6" />
-              <div className="space-y-5">{[["Product judgment",82,"turn-02, turn-08"],["Analytical thinking",74,"turn-04, turn-11"],["Execution",null,"insufficient evidence"]].map(([name, score, evidence]) => <div key={String(name)} className="grid grid-cols-[1fr_auto] gap-4"><div><p className="text-sm font-medium">{name}</p><p className="mt-1 font-mono text-[11px] text-muted-foreground">{evidence}</p></div><span className={`font-mono text-sm ${score === null ? "text-muted-foreground" : "text-foreground"}`}>{score === null ? "N/A" : score}</span></div>)}</div>
-            </Card>
+        <section id="candidates" className="border-b border-foreground/10">
+          <div className="mx-auto grid max-w-[94rem] gap-14 px-5 py-24 sm:px-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:py-32">
+            <div className="max-w-xl"><EditorialIndex>01 / CANDIDATE PRACTICE</EditorialIndex><h2 className="mt-6 text-5xl font-semibold leading-[0.92] tracking-[-0.055em] sm:text-7xl">Prepare for<br />the role.</h2><p className="mt-7 max-w-lg text-lg leading-8 text-muted-foreground">Add your CV and an optional job description. RoundCraft builds a role-matched panel, adapts every follow-up, opens a coding workspace when needed, and leaves you with evidence you can replay.</p><div className="mt-8 grid gap-3 text-sm sm:grid-cols-2"><p className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-primary" />Private CV and job context</p><p className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-primary" />2 to 5 configurable interviewers</p><p className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-primary" />Live interruption and shared memory</p><p className="flex gap-2"><Check className="mt-0.5 size-4 shrink-0 text-primary" />Transcript-linked assessment</p></div><Button asChild size="lg" className="mt-9"><Link href={candidateSignup}>Start practicing<ArrowRight aria-hidden="true" /></Link></Button></div>
+            <CandidateDocument />
           </div>
         </section>
 
-        <section className="px-4 pb-24 sm:px-6 lg:pb-32">
-          <div className="mx-auto max-w-7xl rounded-xl border bg-card px-6 py-12 text-center sm:px-10 sm:py-16"><h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Make the real interview feel familiar.</h2><p className="mx-auto mt-3 max-w-xl text-muted-foreground">Build a panel in minutes, then practice until your evidence is sharper than the pressure.</p><Button size="lg" asChild className="mt-7"><Link href="/auth/sign-up?next=%2Fsetup">Start a mock interview<ArrowRight aria-hidden="true" /></Link></Button></div>
+        <section id="recruiters" className="bg-[#0d0f0f] text-[#f5f5f1]">
+          <div className="mx-auto grid max-w-[94rem] gap-14 px-5 py-24 sm:px-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:py-32">
+            <RecruiterRoom />
+            <div className="max-w-xl lg:justify-self-end"><span className="font-mono text-xs tracking-[0.16em] text-white/45">02 / RECRUITER WORKSPACE</span><h2 className="mt-6 text-5xl font-semibold leading-[0.92] tracking-[-0.055em] sm:text-7xl">Build the<br />room.</h2><p className="mt-7 max-w-lg text-lg leading-8 text-white/58">Create the interview, configure the panel, and send one candidate link. Join the same video grid, see the candidate CV, open live coding tasks, ask through the panel, and finish with structured evidence.</p><div className="mt-9 flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href={recruiterSignup}>Create recruiter workspace<ArrowRight aria-hidden="true" /></Link></Button><Button size="lg" variant="ghost" asChild className="text-white hover:bg-white/10 hover:text-white"><a href="#how-it-works">See the workflow<ArrowDownRight aria-hidden="true" /></a></Button></div></div>
+          </div>
+        </section>
+
+        <section id="how-it-works" className="border-b border-foreground/10">
+          <div className="mx-auto max-w-[94rem] px-5 py-24 sm:px-8 lg:py-32">
+            <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr]"><div><EditorialIndex>03 / ONE ENGINE</EditorialIndex><h2 className="mt-6 text-4xl font-semibold leading-tight tracking-[-0.045em] sm:text-6xl">Different owners.<br />The same live intelligence.</h2></div><div className="grid border-t border-foreground/20 sm:grid-cols-2">{[
+              ["01", "Configure context", "Choose a role, attach the JD, add a CV, then tune the panel and its prompts."],
+              ["02", "Enter one room", "AI interviewers, candidate, and an optional human interviewer meet in the same Agora channel."],
+              ["03", "React, do not rotate", "A shared director chooses the strongest next question from the full conversation."],
+              ["04", "Prove the result", "Every score cites final transcript turns. Missing signals become focused replay drills."],
+            ].map(([index, title, text]) => <article key={index} className="border-b border-foreground/20 py-7 sm:min-h-52 sm:p-7 sm:odd:border-e"><span className="font-mono text-xs text-primary">{index}</span><h3 className="mt-8 text-xl font-semibold">{title}</h3><p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">{text}</p></article>)}</div></div>
+          </div>
+        </section>
+
+        <section id="evidence" className="mx-auto grid max-w-[94rem] gap-14 px-5 py-24 sm:px-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:py-32">
+          <div><ShieldCheck className="size-7 text-primary" aria-hidden="true" /><h2 className="mt-7 text-4xl font-semibold leading-tight tracking-[-0.045em] sm:text-6xl">No evidence.<br />No score.</h2><p className="mt-6 max-w-lg text-lg leading-8 text-muted-foreground">RoundCraft does not turn confidence into a grade. Candidate claims, interviewer probes, coding work, and tool activity stay tied to the final transcript.</p><Button variant="secondary" size="lg" asChild className="mt-8"><Link href="/reports/demo">Open a sample assessment<ArrowRight aria-hidden="true" /></Link></Button></div>
+          <div className="border-y border-foreground/25">{[
+            ["Product judgment", "82", "turn 04, turn 11"],
+            ["Analytical thinking", "74", "turn 07, tool 02"],
+            ["Execution", "N/A", "insufficient evidence"],
+          ].map(([label, score, source]) => <div key={label} className="grid grid-cols-[1fr_auto] items-center gap-6 border-b border-foreground/15 py-7 last:border-b-0"><div><p className="text-lg font-medium">{label}</p><p className="mt-2 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">{source}</p></div><p className="text-5xl font-semibold tracking-[-0.05em]">{score}</p></div>)}</div>
+        </section>
+
+        <section className="border-t border-foreground/10 px-5 py-20 sm:px-8">
+          <div className="mx-auto flex max-w-[94rem] flex-col gap-8 lg:flex-row lg:items-end lg:justify-between"><div><EditorialIndex>YOUR NEXT ROUND</EditorialIndex><h2 className="mt-5 max-w-4xl text-5xl font-semibold leading-[0.94] tracking-[-0.055em] sm:text-7xl">Choose which side<br />of the table you own.</h2></div><div className="flex flex-col gap-3 sm:flex-row"><Button size="lg" asChild><Link href={candidateSignup}><FileText aria-hidden="true" />Candidate practice</Link></Button><Button size="lg" variant="secondary" asChild><Link href={recruiterSignup}><UsersRound aria-hidden="true" />Recruiter workspace</Link></Button></div></div>
         </section>
       </main>
 
-      <footer className="border-t"><div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:px-6"><Brand href="/" /><p>Adaptive mock interviews powered by Agora.</p><div className="sm:ms-auto flex gap-5"><a href="#how-it-works" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Product</a><Link href="/auth/sign-up?next=%2Fsettings" className="rounded-sm hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Privacy</Link></div></div></footer>
+      <footer className="border-t border-foreground/10"><div className="mx-auto flex max-w-[94rem] flex-col gap-5 px-5 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:px-8"><Brand href="/" /><p>Adaptive interviews for practice and hiring, powered by Agora.</p><div className="flex gap-5 sm:ms-auto"><a href="#candidates" className="landing-link">Candidates</a><a href="#recruiters" className="landing-link">Recruiters</a><Link href="/auth/sign-in" className="landing-link">Sign in</Link></div></div></footer>
     </div>
   );
 }

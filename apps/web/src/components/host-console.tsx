@@ -20,6 +20,7 @@ import {
   sendHostCodingTask,
   sendHostMessage,
   type CandidatePresence,
+  type CandidateResumeResponse,
   type CodeBuffer,
   type CodingTask,
   type GuestSession,
@@ -29,7 +30,7 @@ import {
   type HostMessage,
   type SessionInvite,
 } from "@/lib/api";
-import { mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
+import { humanVideoTrack, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
 import { joinHostRtcRoom, type HostRtcHandle, type HostRtcMediaState } from "@/lib/host-rtc";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +81,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
   const [messages, setMessages] = useState<HostMessage[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<CandidatePresence | null>(null);
+  const [candidateResume, setCandidateResume] = useState<CandidateResumeResponse | null>(preview?.candidate_resume ?? null);
   const [codingTask, setCodingTask] = useState<CodingTask | null>(null);
   const [codingQuestion, setCodingQuestion] = useState("");
   const [codingHints, setCodingHints] = useState("");
@@ -97,7 +99,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
   const [cameraBusy, setCameraBusy] = useState(false);
   const [media, setMedia] = useState<HostRtcMediaState>(EMPTY_HOST_MEDIA);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerTab, setDrawerTab] = useState<"lead" | "transcript" | "code">("lead");
+  const [drawerTab, setDrawerTab] = useState<"lead" | "transcript" | "cv" | "code">("lead");
   const [focusGuard, setFocusGuard] = useState<FocusGuardSummary>(EMPTY_FOCUS_GUARD);
   const [updatesDelayed, setUpdatesDelayed] = useState(false);
   const [status, setStatus] = useState("");
@@ -126,6 +128,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
       const joined = await joinSessionAsHost(token, displayName.trim() || "Guest interviewer");
       if (!mounted.current) return;
       setSession(joined);
+      setCandidateResume(joined.candidate_resume ?? null);
       setCodingLanguage(joined.coding?.default_language || "python");
       statusRef.current = joined.status;
       setStatus(joined.status);
@@ -213,6 +216,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
         setStatus(view.status);
         setCode(view.code);
         setCandidate(view.candidate ?? null);
+        setCandidateResume(view.candidate_resume ?? null);
         setCodingTask(view.coding_task ?? null);
         setFocusGuard(view.focus_guard ?? EMPTY_FOCUS_GUARD);
         setMessages((current) => mergeRecordsById(current, view.messages));
@@ -411,9 +415,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
     prompt: "",
   };
   const candidateRtcUid = candidate?.rtc_uid ?? session.candidate_rtc_uid;
-  const candidateVideo = candidateRtcUid
-    ? media.remoteVideos.find((video) => video.uid === String(candidateRtcUid))?.track
-    : undefined;
+  const candidateVideo = humanVideoTrack(media.remoteVideos, candidateRtcUid, session.connection.panelists);
   const candidateConnected = Boolean(candidate || candidateVideo);
   const candidatePerson: Panelist = {
     id: "candidate",
@@ -476,9 +478,10 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
 
         {drawerOpen ? <aside id="host-controls" className="fixed inset-y-0 end-0 z-40 flex w-full max-w-[26rem] flex-col overscroll-contain border-s bg-background shadow-2xl lg:static lg:z-auto lg:shadow-none" aria-label="Interviewer tools">
           <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3"><p className="text-sm font-semibold">Interviewer tools</p><Button className="ms-auto" variant="ghost" size="icon" onClick={() => setDrawerOpen(false)} aria-label="Close interviewer controls"><PanelRightClose aria-hidden="true" /></Button></div>
-          <div className="grid shrink-0 grid-cols-3 gap-1 border-b p-2" role="tablist" aria-label="Interviewer tool sections">
+          <div className="grid shrink-0 grid-cols-4 gap-1 border-b p-2" role="tablist" aria-label="Interviewer tool sections">
             <button id="host-tab-lead" type="button" role="tab" aria-selected={drawerTab === "lead"} aria-controls="host-panel-lead" onClick={() => setDrawerTab("lead")} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", drawerTab === "lead" && "bg-secondary text-foreground")}><Send className="size-3.5" aria-hidden="true" />Lead</button>
             <button id="host-tab-transcript" type="button" role="tab" aria-selected={drawerTab === "transcript"} aria-controls="host-panel-transcript" onClick={() => setDrawerTab("transcript")} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", drawerTab === "transcript" && "bg-secondary text-foreground")}><FileText className="size-3.5" aria-hidden="true" />Transcript</button>
+            <button id="host-tab-cv" type="button" role="tab" aria-selected={drawerTab === "cv"} aria-controls="host-panel-cv" onClick={() => setDrawerTab("cv")} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", drawerTab === "cv" && "bg-secondary text-foreground")}><FileText className="size-3.5" aria-hidden="true" />CV</button>
             <button id="host-tab-code" type="button" role="tab" aria-selected={drawerTab === "code"} aria-controls="host-panel-code" onClick={() => setDrawerTab("code")} disabled={!session.supports_coding} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40", drawerTab === "code" && "bg-secondary text-foreground")}><Code2 className="size-3.5" aria-hidden="true" />Code</button>
           </div>
 
@@ -492,6 +495,8 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
           </div> : null}
 
           {drawerTab === "transcript" ? <div id="host-panel-transcript" role="tabpanel" aria-labelledby="host-tab-transcript" className="min-h-0 flex-1 overflow-y-auto p-3">{turns.length ? <ol className="space-y-3">{turns.map((turn) => <li key={turn.id}><p className={cn("text-xs font-medium", turn.speaker_type === "candidate" ? "text-primary" : "text-muted-foreground")}>{speakerLabel(turn, session)}</p><p className="mt-0.5 text-sm leading-6">{turn.content}</p></li>)}<li ref={transcriptEnd} /></ol> : <div className="grid min-h-48 place-items-center text-center"><div><FileText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Nothing has been said yet</p><p className="mt-1 text-xs text-muted-foreground">Final transcript turns will appear here.</p></div></div>}</div> : null}
+
+          {drawerTab === "cv" ? <div id="host-panel-cv" role="tabpanel" aria-labelledby="host-tab-cv" className="min-h-0 flex-1 overflow-y-auto p-3">{candidateResume ? <div><div className="rounded-lg border bg-card p-3"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{candidateResume.original_filename}</p><p className="mt-1 text-xs text-muted-foreground">{candidateResume.extracted.word_count ? `${candidateResume.extracted.word_count} words` : "Candidate document"}</p></div><Badge variant="outline">Private</Badge></div></div><div className="mt-3 whitespace-pre-wrap rounded-lg border bg-background p-4 text-xs leading-6 text-muted-foreground">{candidateResume.raw_text || "The CV is attached. Its extracted text will appear here when the room refreshes."}</div></div> : <div className="grid min-h-64 place-items-center rounded-lg border border-dashed p-5 text-center"><div><FileText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No candidate CV yet</p><p className="mt-1 text-xs leading-5 text-muted-foreground">The candidate can attach one from the invitation lobby. This panel updates automatically.</p></div></div>}</div> : null}
 
           {drawerTab === "code" && session.supports_coding ? <div id="host-panel-code" role="tabpanel" aria-labelledby="host-tab-code" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
             {codingTask ? <div className="rounded-lg border bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline">Open · {codingTask.language}</Badge><span className="text-[10px] text-muted-foreground">Candidate sees this now</span></div><p className="mt-2 text-xs leading-5">{codingTask.question}</p></div> : null}

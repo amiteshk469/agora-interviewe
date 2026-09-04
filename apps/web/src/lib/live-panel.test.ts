@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPanelists } from "../data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, joinSegments, mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, humanVideoTrack, interviewerToolRuns, joinSegments, mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist, readLiveContradiction, shouldAutoOpenCodingTask, speakerSequence } from "./live-panel";
 
 describe("live panel presentation", () => {
   it("keeps the selected interviewer in the speaking state", () => {
@@ -215,6 +215,22 @@ describe("live transcript merging", () => {
 });
 
 describe("co-host polling", () => {
+  it("finds human video before presence polling catches up without selecting an AI stream", () => {
+    const panel = [
+      { panelist_id: "platform", agent_uid: "101", avatar_uid: "201", video_mode: "avatar" },
+      { panelist_id: "people", agent_uid: "102", avatar_uid: "202", video_mode: "avatar" },
+    ] as const;
+    const avatarTrack = { id: "avatar-video" };
+    const hostTrack = { id: "host-video" };
+    const videos = [
+      { uid: "201", track: avatarTrack },
+      { uid: "7001", track: hostTrack },
+    ];
+
+    expect(humanVideoTrack(videos, undefined, [...panel])).toBe(hostTrack);
+    expect(humanVideoTrack(videos, "7001", [...panel])).toBe(hostTrack);
+  });
+
   it("deduplicates an overlapping response while keeping its newest value", () => {
     expect(mergeRecordsById(
       [{ id: "turn-1", content: "partial" }],
@@ -234,5 +250,14 @@ describe("co-host polling", () => {
       { panelist_id: "platform", agent_uid: "101", video_mode: "audio" },
       { panelist_id: "people", agent_uid: "101", video_mode: "audio" },
     ])).toBeNull();
+  });
+});
+
+describe("candidate coding drawer", () => {
+  it("keeps a dismissed task closed but opens the next active task", () => {
+    expect(shouldAutoOpenCodingTask({ id: "task-1", active: true }, null)).toBe(true);
+    expect(shouldAutoOpenCodingTask({ id: "task-1", active: true }, "task-1")).toBe(false);
+    expect(shouldAutoOpenCodingTask({ id: "task-2", active: true }, "task-1")).toBe(true);
+    expect(shouldAutoOpenCodingTask({ id: "task-2", active: false }, "task-1")).toBe(false);
   });
 });

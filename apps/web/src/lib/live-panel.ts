@@ -28,6 +28,38 @@ export function panelistIdForAgoraUid(
   return matches.size === 1 ? [...matches][0] : null;
 }
 
+/**
+ * Resolve the human participant's video even when presence polling lands after
+ * Agora's media event. The expected uid wins; the fallback excludes every AI
+ * agent and avatar uid so a panel stream can never be mistaken for a person.
+ */
+export function humanVideoTrack<T>(
+  videos: Array<{ uid: string; track: T }>,
+  expectedUid: string | number | null | undefined,
+  participants: AgoraPanelParticipant[] = [],
+): T | undefined {
+  const expected = expectedUid === null || expectedUid === undefined ? null : String(expectedUid);
+  if (expected) {
+    const exact = videos.find((video) => String(video.uid) === expected);
+    if (exact) return exact.track;
+  }
+  const panelUids = new Set(
+    participants.flatMap((participant) => [
+      String(participant.agent_uid),
+      ...(participant.avatar_uid ? [String(participant.avatar_uid)] : []),
+    ]),
+  );
+  return videos.find((video) => !panelUids.has(String(video.uid)))?.track;
+}
+
+/** A candidate dismissal applies only to that task; a new task may open normally. */
+export function shouldAutoOpenCodingTask(
+  task: { id: string; active: boolean } | null | undefined,
+  dismissedTaskId: string | null,
+): boolean {
+  return Boolean(task?.active && task.id !== dismissedTaskId);
+}
+
 /** Merge polling results without duplicating records returned around a cursor boundary. */
 export function mergeRecordsById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
   const merged = new Map(current.map((item) => [item.id, item]));

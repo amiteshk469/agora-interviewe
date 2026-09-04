@@ -10,6 +10,7 @@ import {
   Check,
   Code2,
   Copy,
+  FileCheck2,
   FileText,
   GraduationCap,
   LoaderCircle,
@@ -39,7 +40,9 @@ import {
   readLiveSession,
   saveLiveSession,
   startInterviewSession,
+  uploadCandidateResume,
   uploadJobDescription,
+  type CandidateResumeResponse,
   type JobDescriptionResponse,
   type PromptTemplateRecord,
   type RolePack,
@@ -166,7 +169,7 @@ function resolveRecommendedPanel(recommended: readonly PanelRecommendation[] | u
   return { ...assigned, promptSlugs };
 }
 
-export function SetupWizard({ initialMode = "candidate_practice" }: { initialMode?: InterviewMode }) {
+export function SetupWizard({ initialMode = "candidate_practice", modeLocked = false }: { initialMode?: InterviewMode; modeLocked?: boolean }) {
   const router = useRouter();
   const { user } = useAuth();
   const initialDefaults = setupDefaultsFromMetadata(user?.user_metadata);
@@ -183,6 +186,10 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
   const [documentId, setDocumentId] = useState("");
   const [jdDisposition, setJdDisposition] = useState<"apply" | "edit" | "ignore">("apply");
   const [jdRecommendations, setJdRecommendations] = useState<JobDescriptionResponse["recommendations"]>(null);
+  const [resumeState, setResumeState] = useState<DocumentState>("empty");
+  const [resumeFileName, setResumeFileName] = useState("");
+  const [resumeId, setResumeId] = useState("");
+  const [resumeDetails, setResumeDetails] = useState<CandidateResumeResponse["extracted"] | null>(null);
   const [panel, setPanel] = useState<Panelist[]>(defaultPanelists.slice(0, initialDefaults.panelSize));
   const [activePrompt, setActivePrompt] = useState(defaultPanelists[0].id);
   const [panelDifficulty, setPanelDifficulty] = useState<Record<string, SetupDifficulty>>({});
@@ -208,6 +215,8 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
   const [showAllPrompts, setShowAllPrompts] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileFeedbackRef = useRef<HTMLDivElement>(null);
+  const resumeInputRef = useRef<HTMLInputElement>(null);
+  const resumeFeedbackRef = useRef<HTMLDivElement>(null);
   const preferencesAppliedFor = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const preUploadSnapshotRef = useRef<PreUploadSnapshot | null>(null);
@@ -330,6 +339,12 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
   }, [documentState]);
 
   useEffect(() => {
+    if (resumeState !== "ready" && resumeState !== "error") return;
+    const frame = window.requestAnimationFrame(() => resumeFeedbackRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [resumeState]);
+
+  useEffect(() => {
     let cancelled = false;
     void listPromptTemplates()
       .then((templates) => {
@@ -421,6 +436,31 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
       } else {
         setSaveError(cause instanceof Error ? cause.message : "Job description upload failed");
         setDocumentState("error");
+      }
+    }
+  }
+
+  async function handleResumeFile(file?: File) {
+    if (!file) return;
+    markDirty();
+    setSaveError("");
+    setResumeFileName(file.name);
+    if (!/\.(pdf|docx|txt|md)$/i.test(file.name) || file.size > 10 * 1024 * 1024) {
+      setResumeState("error");
+      return;
+    }
+    setResumeState("processing");
+    try {
+      const uploaded = await uploadCandidateResume(file);
+      setResumeId(uploaded.id);
+      setResumeDetails(uploaded.extracted);
+      setResumeState(uploaded.status === "failed" ? "error" : "ready");
+    } catch (cause) {
+      if (demoModeEnabled) {
+        window.setTimeout(() => { setResumeId("demo-resume"); setResumeDetails({ word_count: 428, sections: ["experience", "skills"] }); setResumeState("ready"); }, 700);
+      } else {
+        setSaveError(cause instanceof Error ? cause.message : "Candidate CV upload failed");
+        setResumeState("error");
       }
     }
   }
@@ -703,6 +743,7 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
         profession: rolePackId,
         interview_mode: interviewMode,
         job_description_id: documentState === "ready" && jdDisposition !== "ignore" && documentId !== "demo-jd" ? documentId : undefined,
+        candidate_resume_id: resumeState === "ready" && resumeId !== "demo-resume" ? resumeId : undefined,
         difficulty,
         duration_minutes: Number(duration),
         panel: mappedPanel,
@@ -726,7 +767,7 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
   }
 
   return (
-    <AppShell screen="setup" title="Create interview" description={interviewMode === "interviewer_led" ? "Configure an AI-assisted interview, then invite and assess a candidate." : "Configure the role, optional context, panel behavior, and prompt knowledge before entering the lobby."}>
+    <AppShell screen="setup" title={interviewMode === "interviewer_led" ? "Create candidate interview" : "Create practice interview"} description={interviewMode === "interviewer_led" ? "Configure the role and AI panel, then invite your candidate into the shared room." : "Configure your target role, optional documents, panel behavior, and prompt knowledge."}>
       <div className="mb-8"><Stepper steps={steps} current={step} /></div>
       {notice ? <div className="mb-5"><Alert title="Setup updated" onDismiss={() => setNotice("")}>{notice}</Alert></div> : null}
       {saveError && step !== 4 ? <div className="mb-5"><Alert title="Configuration needs attention" variant="destructive"><span>{saveError}</span></Alert></div> : null}
@@ -736,7 +777,7 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
             <Card className="enter">
               <CardHeader><CardTitle id="wizard-step-title" className="text-xl">Choose your target role</CardTitle><CardDescription>Your role sets the panel, rubric, tools, and coding workspace. You can edit the details after choosing.</CardDescription></CardHeader>
               <CardContent className="space-y-5">
-                <fieldset>
+                {!modeLocked ? <fieldset>
                   <legend className="text-sm font-medium">Who is running this interview?</legend>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">Both modes use the same configurable AI panel, live transcript, tools, coding workspace, and assessment.</p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -749,7 +790,7 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
                       <span className={cn("flex min-h-28 items-start gap-3 rounded-lg border bg-background p-4 transition-colors hover:border-primary/50 peer-focus-visible:ring-2 peer-focus-visible:ring-ring", interviewMode === "interviewer_led" && "border-primary bg-primary/5 ring-1 ring-primary/20")}><UsersRound className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" /><span><span className="block text-sm font-medium">Interview a candidate</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">Share a Meet-style link, lead the AI panel, and watch coding live.</span></span></span>
                     </label>
                   </div>
-                </fieldset>
+                </fieldset> : <Alert title={interviewMode === "interviewer_led" ? "Recruiter-led interview" : "Candidate practice"}><span>{interviewMode === "interviewer_led" ? "You will own the room, send a candidate link, and join the AI panel as a human interviewer." : "You will take the interview yourself and receive a private evidence-linked assessment."}</span></Alert>}
                 <Separator />
                 {rolePacksLoading ? <div className="grid min-h-48 place-items-center rounded-lg border border-dashed bg-background" aria-busy="true"><div className="text-center"><LoaderCircle className="mx-auto size-5 animate-spin text-primary" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Loading interview roles</p></div></div> : null}
                 {rolePacksError ? <div className="space-y-3"><Alert title="Interview roles could not be loaded" variant="destructive"><span>{rolePacksError}</span></Alert><Button variant="secondary" onClick={() => { setRolePacksLoading(true); setRolePacksError(""); setRolePacksReload((value) => value + 1); }}>Try again</Button></div> : null}
@@ -804,6 +845,16 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
                   </div>
                 ) : null}
                 {documentState === "skipped" ? <Alert title={`Using ${selectedRolePack?.label ?? "role"} defaults`}><span>No job description will be attached. The selected role pack continues to control the panel and rubric.</span></Alert> : null}
+                <Separator />
+                <div>
+                  <div className="flex items-start justify-between gap-4"><div><h3 className="font-medium">Candidate CV</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">Optional. The panel uses it for grounded questions. In recruiter mode, the invited candidate can also add or replace it before joining.</p></div><Badge variant="outline">Private</Badge></div>
+                  <input ref={resumeInputRef} id="resume-upload" name="candidate_resume" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="peer sr-only" aria-describedby="resume-upload-help" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void handleResumeFile(file); }} />
+                  <span id="resume-upload-help" className="sr-only">Accepts PDF, DOCX, TXT, or MD files up to 10 MB.</span>
+                  {resumeState === "empty" || resumeState === "skipped" ? <label htmlFor="resume-upload" className="mt-4 flex min-h-32 items-center gap-4 rounded-lg border border-dashed bg-background p-5 peer-focus-visible:ring-2 peer-focus-visible:ring-ring"><span className="grid size-10 shrink-0 place-items-center rounded-lg border bg-card"><UploadCloud className="size-4 text-primary" aria-hidden="true" /></span><span><span className="block text-sm font-medium">Upload candidate CV</span><span className="mt-1 block text-xs text-muted-foreground">PDF, DOCX, TXT, or MD up to 10 MB</span></span></label> : null}
+                  {resumeState === "processing" ? <div className="mt-4 flex min-h-32 items-center justify-center gap-3 rounded-lg border bg-background text-sm" aria-live="polite"><LoaderCircle className="size-5 animate-spin text-primary" aria-hidden="true" />Reading {resumeFileName}</div> : null}
+                  {resumeState === "error" ? <div ref={resumeFeedbackRef} tabIndex={-1} className="mt-4 space-y-3 outline-none"><Alert title="This CV could not be used" variant="destructive"><span>Choose a readable PDF, DOCX, TXT, or MD file smaller than 10 MB.</span></Alert><Button size="sm" variant="secondary" onClick={() => resumeInputRef.current?.click()}>Choose another CV</Button></div> : null}
+                  {resumeState === "ready" ? <div ref={resumeFeedbackRef} tabIndex={-1} className="mt-4 flex items-center gap-3 rounded-lg border bg-background p-4 outline-none"><FileCheck2 className="size-5 text-primary" aria-hidden="true" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{resumeFileName}</p><p className="mt-0.5 text-xs text-muted-foreground">{resumeDetails?.word_count ? `${resumeDetails.word_count} words read` : "Ready for the panel"}{resumeDetails?.sections?.length ? ` · ${resumeDetails.sections.length} sections found` : ""}</p></div><Badge variant="default"><Check className="size-3" aria-hidden="true" />Attached</Badge><Button size="sm" variant="ghost" onClick={() => resumeInputRef.current?.click()}>Replace</Button></div> : null}
+                </div>
               </CardContent>
             </Card>
           ) : null}
@@ -897,7 +948,7 @@ export function SetupWizard({ initialMode = "candidate_practice" }: { initialMod
               <Card>
                 <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle id="wizard-step-title" className="text-xl">Ready for the lobby</CardTitle><CardDescription className="mt-1">Review the configuration snapshot that will stay attached to this interview.</CardDescription></div><Badge variant="default"><Check aria-hidden="true" />Ready</Badge></div></CardHeader>
                 <CardContent className="space-y-5">
-                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Mode</p><p className="mt-1 text-sm font-medium">{interviewMode === "interviewer_led" ? "You interview a candidate" : "You practice as candidate"}</p></div><div><p className="text-xs text-muted-foreground">Target role</p><p className="mt-1 text-sm font-medium">{selectedRolePack?.label ?? rolePackId}</p></div><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · refining role` : "Role defaults only"}</p></div></div>
+                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Mode</p><p className="mt-1 text-sm font-medium">{interviewMode === "interviewer_led" ? "You interview a candidate" : "You practice as candidate"}</p></div><div><p className="text-xs text-muted-foreground">Target role</p><p className="mt-1 text-sm font-medium">{selectedRolePack?.label ?? rolePackId}</p></div><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · refining role` : "Role defaults only"}</p></div><div><p className="text-xs text-muted-foreground">Candidate CV</p><p className="mt-1 truncate text-sm font-medium">{resumeState === "ready" ? resumeFileName : interviewMode === "interviewer_led" ? "Candidate can add in invite" : "Not attached"}</p></div></div>
                   <Separator />
                   <div><p className="mb-3 text-xs text-muted-foreground">Panel sequence is decided live</p><div className="flex flex-wrap gap-2">{panel.map((person) => <div key={person.id} className="flex items-center gap-2 rounded-md border bg-background p-2 pe-3"><Avatar initials={person.initials} src={person.avatarImage} className="size-7" /><span><span className="block text-xs font-medium">{person.name}</span><span className="block text-[10px] capitalize text-muted-foreground">{person.role} · {panelDifficulty[person.id] ?? difficulty}</span></span></div>)}</div></div>
                   <Separator />

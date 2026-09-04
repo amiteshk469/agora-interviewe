@@ -195,6 +195,21 @@ class JobDescriptionOut(ApiModel):
     created_at: datetime
 
 
+class CandidateResumeOut(ApiModel):
+    id: UUID
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    status: str
+    extracted: dict[str, Any]
+    error: str | None
+    created_at: datetime
+
+
+class CandidateResumeView(CandidateResumeOut):
+    raw_text: str
+
+
 class RubricCriterion(ApiModel):
     key: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9_]+$")
     label: str = Field(min_length=2, max_length=100)
@@ -238,6 +253,7 @@ class InterviewConfigCreate(ApiModel):
     # panel, rubric, and tools when the caller does not override them.
     profession: str = Field(default=DEFAULT_ROLE_PACK_ID, max_length=60)
     job_description_id: UUID | None = None
+    candidate_resume_id: UUID | None = None
     # None means "use the JD recommendation, or balanced when no JD was uploaded".
     difficulty: Difficulty | None = None
     duration_minutes: int = Field(default=45, ge=10, le=120)
@@ -271,6 +287,7 @@ class InterviewConfigCreate(ApiModel):
 class InterviewConfigOut(ApiModel):
     id: UUID
     job_description_id: UUID | None
+    candidate_resume_id: UUID | None
     title: str
     profession: str
     interview_mode: Literal["candidate_practice", "interviewer_led"]
@@ -290,6 +307,7 @@ class SessionCreate(ApiModel):
 class SessionOut(ApiModel):
     id: UUID
     interview_config_id: UUID
+    candidate_resume_id: UUID | None
     status: str
     config_snapshot: dict[str, Any]
     memory_state: dict[str, Any]
@@ -671,6 +689,7 @@ class GuestInvitePreviewOut(ApiModel):
     panel: list["GuestPanelist"]
     supports_coding: bool
     coding: "RolePackCoding | None" = None
+    candidate_resume: CandidateResumeOut | None = None
 
 
 class GuestPanelist(ApiModel):
@@ -693,6 +712,7 @@ class GuestSessionOut(ApiModel):
     coding: "RolePackCoding | None" = None
     heartbeat_interval_seconds: int
     candidate_rtc_uid: int | None = Field(default=None, gt=0)
+    candidate_resume: CandidateResumeOut | None = None
 
 
 class HostMessageCreate(ApiModel):

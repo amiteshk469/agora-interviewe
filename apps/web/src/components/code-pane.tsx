@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type SyntheticEvent } from "react";
-import { Check, ChevronRight, CloudUpload, FileCode2, Lightbulb, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
+import { Check, ChevronRight, CloudUpload, FileCode2, Lightbulb, Loader2, RotateCcw, TriangleAlert, X } from "lucide-react";
 import { codingHintsForQuestion, cursorPosition, indentSelection, languageLabel, lineNumbers, tokenize, type TokenKind } from "@/lib/code-highlight";
 import { readSessionCode, saveSessionCode, type CodeBuffer } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -56,6 +56,7 @@ type CodePaneProps = {
   prompt: string;
   question?: string;
   hints?: string[];
+  onClose?: () => void;
   className?: string;
 };
 
@@ -141,7 +142,7 @@ export function CodeView({ source, language, className }: { source: string; lang
 }
 
 export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodePane(
-  { sessionId, loadCode, saveCode, languages, defaultLanguage, prompt, question, hints, className },
+  { sessionId, loadCode, saveCode, languages, defaultLanguage, prompt, question, hints, onClose, className },
   ref,
 ) {
   const persistent = Boolean(sessionId || (loadCode && saveCode));
@@ -386,6 +387,11 @@ export const CodePane = forwardRef<CodePaneHandle, CodePaneProps>(function CodeP
         {sync === "error" && dirty && restoreState === "ready" ? (
           <button type="button" onClick={saveNow} className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Retry saving code">
             <RotateCcw className="size-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
+        {onClose ? (
+          <button type="button" onClick={onClose} className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Close coding workspace" title="Close coding workspace">
+            <X className="size-4" aria-hidden="true" />
           </button>
         ) : null}
       </header>

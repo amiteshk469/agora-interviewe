@@ -9,7 +9,7 @@ const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono"
 
 export const metadata: Metadata = {
   title: { default: "RoundCraft", template: "%s | RoundCraft" },
-  description: "Practice demanding product interviews with an adaptive AI panel powered by Agora.",
+  description: "Practice demanding interviews or run structured hiring rooms with an adaptive AI panel powered by Agora.",
 };
 
 export const viewport: Viewport = {

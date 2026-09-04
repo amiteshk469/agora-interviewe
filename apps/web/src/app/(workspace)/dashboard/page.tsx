@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { DashboardScreen } from "@/components/workspace-screens";
+import { WorkspaceRouter } from "@/components/workspace-router";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default function DashboardPage() {
-  return <DashboardScreen />;
+  return <WorkspaceRouter />;
 }
