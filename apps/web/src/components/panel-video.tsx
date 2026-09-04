@@ -28,6 +28,12 @@ const identityTones = [
   "bg-[#e0e1d6] text-[#37382c] dark:bg-[#2e3026] dark:text-[#dcded0]",
 ] as const;
 
+// Agora's React player hook uses this object as an effect dependency. Keeping
+// these references stable prevents an ordinary parent rerender from calling
+// track.stop() followed by track.play(), which presents as camera flicker.
+const LOCAL_VIDEO_PLAYER_CONFIG = { fit: "cover", mirror: true } as const;
+const REMOTE_VIDEO_PLAYER_CONFIG = { fit: "cover", mirror: false } as const;
+
 function identityTone(seed: string, toneIndex?: number) {
   const value = toneIndex ?? [...seed].reduce((total, character) => total + character.charCodeAt(0), 0);
   const index = ((value % identityTones.length) + identityTones.length) % identityTones.length;
@@ -111,7 +117,7 @@ export function ParticipantTile({
             <LocalVideoTrack
               track={track as unknown as ILocalVideoTrack}
               play
-              videoPlayerConfig={{ fit: "cover", mirror: true }}
+              videoPlayerConfig={LOCAL_VIDEO_PLAYER_CONFIG}
               className="size-full"
               aria-label="Your live camera preview"
             />
@@ -119,7 +125,7 @@ export function ParticipantTile({
             <RemoteVideoTrack
               track={track as unknown as IRemoteVideoTrack}
               play
-              videoPlayerConfig={{ fit: "cover", mirror: false }}
+              videoPlayerConfig={REMOTE_VIDEO_PLAYER_CONFIG}
               className="size-full"
               aria-label={`${person.name}'s live video`}
             />

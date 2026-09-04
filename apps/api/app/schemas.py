@@ -740,6 +740,7 @@ class HostPresenceOut(ApiModel):
     last_seen_at: datetime
     rtc_uid: int | None = None
     messages: list[HostMessageOut]
+    coding_task: CodingTaskState | None = None
 
 
 class CandidatePresenceOut(ApiModel):

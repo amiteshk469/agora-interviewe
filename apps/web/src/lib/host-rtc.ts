@@ -56,7 +56,7 @@ export async function joinHostRtcRoom(
     cameraEnabled,
     localVideo: cameraEnabled ? camera : null,
     remoteVideos: client.remoteUsers.flatMap((user) => (
-      user.videoTrack ? [{ uid: String(user.uid), track: user.videoTrack }] : []
+      user.hasVideo && user.videoTrack ? [{ uid: String(user.uid), track: user.videoTrack }] : []
     )),
   });
   const renewToken = () => {

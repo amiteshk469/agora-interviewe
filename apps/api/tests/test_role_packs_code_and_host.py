@@ -568,6 +568,21 @@ async def test_an_invite_admits_a_guest_who_can_then_lead_the_panel(
     assert presence.json()["display_name"] == "Amitesh"
     assert presence.json()["messages"][0]["mode"] == "ask"
 
+    coding_task = await client.post(
+        f"/v1/guest/sessions/{token}/coding-task",
+        json={
+            "question": "Implement a bounded least-recently-used cache.",
+            "language": "python",
+            "hints": ["Keep reads and writes constant time."],
+        },
+    )
+    assert coding_task.status_code == 201, coding_task.text
+    refreshed_presence = await client.get(
+        f"/v1/sessions/{session['id']}/host", headers=auth_headers
+    )
+    assert refreshed_presence.status_code == 200
+    assert refreshed_presence.json()["coding_task"] == coding_task.json()
+
 
 async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_seat(
     client: AsyncClient,

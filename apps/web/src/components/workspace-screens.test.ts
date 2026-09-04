@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAvailableEvidenceLinks, getReportEvidenceLinks, getReportFocusGuard } from "@/components/workspace-screens";
+import { filterAvailableEvidenceLinks, getReportEvidenceLinks, getReportFocusGuard, reportUsesProviderFallback } from "@/components/workspace-screens";
 
 describe("report evidence links", () => {
   it("does not invent a linked turn for an empty report", () => {
@@ -66,5 +66,17 @@ describe("report focus guard", () => {
 
   it("returns null for reports created before focus-guard support", () => {
     expect(getReportFocusGuard({ interviewer_assessments: [] })).toBeNull();
+  });
+});
+
+describe("report generation state", () => {
+  it("recognizes a citation-only report saved during a provider outage", () => {
+    expect(reportUsesProviderFallback({
+      interviewer_assessments: [{ generation_mode: "provider_fallback" }],
+    })).toBe(true);
+  });
+
+  it("does not mark a normally generated report as pending", () => {
+    expect(reportUsesProviderFallback({ interviewer_assessments: [] })).toBe(false);
   });
 });

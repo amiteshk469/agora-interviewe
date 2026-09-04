@@ -25,7 +25,7 @@ import {
   useRTCClient,
 } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Camera, CameraOff, Mic, MicOff, Waves } from "lucide-react";
 import { Alert, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -162,19 +162,28 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   const { localCameraTrack, error: cameraError } = useLocalCameraTrack(cameraEnabled, { encoderConfig: "480p_1" });
   const { videoTracks, error: remoteVideoError } = useRemoteVideoTracks(remoteUsers);
   const { audioTracks, error: remoteAudioError } = useRemoteAudioTracks(remoteUsers);
-  const { error: publishError } = usePublish([localMicrophoneTrack, localCameraTrack]);
+  const publishTracks = useMemo(
+    () => [localMicrophoneTrack, localCameraTrack],
+    [localCameraTrack, localMicrophoneTrack],
+  );
+  const { error: publishError } = usePublish(publishTracks);
 
   useEffect(() => {
+    const publishedVideoUids = new Set(
+      remoteUsers.filter((user) => user.hasVideo).map((user) => String(user.uid)),
+    );
     onMediaState?.({
       microphoneEnabled: enabled,
       cameraEnabled: cameraEnabled && Boolean(localCameraTrack),
       candidateSpeaking: enabled && candidateSpeaking,
       hostSpeaking,
-      localVideo: localCameraTrack,
-      remoteVideos: videoTracks.map((track) => ({ uid: String(track.getUserId()), track })),
+      localVideo: cameraEnabled ? localCameraTrack : null,
+      remoteVideos: videoTracks
+        .filter((track) => publishedVideoUids.has(String(track.getUserId())))
+        .map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [cameraEnabled, candidateSpeaking, connectionState, enabled, hostSpeaking, localCameraTrack, onMediaState, videoTracks]);
+  }, [cameraEnabled, candidateSpeaking, connectionState, enabled, hostSpeaking, localCameraTrack, onMediaState, remoteUsers, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;

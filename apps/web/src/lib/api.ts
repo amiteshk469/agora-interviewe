@@ -470,6 +470,7 @@ export type HostPresence = {
   last_seen_at: string;
   rtc_uid?: number | null;
   messages: HostMessage[];
+  coding_task?: CodingTask | null;
 };
 
 export type CandidatePresence = {

@@ -106,6 +106,7 @@ from app.services.agora_events import map_agora_event, reconcile_agora_history
 from app.services.assessment import (
     AssessmentServiceUnavailable,
     build_assessment,
+    build_provider_fallback_assessment,
     build_replay_drills,
 )
 from app.services.documents import (
@@ -1465,11 +1466,18 @@ async def generate_report(
     try:
         result = await build_assessment(snapshot, turns, settings, evidence)
     except AssessmentServiceUnavailable as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Interview assessment is temporarily unavailable. Retry report generation.",
-            headers={"Retry-After": str(exc.retry_after_seconds)},
-        ) from exc
+        if existing is not None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Interview assessment is temporarily unavailable. The existing report is unchanged.",
+                headers={"Retry-After": str(exc.retry_after_seconds)},
+            ) from exc
+        result = build_provider_fallback_assessment(
+            snapshot,
+            turns,
+            evidence,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
     if str((snapshot or {}).get("interview_mode") or "") == "interviewer_led":
         violation_count = int(focus_guard["violation_count"])
         result["interviewer_assessments"] = [
@@ -1812,6 +1820,7 @@ def _host_presence_out(state: PanelState, *, now: datetime | None = None) -> Hos
         last_seen_at=host.last_seen_at or host.joined_at,
         rtc_uid=host.rtc_uid,
         messages=_host_messages_out(state),
+        coding_task=state.coding_task,
     )
 
 

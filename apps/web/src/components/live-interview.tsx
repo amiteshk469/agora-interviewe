@@ -247,7 +247,7 @@ export function LiveInterviewScreen() {
       } catch {
         // A missed presence refresh must not interrupt the live Agora room.
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void poll(), 6000);
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 2000);
       }
     };
     void poll();
@@ -482,13 +482,21 @@ export function LiveInterviewScreen() {
     : `${activePanelist.name} is ${agentState || (rtcConnected ? "listening" : "waiting for audio")}`;
   const backgroundInert = detailsOpen || endOpen;
   const coding = rolePack?.supports_coding ? rolePack.coding : null;
-  const codingTask = useMemo(() => {
+  const codingTask = (() => {
     if (!coding) return null;
+    if (hostPresence?.coding_task?.active) {
+      return {
+        id: hostPresence.coding_task.id,
+        text: hostPresence.coding_task.question,
+        language: hostPresence.coding_task.language,
+        hints: hostPresence.coding_task.hints,
+      };
+    }
     const turn = liveTurns.find(
       (item) => !item.isLocal && item.final && Boolean(item.text) && isCodingQuestion(item.text),
     );
-    return turn ? { id: turn.id, text: turn.text } : null;
-  }, [coding, liveTurns]);
+    return turn ? { id: turn.id, text: turn.text, language: coding.default_language, hints: [] } : null;
+  })();
   const agentHints = useMemo(
     () => Array.from(new Set(
       liveTurns
@@ -616,10 +624,10 @@ export function LiveInterviewScreen() {
                 ref={codePaneRef}
                 sessionId={storedSession?.demo ? undefined : storedSession?.sessionId}
                 languages={coding.languages}
-                defaultLanguage={coding.default_language}
+                defaultLanguage={codingTask?.language || coding.default_language}
                 prompt={coding.prompt}
                 question={codingTask?.text}
-                hints={agentHints.length ? agentHints : undefined}
+                hints={codingTask?.hints.length ? codingTask.hints : agentHints.length ? agentHints : undefined}
                 onClose={() => setCodeOpen(false)}
                 className={cn("mx-auto min-h-[18rem] w-full flex-1", !codeOpen && "hidden")}
               />

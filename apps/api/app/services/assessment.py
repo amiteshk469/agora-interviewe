@@ -255,6 +255,85 @@ def _log_upstream_failure(*, attempt: int, status_code: int | None, request_id: 
     )
 
 
+def _json_object_from_text(content: str) -> dict[str, Any]:
+    """Read the first JSON object even when a model wraps it in prose or fences."""
+    start = content.find("{")
+    if start < 0:
+        raise ValueError("assessment response does not contain a JSON object")
+    value, _ = json.JSONDecoder().raw_decode(content[start:])
+    if not isinstance(value, dict):
+        raise TypeError("assessment response JSON is not an object")
+    return value
+
+
+def _finite_number(value: Any, *, minimum: float, maximum: float) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return min(max(parsed, minimum), maximum)
+
+
+def _parse_structured_assessment(
+    content: str,
+    rubric: list[dict[str, Any]],
+) -> StructuredAssessment:
+    """Normalize common provider formatting drift without weakening citation checks."""
+    payload = _json_object_from_text(content)
+    raw_criteria = payload.get("criteria")
+    if not isinstance(raw_criteria, list):
+        raise TypeError("assessment response criteria is not a list")
+
+    ordered_keys = [str(item["key"]) for item in rubric]
+    allowed_keys = set(ordered_keys)
+    normalized_by_key: dict[str, dict[str, Any]] = {}
+    for raw in raw_criteria[: _MAX_CRITERIA * 2]:
+        if not isinstance(raw, dict):
+            continue
+        key = _clean_text(raw.get("key"), 80)
+        if key not in allowed_keys or key in normalized_by_key:
+            continue
+        score = _finite_number(raw.get("score"), minimum=0, maximum=100)
+        confidence = _finite_number(raw.get("confidence"), minimum=0, maximum=1)
+        evidence_turn_ids: list[UUID] = []
+        citations = raw.get("evidence_turn_ids")
+        if isinstance(citations, list):
+            for value in citations[:_MAX_CITATIONS_PER_CRITERION]:
+                try:
+                    turn_id = UUID(str(value))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if turn_id not in evidence_turn_ids:
+                    evidence_turn_ids.append(turn_id)
+        feedback = _clean_text(raw.get("feedback"), _MAX_FEEDBACK_CHARS)
+        normalized_by_key[key] = {
+            "key": key,
+            "score": score,
+            "confidence": confidence if confidence is not None else 0.0,
+            "feedback": feedback or "The provider returned no usable feedback for this criterion.",
+            "evidence_turn_ids": evidence_turn_ids,
+        }
+
+    normalized = [
+        normalized_by_key.get(
+            key,
+            {
+                "key": key,
+                "score": None,
+                "confidence": 0.0,
+                "feedback": "The provider returned no usable assessment for this criterion.",
+                "evidence_turn_ids": [],
+            },
+        )
+        for key in ordered_keys
+    ]
+    return StructuredAssessment.model_validate({"criteria": normalized})
+
+
 async def request_structured_assessment(
     settings: Settings,
     candidate_turns: list[dict[str, str]],
@@ -358,10 +437,7 @@ async def request_structured_assessment(
                 content = response_body["choices"][0]["message"]["content"]
                 if not isinstance(content, str):
                     raise TypeError("assessment response content is not text")
-                structured = StructuredAssessment.model_validate_json(content)
-                if sorted(item.key for item in structured.criteria) != sorted(str(item["key"]) for item in rubric):
-                    raise ValueError("assessment response rubric coverage is invalid")
-                return structured
+                return _parse_structured_assessment(content, rubric)
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 _log_upstream_failure(
                     attempt=attempt,
@@ -538,6 +614,89 @@ async def build_assessment(
         else None
     )
     return _finalize_assessment(snapshot, rubric, candidate_turns, structured, evidence)
+
+
+def build_provider_fallback_assessment(
+    snapshot: dict[str, Any],
+    turns: list[TranscriptTurn],
+    evidence: list[dict[str, Any]] | None = None,
+    *,
+    retry_after_seconds: int = 2,
+) -> dict[str, Any]:
+    """Persist a usable, citation-only report when model scoring is unavailable.
+
+    This deliberately does not guess scores. The interview still ends, captured
+    evidence remains navigable, and the user can regenerate scoring later.
+    """
+    rubric = select_assessment_rubric(snapshot)
+    candidate_turns = final_candidate_turns(turns)
+    turn_by_id = {item["id"]: item for item in candidate_turns}
+    recorded_evidence = evidence or []
+    result = _finalize_assessment(snapshot, rubric, candidate_turns, None, recorded_evidence)
+    competencies: list[dict[str, Any]] = []
+    evidence_map: list[dict[str, Any]] = []
+
+    for criterion in rubric:
+        key = str(criterion["key"])
+        cited_turn_ids = list(
+            dict.fromkeys(
+                str(item.get("transcript_turn_id"))
+                for item in recorded_evidence
+                if item.get("competency") == key
+                and str(item.get("transcript_turn_id")) in turn_by_id
+            )
+        )
+        view, contradiction_turn_ids = panel_view_for(key, recorded_evidence, cited_turn_ids)
+        competencies.append(
+            {
+                "key": key,
+                "label": criterion["label"],
+                "score": None,
+                "confidence": 0.0,
+                "evidence_turn_ids": cited_turn_ids,
+                "panel_view": view,
+                "contradiction_turn_ids": contradiction_turn_ids,
+                "feedback": (
+                    "Transcript evidence was captured. Scoring is pending because the assessment "
+                    "provider was temporarily unavailable."
+                    if cited_turn_ids
+                    else "Scoring is pending because the assessment provider was temporarily unavailable."
+                ),
+            }
+        )
+        for turn_id in cited_turn_ids:
+            evidence_map.append(
+                {
+                    "competency": key,
+                    "transcript_turn_id": turn_id,
+                    "excerpt": turn_by_id[turn_id]["text"][:1_200],
+                }
+            )
+
+    result.update(
+        {
+            "overall_score": None,
+            "readiness": "assessment_pending",
+            "summary": (
+                "The interview ended safely and transcript evidence was captured. "
+                "Scoring is temporarily pending; re-run the assessment when the model service recovers."
+            ),
+            "competencies": competencies,
+            "evidence_map": evidence_map,
+            "interviewer_assessments": [
+                *result["interviewer_assessments"],
+                {
+                    "interviewer_id": "assessment_provider",
+                    "display_name": "Assessment provider",
+                    "role": "Report generation",
+                    "summary": "A citation-only report was saved while model scoring was unavailable.",
+                    "generation_mode": "provider_fallback",
+                    "retry_after_seconds": retry_after_seconds,
+                },
+            ],
+        }
+    )
+    return result
 
 
 def build_replay_drills(report: dict[str, Any]) -> list[dict[str, Any]]:

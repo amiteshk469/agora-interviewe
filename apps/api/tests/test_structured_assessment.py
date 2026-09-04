@@ -387,7 +387,7 @@ async def test_structured_report_filters_invalid_citations(
     "mode",
     ["valid-but-incomplete", "duplicate-key", "unknown-key"],
 )
-async def test_structured_report_rejects_invalid_rubric_key_coverage(
+async def test_structured_report_normalizes_provider_rubric_coverage(
     client: AsyncClient,
     auth_headers: dict[str, str],
     monkeypatch: Any,
@@ -420,9 +420,18 @@ async def test_structured_report_rejects_invalid_rubric_key_coverage(
 
     response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
 
-    assert response.status_code == 503
-    assert captured["calls"] == 2
-    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+    assert response.status_code == 201, response.text
+    assert captured["calls"] == 1
+    report = response.json()
+    by_key = {item["key"]: item for item in report["competencies"]}
+    assert set(by_key) == {"problem_framing", "decision_quality"}
+    if mode == "valid-but-incomplete":
+        assert by_key["problem_framing"]["score"] == 82
+        assert by_key["decision_quality"]["score"] is None
+        assert report["readiness"] == "insufficient_evidence"
+    else:
+        assert report["overall_score"] == 79
+        assert report["readiness"] == "interview_ready"
 
 
 async def test_structured_report_preserves_explicit_insufficient_evidence(
@@ -541,7 +550,7 @@ async def test_structured_report_retries_transport_error_then_persists_success(
     assert delays == [2.0]
 
 
-async def test_structured_report_terminal_transport_error_is_503_and_not_persisted(
+async def test_structured_report_terminal_transport_error_persists_a_pending_report(
     client: AsyncClient,
     auth_headers: dict[str, str],
     monkeypatch: Any,
@@ -570,14 +579,24 @@ async def test_structured_report_terminal_transport_error_is_503_and_not_persist
 
     response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
 
-    assert response.status_code == 503
-    assert response.headers["retry-after"] == "2"
+    assert response.status_code == 201, response.text
+    assert response.json()["readiness"] == "assessment_pending"
+    assert response.json()["overall_score"] is None
+    provider_status = next(
+        item
+        for item in response.json()["interviewer_assessments"]
+        if item.get("interviewer_id") == "assessment_provider"
+    )
+    assert provider_status["generation_mode"] == "provider_fallback"
+    assert provider_status["retry_after_seconds"] == 2
     assert captured["calls"] == 2
     assert delays == [2.0]
-    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+    saved = await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+    assert saved.status_code == 200
+    assert saved.json()["id"] == response.json()["id"]
 
 
-async def test_structured_report_terminal_failure_is_503_and_not_persisted(
+async def test_structured_report_terminal_failure_can_be_regenerated_after_fallback(
     client: AsyncClient,
     auth_headers: dict[str, str],
     monkeypatch: Any,
@@ -596,11 +615,17 @@ async def test_structured_report_terminal_failure_is_503_and_not_persisted(
         headers={"retry-after": "7"},
     )
     failed = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
-    assert failed.status_code == 503
-    assert failed.headers["retry-after"] == "7"
+    assert failed.status_code == 201, failed.text
+    assert failed.json()["readiness"] == "assessment_pending"
+    provider_status = next(
+        item
+        for item in failed.json()["interviewer_assessments"]
+        if item.get("interviewer_id") == "assessment_provider"
+    )
+    assert provider_status["retry_after_seconds"] == 7
     assert captured["calls"] == 2
     assert delays == [7]
-    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 200
 
     _mock_assessment_client(
         monkeypatch,
@@ -623,39 +648,91 @@ async def test_structured_report_terminal_failure_is_503_and_not_persisted(
             ]
         },
     )
-    retried = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
-    assert retried.status_code == 201, retried.text
+    retried = await client.post(
+        f"/v1/sessions/{session_id}/report?regenerate=true", headers=auth_headers
+    )
+    assert retried.status_code == 200, retried.text
     assert retried.json()["readiness"] == "interview_ready"
 
 
 @pytest.mark.parametrize(
-    "result",
+    ("result", "expected_calls", "expected_readiness"),
     [
-        "not valid JSON",
-        {
-            "criteria": [
-                {
-                    "key": "problem_framing",
-                    "score": 80,
-                    "feedback": "Missing required structured fields.",
-                    "evidence_turn_ids": [],
-                }
-            ]
-        },
+        ("not valid JSON", 2, "assessment_pending"),
+        (
+            {
+                "criteria": [
+                    {
+                        "key": "problem_framing",
+                        "score": 80,
+                        "feedback": "Missing required structured fields.",
+                        "evidence_turn_ids": [],
+                    }
+                ]
+            },
+            1,
+            "insufficient_evidence",
+        ),
     ],
 )
-async def test_structured_report_invalid_json_or_schema_is_503(
+async def test_structured_report_recovers_from_invalid_json_or_schema(
     client: AsyncClient,
     auth_headers: dict[str, str],
     monkeypatch: Any,
     result: dict[str, Any] | str,
+    expected_calls: int,
+    expected_readiness: str,
 ) -> None:
     session_id, _, _ = await _ended_anchored_session(client, auth_headers)
     captured = _mock_assessment_client(monkeypatch, result)
     response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
-    assert response.status_code == 503
-    assert captured["calls"] == 2
-    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 404
+    assert response.status_code == 201, response.text
+    assert response.json()["readiness"] == expected_readiness
+    assert captured["calls"] == expected_calls
+    assert (await client.get(f"/v1/sessions/{session_id}/report", headers=auth_headers)).status_code == 200
+
+
+async def test_structured_report_accepts_fenced_json_and_numeric_strings(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monkeypatch: Any,
+) -> None:
+    session_id, final_ids, _ = await _ended_anchored_session(client, auth_headers)
+    payload = {
+        "criteria": [
+            {
+                "key": "problem_framing",
+                "score": "84",
+                "confidence": "0.88",
+                "feedback": "A specific segment and research signal.",
+                "evidence_turn_ids": [final_ids[0]],
+                "ignored": "value",
+            },
+            {
+                "key": "decision_quality",
+                "score": "76",
+                "confidence": "0.79",
+                "feedback": "Alternatives and a reversible guardrail.",
+                "evidence_turn_ids": [final_ids[1]],
+            },
+            {
+                "key": "unknown_criterion",
+                "score": 100,
+                "confidence": 1,
+                "feedback": "Ignore me.",
+                "evidence_turn_ids": [],
+            },
+        ]
+    }
+    content = f"Model notes follow.\n```json\n{json.dumps(payload)}\n```"
+    captured = _mock_assessment_client(monkeypatch, content)
+
+    response = await client.post(f"/v1/sessions/{session_id}/report", headers=auth_headers)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["overall_score"] == 80
+    assert response.json()["readiness"] == "interview_ready"
+    assert captured["calls"] == 1
 
 
 async def test_structured_report_regeneration_is_explicit_and_updates_existing(
