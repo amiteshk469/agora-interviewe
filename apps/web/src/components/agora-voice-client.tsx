@@ -16,6 +16,7 @@ import {
   RemoteAudioTrack,
   useClientEvent,
   useJoin,
+  useLocalCameraTrack,
   useLocalMicrophoneTrack,
   usePublish,
   useRemoteAudioTracks,
@@ -25,7 +26,7 @@ import {
 } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Waves } from "lucide-react";
+import { Camera, CameraOff, Mic, MicOff, Waves } from "lucide-react";
 import { Alert, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
@@ -146,6 +147,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [enabled, setEnabled] = useState(true);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
   const [connectionState, setConnectionState] = useState("CONNECTING");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [voiceError, setVoiceError] = useState("");
@@ -157,19 +159,22 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
+  const { localCameraTrack, error: cameraError } = useLocalCameraTrack(cameraEnabled, { encoderConfig: "480p_1" });
   const { videoTracks, error: remoteVideoError } = useRemoteVideoTracks(remoteUsers);
   const { audioTracks, error: remoteAudioError } = useRemoteAudioTracks(remoteUsers);
-  const { error: publishError } = usePublish([localMicrophoneTrack]);
+  const { error: publishError } = usePublish([localMicrophoneTrack, localCameraTrack]);
 
   useEffect(() => {
     onMediaState?.({
       microphoneEnabled: enabled,
+      cameraEnabled: cameraEnabled && Boolean(localCameraTrack),
       candidateSpeaking: enabled && candidateSpeaking,
       hostSpeaking,
+      localVideo: localCameraTrack,
       remoteVideos: videoTracks.map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [candidateSpeaking, connectionState, enabled, hostSpeaking, onMediaState, videoTracks]);
+  }, [cameraEnabled, candidateSpeaking, connectionState, enabled, hostSpeaking, localCameraTrack, onMediaState, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -309,6 +314,22 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
     }
   }, [enabled, localMicrophoneTrack]);
 
+  const toggleCamera = useCallback(async () => {
+    if (cameraEnabled && cameraError && !localCameraTrack) {
+      setVoiceError("");
+      setCameraEnabled(false);
+      window.setTimeout(() => setCameraEnabled(true), 0);
+      return;
+    }
+    const next = !cameraEnabled;
+    try {
+      if (localCameraTrack) await localCameraTrack.setEnabled(next);
+      setCameraEnabled(next);
+    } catch (error) {
+      setVoiceError(`${errorMessage(error, "The camera could not be updated")}. Check browser permissions and retry.`);
+    }
+  }, [cameraEnabled, cameraError, localCameraTrack]);
+
   const toggleRoomTone = useCallback(async () => {
     if (roomToneRef.current) {
       disposeRoomTone(roomToneRef.current);
@@ -332,6 +353,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   return (
     <div className="space-y-2">
       {displayedError ? <Alert title="Live audio needs attention" variant="destructive"><span className="break-words [overflow-wrap:anywhere]">{displayedError}</span></Alert> : null}
+      {cameraError ? <Alert title="Camera unavailable"><span>Audio is still connected. Allow camera access, then select Retry Camera.</span></Alert> : null}
       <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Live audio controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
         {/* Muting is the control people reach for under pressure, so it reads as the
             primary one: filled when live, destructive when muted, and ringed by the
@@ -356,6 +378,18 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
             />
           ) : null}
         </button>
+
+        <Button
+          size="icon"
+          variant={cameraEnabled && localCameraTrack ? "secondary" : "outline"}
+          className="h-11 w-14 rounded-xl"
+          onClick={() => void toggleCamera()}
+          aria-pressed={cameraEnabled && Boolean(localCameraTrack)}
+          title={cameraError && !localCameraTrack ? "Retry camera" : cameraEnabled ? "Turn off camera" : "Turn on camera"}
+          aria-label={cameraError && !localCameraTrack ? "Retry camera" : cameraEnabled ? "Turn off camera" : "Turn on camera"}
+        >
+          {cameraEnabled && localCameraTrack ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}
+        </Button>
 
         <Button
           size="icon"

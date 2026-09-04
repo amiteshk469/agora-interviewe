@@ -20,6 +20,7 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Target,
@@ -761,6 +762,29 @@ export function filterAvailableEvidenceLinks(links: ReportEvidenceLink[], availa
   return links.filter((item) => available.has(item.turnId));
 }
 
+export type ReportFocusGuard = {
+  violationCount: number;
+  flagged: boolean;
+  summary: string;
+};
+
+export function getReportFocusGuard(
+  report: Pick<SessionReport, "interviewer_assessments"> | null,
+): ReportFocusGuard | null {
+  const item = report?.interviewer_assessments.find(
+    (assessment) => assessment.interviewer_id === "focus_guard",
+  );
+  if (!item) return null;
+  const violationCount = typeof item.violation_count === "number" ? item.violation_count : 0;
+  return {
+    violationCount,
+    flagged: item.flagged === true,
+    summary: typeof item.summary === "string"
+      ? item.summary
+      : `${violationCount} browser focus event${violationCount === 1 ? "" : "s"} recorded.`,
+  };
+}
+
 export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
   const { initials } = useAuth();
   const realSession = sessionId !== "demo";
@@ -832,6 +856,7 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
   const overallScore = report?.overall_score === null ? "N/A" : Math.round(report?.overall_score ?? 81);
   const readiness = report?.readiness || "Strong signal";
   const summary = report?.summary || "You showed clear product judgment and concise communication. Sharpen metric thresholds and collect more execution evidence.";
+  const focusGuard = getReportFocusGuard(report);
   const reportToolRows = realSession ? interviewerToolRuns(realTools).map((run) => ({
     id: run.id,
     tool: run.tool_name.replaceAll("_", " "),
@@ -872,6 +897,7 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
       competencies: reportCompetencies,
       transcript: reportTurns,
       tools: reportToolRows,
+      session_integrity: focusGuard,
     }, null, 2);
     const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
     const anchor = document.createElement("a");
@@ -893,6 +919,7 @@ export function ReportScreen({ sessionId = "demo" }: { sessionId?: string }) {
         <div className="min-w-0 space-y-5">
           {tab === "assessment" ? <>
             <Card><CardContent className="p-5"><div className="flex flex-col gap-5 sm:flex-row sm:items-end"><div><p className="text-sm text-muted-foreground">Overall readiness</p><p className="mt-1 text-6xl font-semibold tracking-[-0.05em]">{overallScore}<span className="text-xl text-muted-foreground">{overallScore === "N/A" ? "" : "/100"}</span></p></div><div className="sm:ms-auto sm:max-w-sm"><Badge variant="default">{readiness}</Badge><p className="mt-2 text-sm leading-6 text-muted-foreground">{summary}</p></div></div></CardContent></Card>
+            {focusGuard ? <Card><CardContent className="flex items-start gap-4 p-5"><span className={cn("grid size-10 shrink-0 place-items-center rounded-full", focusGuard.flagged ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary")}>{focusGuard.flagged ? <ShieldAlert className="size-5" aria-hidden="true" /> : <ShieldCheck className="size-5" aria-hidden="true" />}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-medium">Session integrity</h2><Badge variant={focusGuard.flagged ? "destructive" : "outline"}>{focusGuard.violationCount} focus event{focusGuard.violationCount === 1 ? "" : "s"}</Badge></div><p className="mt-2 text-sm leading-6 text-muted-foreground">{focusGuard.summary}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">This browser-level guard records tab, window-focus, fullscreen and camera changes. It does not inspect other apps or the candidate&apos;s screen.</p></div></CardContent></Card> : null}
             <Card><CardHeader><CardTitle>Structured assessment</CardTitle><CardDescription>Each score requires linked transcript evidence.</CardDescription></CardHeader><CardContent className="space-y-3">{reportCompetencies.map((item) => <div key={item.key} className="rounded-lg border bg-background p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="text-sm font-medium">{item.name}</h3>{item.score === null ? <Badge variant="outline"><CircleAlert className="size-3" aria-hidden="true" />Insufficient evidence</Badge> : <Badge variant="secondary">{item.level}</Badge>}{item.panelView === "contested" ? <Badge variant="destructive" title="The candidate stated conflicting numbers for this competency across turns."><CircleAlert className="size-3" aria-hidden="true" />Panel disagreement</Badge> : item.panelView === "corroborated" ? <Badge variant="outline">Corroborated</Badge> : null}</div><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">{item.note}</p></div><span className={cn("font-mono text-xl font-medium", item.score === null && "text-muted-foreground")}>{item.score ?? "N/A"}</span></div>{item.evidence.length ? <div className="mt-4 flex flex-wrap gap-2">{item.evidence.map((id) => <button key={id} type="button" aria-pressed={selectedEvidence?.turnId === id && selectedEvidence.competencyKey === item.key} onClick={() => { setSelectedTurn(id); setSelectedCompetencyKey(item.key); }} className={cn("max-w-full truncate rounded-md border px-2.5 py-1 font-mono text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground", selectedEvidence?.turnId === id && selectedEvidence.competencyKey === item.key && "border-primary/60 bg-primary/10 text-primary")}>{id}</button>)}</div> : <div className="mt-4"><Button size="sm" variant="secondary" asChild><Link href={realSession ? `/replay/${sessionId}` : "/replay"}><Sparkles aria-hidden="true" />Create evidence drill</Link></Button></div>}</div>)}</CardContent></Card>
           </> : null}
           {tab === "transcript" ? <Card><CardHeader><CardTitle>Session transcript</CardTitle><CardDescription>Final and interrupted turns from the Agora live session.</CardDescription></CardHeader><CardContent className="space-y-2">{reportTurns.map((turn) => <button key={turn.id} type="button" aria-pressed={sidebarTurn?.id === turn.id} onClick={() => { setSelectedTurn(turn.id); setSelectedCompetencyKey(null); }} className={cn("w-full rounded-lg border p-4 text-start", sidebarTurn?.id === turn.id ? "border-primary/50 bg-primary/5" : "bg-background hover:bg-accent/40")}><div className="flex items-center justify-between"><span className="text-xs font-medium">{turn.speaker}</span><span className="max-w-[60%] truncate font-mono text-[10px] text-muted-foreground">{turn.time} · {turn.id}</span></div><p className="mt-2 break-words text-sm leading-6 text-muted-foreground">{turn.text}</p></button>)}{!reportTurns.length ? <div className="py-12 text-center"><MessageSquareText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">No final transcript turns</p><p className="mt-1 text-xs text-muted-foreground">The report correctly records that no usable transcript evidence was captured.</p></div> : null}</CardContent></Card> : null}

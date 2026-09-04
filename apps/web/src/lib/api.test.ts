@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInterviewConfig, createInterviewSession, createPromptTemplate, createScopedSessionInvite, forkPromptTemplate, generateSessionReport, heartbeatCandidateSession, heartbeatHostSession, joinSessionAsCandidate, leaveCandidateSession, leaveHostSession, listPromptTemplates, persistCandidateGuestTurn, previewSessionInvite, readCandidateGuestCode, readSessionCode, renewCandidateSessionToken, renewHostSessionToken, renewInterviewSessionToken, saveCandidateGuestCode, saveSessionCode, startInterviewSession, stopAgoraAgent } from "./api";
+import { createInterviewConfig, createInterviewSession, createPromptTemplate, createScopedSessionInvite, forkPromptTemplate, generateSessionReport, heartbeatCandidateSession, heartbeatHostSession, joinSessionAsCandidate, leaveCandidateSession, leaveHostSession, listPromptTemplates, persistCandidateGuestTurn, previewSessionInvite, readCandidateGuestCode, readSessionCode, recordCandidateFocusEvent, renewCandidateSessionToken, renewHostSessionToken, renewInterviewSessionToken, saveCandidateGuestCode, saveSessionCode, startInterviewSession, stopAgoraAgent } from "./api";
 
 const storage = new Map<string, string>([["roundcraft.supabase_access_token", "test-jwt"]]);
 const localStorageMock = {
@@ -90,6 +90,7 @@ describe("configured interview flow", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(code), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(code), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "turn-1" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ violation_count: 1, flagged: false, events: [] }), { status: 201 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -100,6 +101,7 @@ describe("configured interview flow", () => {
     await readCandidateGuestCode("candidate.token");
     await saveCandidateGuestCode("candidate.token", "python", "answer = 42");
     await persistCandidateGuestTurn("candidate.token", { agora_turn_id: "agora-turn-1", content: "I used a map." });
+    await recordCandidateFocusEvent("candidate.token", "tab_hidden", "The interview tab was hidden.");
     await leaveCandidateSession("candidate.token");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
@@ -110,10 +112,13 @@ describe("configured interview flow", () => {
       `${productBase}/guest/candidates/candidate.token/code`,
       `${productBase}/guest/candidates/candidate.token/code`,
       `${productBase}/guest/candidates/candidate.token/turns`,
+      `${productBase}/guest/candidates/candidate.token/focus-events`,
       `${productBase}/guest/candidates/candidate.token/leave`,
     ]);
     expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ language: "python", content: "answer = 42" });
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({ event: "tab_hidden", detail: "The interview tab was hidden." });
     expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: "POST", keepalive: true });
+    expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: "POST", keepalive: true });
   });
 
   it("mints candidate and interviewer links only through the owner API", async () => {

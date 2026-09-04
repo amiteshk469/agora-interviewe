@@ -1,7 +1,6 @@
 "use client";
 
-import type { IRemoteVideoTrack } from "agora-rtc-react";
-import { AvatarVideoDisplay } from "agora-agent-uikit";
+import { AvatarVideoDisplay, type PlayableVideoTrack } from "agora-agent-uikit";
 import { Brain, Ear, Hand, Mic, MicOff, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
@@ -86,7 +85,7 @@ export function ParticipantTile({
 }: {
   person: Panelist;
   state: PanelPresence;
-  track?: IRemoteVideoTrack | null;
+  track?: PlayableVideoTrack | null;
   toneIndex?: number;
   isSelf?: boolean;
   microphoneEnabled?: boolean;
@@ -106,7 +105,7 @@ export function ParticipantTile({
         : `${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
       {track ? (
-        <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="absolute inset-0 size-full" />
+        <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className={cn("absolute inset-0 size-full", isSelf && "[&_video]:-scale-x-100")} />
       ) : (
         <div className="absolute inset-0 grid place-items-center">
           <Avatar person={person} toneIndex={toneIndex} speaking={speaking} compact={compact} />
@@ -116,7 +115,7 @@ export function ParticipantTile({
       <div className={cn("absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-[var(--tile)] via-[var(--tile)]/85 to-transparent", compact ? "p-2 pt-4" : "p-2.5 pt-6 sm:p-3 sm:pt-8")}>
         <div className="min-w-0">
           <p className={cn("truncate font-semibold", compact ? "text-[11px] leading-4" : "text-[13px] leading-5")}>{person.name}</p>
-          {compact ? null : <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{isSelf ? "Candidate" : person.role}</p>}
+          {compact ? null : <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{person.role}</p>}
         </div>
         <span className={cn("flex shrink-0 items-center gap-1", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : microphoneEnabled ? "Your microphone is on" : "Your microphone is muted") : stateCopy[state]}>
           {speaking

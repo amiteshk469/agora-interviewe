@@ -459,6 +459,15 @@ class HostState(ApiModel):
     pending_question: str | None = None
 
 
+class FocusGuardEventRecord(ApiModel):
+    """One observable browser-focus signal from the candidate's seat."""
+
+    id: str
+    event: Literal["tab_hidden", "window_blur", "fullscreen_exit", "camera_disabled"]
+    detail: str = ""
+    occurred_at: datetime
+
+
 class CandidateState(ApiModel):
     """The candidate seat in an interviewer-led room."""
 
@@ -467,6 +476,7 @@ class CandidateState(ApiModel):
     last_seen_at: datetime | None = None
     left_at: datetime | None = None
     rtc_uid: int | None = Field(default=None, gt=0)
+    focus_events: list[FocusGuardEventRecord] = Field(default_factory=list, max_length=100)
 
 
 class CodingTaskState(ApiModel):
@@ -682,6 +692,7 @@ class GuestSessionOut(ApiModel):
     supports_coding: bool
     coding: "RolePackCoding | None" = None
     heartbeat_interval_seconds: int
+    candidate_rtc_uid: int | None = Field(default=None, gt=0)
 
 
 class HostMessageCreate(ApiModel):
@@ -707,6 +718,7 @@ class HostPresenceOut(ApiModel):
     display_name: str
     joined_at: datetime
     last_seen_at: datetime
+    rtc_uid: int | None = None
     messages: list[HostMessageOut]
 
 
@@ -714,6 +726,18 @@ class CandidatePresenceOut(ApiModel):
     display_name: str
     joined_at: datetime
     last_seen_at: datetime
+    rtc_uid: int | None = None
+
+
+class FocusGuardEventCreate(ApiModel):
+    event: Literal["tab_hidden", "window_blur", "fullscreen_exit", "camera_disabled"]
+    detail: str = Field(default="", max_length=240)
+
+
+class FocusGuardSummaryOut(ApiModel):
+    violation_count: int = Field(ge=0)
+    flagged: bool
+    events: list[FocusGuardEventRecord]
 
 
 class CodingTaskCreate(ApiModel):

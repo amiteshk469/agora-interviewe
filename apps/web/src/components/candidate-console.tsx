@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, Clock3, Code2, Loader2, Mic2, ShieldCheck, UserRound, UsersRound } from "lucide-react";
+import { Check, Clock3, Code2, Loader2, Mic2, MonitorUp, ShieldAlert, ShieldCheck, UserRound, UsersRound } from "lucide-react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
 import { CodePane } from "@/components/code-pane";
@@ -15,6 +15,7 @@ import {
   leaveCandidateSession,
   persistCandidateGuestTurn,
   previewSessionInvite,
+  recordCandidateFocusEvent,
   readCandidateGuestCode,
   readCandidateGuestView,
   renewCandidateSessionToken,
@@ -23,17 +24,23 @@ import {
   type GuestInvitePreview,
   type GuestSession,
   type GuestView,
+  type FocusGuardSummary,
+  type HostPresence,
   type StoredLiveSession,
 } from "@/lib/api";
+import type { BrowserFocusEvent } from "@/lib/focus-guard";
 import { mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
+import { useCandidateFocusGuard } from "@/lib/use-candidate-focus-guard";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 2500;
 
 const EMPTY_MEDIA: LiveMediaState = {
   microphoneEnabled: true,
+  cameraEnabled: true,
   candidateSpeaking: false,
   hostSpeaking: false,
+  localVideo: null,
   remoteVideos: [],
   connectionState: "CONNECTING",
 };
@@ -74,6 +81,8 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const [storedTurns, setStoredTurns] = useState<GuestView["turns"]>([]);
   const [messages, setMessages] = useState<GuestView["messages"]>([]);
   const [codingTask, setCodingTask] = useState<CodingTask | null>(null);
+  const [host, setHost] = useState<HostPresence | null>(null);
+  const [focusGuardSummary, setFocusGuardSummary] = useState<FocusGuardSummary>({ violation_count: 0, flagged: false, events: [] });
   const [codeOpen, setCodeOpen] = useState(false);
   const [agentState, setAgentState] = useState<LiveAgentState>(null);
   const [media, setMedia] = useState<LiveMediaState>(EMPTY_MEDIA);
@@ -82,6 +91,30 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const pendingWrites = useRef(new Set<Promise<unknown>>());
   const lastSequence = useRef(0);
   const statusRef = useRef(initialPreview.status);
+  const cameraWasEnabled = useRef(false);
+  const cameraMissingReported = useRef(false);
+
+  const sendFocusEvent = useCallback(async (event: BrowserFocusEvent, detail: string) => {
+    try {
+      const summary = await recordCandidateFocusEvent(token, event, detail);
+      setFocusGuardSummary(summary);
+    } catch {
+      setUpdatesDelayed(true);
+    }
+  }, [token]);
+
+  const {
+    fullscreenActive,
+    fullscreenSupported,
+    attentionRequired,
+    lastEventLabel,
+    enterFocusMode,
+    acknowledge: acknowledgeFocusGuard,
+    report: reportFocusEvent,
+  } = useCandidateFocusGuard({
+    enabled: Boolean(session) && status === "live" && media.connectionState === "CONNECTED",
+    onEvent: sendFocusEvent,
+  });
 
   useEffect(() => {
     if (session || preview.status === "ended" || preview.status === "failed") return;
@@ -106,12 +139,14 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
     setError("");
     let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      if (!stream.getAudioTracks().length) throw new Error("No microphone was found");
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      if (!stream.getAudioTracks().length || !stream.getVideoTracks().length) {
+        throw new Error("A camera and microphone are required for the live room");
+      }
       setMicrophoneReady(true);
     } catch (cause) {
       setMicrophoneReady(false);
-      setError(cause instanceof Error ? cause.message : "Microphone permission could not be verified.");
+      setError(cause instanceof Error ? cause.message : "Camera and microphone permissions could not be verified.");
     } finally {
       stream?.getTracks().forEach((track) => track.stop());
       setTestingMicrophone(false);
@@ -124,6 +159,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
     setJoining(true);
     setError("");
     try {
+      await enterFocusMode();
       const joined = await joinSessionAsCandidate(token, name.trim() || "Candidate");
       setSession(joined);
       setStatus(joined.status);
@@ -133,7 +169,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
     } finally {
       setJoining(false);
     }
-  }, [name, token]);
+  }, [enterFocusMode, name, token]);
 
   useEffect(() => {
     if (!session) return;
@@ -148,6 +184,8 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
         setStatus(view.status);
         statusRef.current = view.status;
         setMessages((current) => mergeRecordsById(current, view.messages));
+        setHost(view.host ?? null);
+        if (view.focus_guard) setFocusGuardSummary(view.focus_guard);
         setCodingTask(view.coding_task ?? null);
         if (view.coding_task?.active) setCodeOpen(true);
         if (view.turns.length) {
@@ -164,6 +202,28 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
     void poll();
     return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
   }, [session, token]);
+
+  useEffect(() => {
+    if (!session || media.connectionState !== "CONNECTED") return;
+    if (media.cameraEnabled) {
+      cameraWasEnabled.current = true;
+      cameraMissingReported.current = false;
+      return;
+    }
+    if (cameraWasEnabled.current) {
+      cameraWasEnabled.current = false;
+      cameraMissingReported.current = true;
+      reportFocusEvent("camera_disabled", "The candidate disabled their camera after joining the live room.");
+      return;
+    }
+    if (cameraMissingReported.current) return;
+    const timer = window.setTimeout(() => {
+      if (cameraWasEnabled.current || cameraMissingReported.current) return;
+      cameraMissingReported.current = true;
+      reportFocusEvent("camera_disabled", "No active candidate camera was available after joining the live room.");
+    }, 8_000);
+    return () => window.clearTimeout(timer);
+  }, [media.cameraEnabled, media.connectionState, reportFocusEvent, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -220,14 +280,14 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
           </section>
 
           <Card>
-            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Choose the name the interviewer will see and check your microphone.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Choose the name the interviewer will see, check your camera and microphone, then enter focus mode.</CardDescription></CardHeader>
             <CardContent>
               <form className="space-y-4" onSubmit={join}>
                 <label className="block text-sm font-medium" htmlFor="candidate-name">Your name</label>
                 <Input id="candidate-name" name="candidate_name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Candidate name…" autoComplete="name" />
-                <Button type="button" className="w-full" variant={microphoneReady ? "secondary" : "outline"} onClick={() => void testMicrophone()} disabled={testingMicrophone}>{testingMicrophone ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : microphoneReady ? <Check aria-hidden="true" /> : <Mic2 aria-hidden="true" />}{testingMicrophone ? "Testing microphone" : microphoneReady ? "Microphone ready" : "Test microphone"}</Button>
+                <Button type="button" className="w-full" variant={microphoneReady ? "secondary" : "outline"} onClick={() => void testMicrophone()} disabled={testingMicrophone}>{testingMicrophone ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : microphoneReady ? <Check aria-hidden="true" /> : <Mic2 aria-hidden="true" />}{testingMicrophone ? "Testing camera and microphone" : microphoneReady ? "Camera and microphone ready" : "Test camera and microphone"}</Button>
                 <Button type="submit" size="lg" className="w-full" disabled={preview.status !== "live" || joining} loading={joining}><UsersRound aria-hidden="true" />{waiting ? "Waiting for host" : joining ? "Joining interview" : "Join interview"}</Button>
-                <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />This link grants only the candidate seat. It cannot access interviewer controls.</p>
+                <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />Focus guard records tab changes, window focus loss, fullscreen exits and camera shutdowns. It never reads other windows.</p>
               </form>
               {updatesDelayed ? <div className="mt-4"><Alert title="Checking room status"><span>The room update is delayed. RoundCraft will keep retrying.</span></Alert></div> : null}
               {error ? <div className="mt-4"><Alert variant="destructive" title="Could not continue">{error}</Alert></div> : null}
@@ -243,18 +303,29 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const lastRemote = [...merged].reverse().find((turn) => !turn.isLocal);
   const activePanelistId = panelistIdForAgoraUid(lastRemote?.uid, session.connection.panelists) ?? panelists[0]?.id;
   const candidatePerson: Panelist = { id: "candidate", name: session.display_name, role: "Candidate", initials: session.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "candidate", avatarVendor: "generic", mood: "Focused", behavior: "Answering", voice: "", prompt: "" };
+  const hostPerson: Panelist | null = host ? { id: "human-host", name: host.display_name, role: "Human interviewer", initials: host.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "human-host", avatarVendor: "generic", mood: "Focused", behavior: "Leading", voice: "", prompt: "" } : null;
+  const hostVideo = host?.rtc_uid
+    ? media.remoteVideos.find((video) => video.uid === String(host.rtc_uid))?.track
+    : undefined;
+  const participantCount = panelists.length + 1 + (hostPerson ? 1 : 0);
   const prepared: StoredLiveSession = { sessionId: session.session_id, agentId: "", connection: session.connection, configSnapshot: { panel: session.panel }, demo: false };
   const currentQuestion = codingTask?.question || [...storedTurns].reverse().find((turn) => turn.speaker_type === "interviewer")?.content || lastRemote?.text;
 
   return (
     <main className="flex h-[100dvh] flex-col overflow-hidden bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4"><Brand href="/" /><span className="hidden h-5 w-px bg-border sm:block" /><div className="min-w-0"><p className="truncate text-sm font-medium">{session.title}</p><p className="truncate text-[10px] text-muted-foreground">{session.role_pack}</p></div><div className="ms-auto flex items-center gap-2">{updatesDelayed ? <Badge variant="destructive">Updates delayed</Badge> : null}<Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge><ThemeToggle /></div></header>
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4"><Brand href="/" /><span className="hidden h-5 w-px bg-border sm:block" /><div className="min-w-0"><p className="truncate text-sm font-medium">{session.title}</p><p className="truncate text-[10px] text-muted-foreground">{session.role_pack}</p></div><div className="ms-auto flex items-center gap-2">{updatesDelayed ? <Badge variant="destructive">Updates delayed</Badge> : null}<Badge variant={focusGuardSummary.flagged ? "destructive" : "outline"}><ShieldCheck className="size-3" aria-hidden="true" />Focus {focusGuardSummary.violation_count}</Badge><Button size="sm" variant={fullscreenActive ? "secondary" : "outline"} onClick={() => void enterFocusMode()} aria-pressed={fullscreenActive}><MonitorUp aria-hidden="true" />{fullscreenActive ? "Focused" : "Focus mode"}</Button><Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge><ThemeToggle /></div></header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:overflow-hidden lg:p-4">
         <section className="flex min-h-0 flex-col gap-3">
-          <div className={cn("grid shrink-0 gap-2", participantGridClass(panelists.length + 1, codeOpen))}>
-            {panelists.map((person, index) => <ParticipantTile key={person.id} person={person} state={presenceForPanelist(index, storedTurns.length, agentState === "speaking" && person.id === activePanelistId)} toneIndex={index} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />)}
-            <ParticipantTile person={candidatePerson} state={media.candidateSpeaking ? "speaking" : "listening"} isSelf microphoneEnabled={media.microphoneEnabled} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />
+          <div className={cn("grid shrink-0 gap-2", participantGridClass(participantCount, codeOpen))}>
+            {panelists.map((person, index) => {
+              const participant = session.connection.panelists?.find((item) => item.panelist_id === person.id);
+              const videoUid = participant?.avatar_uid || participant?.agent_uid;
+              const track = videoUid ? media.remoteVideos.find((video) => video.uid === String(videoUid))?.track : undefined;
+              return <ParticipantTile key={person.id} person={person} state={presenceForPanelist(index, storedTurns.length, agentState === "speaking" && person.id === activePanelistId)} track={track} toneIndex={index} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />;
+            })}
+            {hostPerson ? <ParticipantTile person={hostPerson} state={media.hostSpeaking ? "speaking" : "listening"} track={hostVideo} toneIndex={panelists.length} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} /> : null}
+            <ParticipantTile person={candidatePerson} state={media.candidateSpeaking ? "speaking" : "listening"} track={media.localVideo} isSelf microphoneEnabled={media.microphoneEnabled} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />
           </div>
 
           {currentQuestion ? <div className="rounded-xl border bg-card px-4 py-3"><p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Current question</p><p className="mt-1 text-sm leading-6">{currentQuestion}</p></div> : null}
@@ -283,6 +354,15 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
           {status !== "live" ? <Alert title="Interview ended"><span>The interviewer has closed this room. Your final answers are saved for the assessment.</span></Alert> : null}
         </aside>
       </div>
+
+      {attentionRequired ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-background/85 p-5 backdrop-blur-sm" role="presentation">
+          <Card className="w-full max-w-md" role="dialog" aria-modal="true" aria-labelledby="focus-guard-title">
+            <CardHeader><span className="mb-2 grid size-10 place-items-center rounded-full bg-destructive/10 text-destructive"><ShieldAlert className="size-5" aria-hidden="true" /></span><CardTitle id="focus-guard-title">Return to the interview</CardTitle><CardDescription>{lastEventLabel || "The interview window lost focus"}. This event has been recorded for the interviewer.</CardDescription></CardHeader>
+            <CardContent className="flex flex-col gap-2"><Button onClick={() => void enterFocusMode()} disabled={!fullscreenSupported}><MonitorUp aria-hidden="true" />{fullscreenSupported ? "Return to fullscreen" : "Fullscreen unavailable"}</Button><Button variant="secondary" onClick={acknowledgeFocusGuard}>Continue in this browser</Button></CardContent>
+          </Card>
+        </div>
+      ) : null}
     </main>
   );
 }
