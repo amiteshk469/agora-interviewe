@@ -233,6 +233,7 @@ class PanelistInput(ApiModel):
 
 class InterviewConfigCreate(ApiModel):
     title: str = Field(default="Mock interview", min_length=2, max_length=160)
+    interview_mode: Literal["candidate_practice", "interviewer_led"] = "candidate_practice"
     # The hiring track. Each id resolves to a role pack that supplies the default
     # panel, rubric, and tools when the caller does not override them.
     profession: str = Field(default=DEFAULT_ROLE_PACK_ID, max_length=60)
@@ -272,6 +273,7 @@ class InterviewConfigOut(ApiModel):
     job_description_id: UUID | None
     title: str
     profession: str
+    interview_mode: Literal["candidate_practice", "interviewer_led"]
     difficulty: str
     duration_minutes: int
     panel: list[PanelistInput]
@@ -457,6 +459,26 @@ class HostState(ApiModel):
     pending_question: str | None = None
 
 
+class CandidateState(ApiModel):
+    """The candidate seat in an interviewer-led room."""
+
+    display_name: str = ""
+    joined_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    left_at: datetime | None = None
+    rtc_uid: int | None = Field(default=None, gt=0)
+
+
+class CodingTaskState(ApiModel):
+    id: str
+    question: str
+    language: str
+    hints: list[str] = Field(default_factory=list, max_length=6)
+    author: str
+    created_at: datetime
+    active: bool = True
+
+
 class PanelState(ApiModel):
     current_speaker_id: str | None = None
     pending_panelist_id: str | None = None
@@ -469,6 +491,8 @@ class PanelState(ApiModel):
     last_question: str | None = None
     code_buffer: CodeBufferState | None = None
     host: HostState | None = None
+    candidate: CandidateState | None = None
+    coding_task: CodingTaskState | None = None
 
 
 class PanelDecision(ApiModel):
@@ -615,17 +639,35 @@ class CodeBufferOut(ApiModel):
 
 
 class SessionInviteOut(ApiModel):
-    """A shareable link that lets one human interviewer join an owned session."""
+    """A shareable, seat-scoped link into an owned interview session."""
 
     token: str
     join_path: str
     expires_at: datetime
+    seat: Literal["interviewer", "candidate"] = "interviewer"
+
+
+class SessionInviteCreate(ApiModel):
+    seat: Literal["interviewer", "candidate"]
+
+
+class GuestInvitePreviewOut(ApiModel):
+    session_id: UUID
+    title: str
+    role_pack: str
+    interview_mode: Literal["candidate_practice", "interviewer_led"]
+    status: str
+    seat: Literal["interviewer", "candidate"]
+    panel: list["GuestPanelist"]
+    supports_coding: bool
+    coding: "RolePackCoding | None" = None
 
 
 class GuestPanelist(ApiModel):
     id: str
     display_name: str
     role: str
+    avatar_image: str | None = None
 
 
 class GuestSessionOut(ApiModel):
@@ -633,10 +675,12 @@ class GuestSessionOut(ApiModel):
     title: str
     role_pack: str
     status: str
+    seat: Literal["interviewer", "candidate"] = "interviewer"
     display_name: str
     connection: "ConnectionConfig"
     panel: list[GuestPanelist]
     supports_coding: bool
+    coding: "RolePackCoding | None" = None
     heartbeat_interval_seconds: int
 
 
@@ -666,6 +710,51 @@ class HostPresenceOut(ApiModel):
     messages: list[HostMessageOut]
 
 
+class CandidatePresenceOut(ApiModel):
+    display_name: str
+    joined_at: datetime
+    last_seen_at: datetime
+
+
+class CodingTaskCreate(ApiModel):
+    question: str = Field(min_length=5, max_length=4_000, pattern=r"\S")
+    language: str = Field(min_length=1, max_length=40)
+    hints: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("language")
+    @classmethod
+    def valid_language(cls, value: str) -> str:
+        lowered = value.lower()
+        if lowered not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported language: {value}")
+        return lowered
+
+    @field_validator("hints")
+    @classmethod
+    def clean_hints(cls, values: list[str]) -> list[str]:
+        return [value.strip() for value in values if value.strip()][:6]
+
+
+class CodingTaskOut(ApiModel):
+    id: str
+    question: str
+    language: str
+    hints: list[str]
+    author: str
+    created_at: datetime
+    active: bool
+
+
+class CandidateTurnCreate(ApiModel):
+    agora_turn_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=40_000, pattern=r"\S")
+    interrupted: bool = False
+
+
 class GuestHeartbeatOut(ApiModel):
     connected: Literal[True] = True
     last_seen_at: datetime
+
+
+GuestInvitePreviewOut.model_rebuild()
+GuestSessionOut.model_rebuild()
