@@ -2,7 +2,7 @@
 
 import type { IRemoteVideoTrack } from "agora-rtc-react";
 import { AvatarVideoDisplay } from "agora-agent-uikit";
-import { Brain, Ear, Hand, Mic, MoveDown } from "lucide-react";
+import { Brain, Ear, Hand, Mic, MicOff, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +80,7 @@ export function ParticipantTile({
   track,
   toneIndex,
   isSelf,
+  microphoneEnabled,
   compact,
   className,
 }: {
@@ -88,6 +89,7 @@ export function ParticipantTile({
   track?: IRemoteVideoTrack | null;
   toneIndex?: number;
   isSelf?: boolean;
+  microphoneEnabled?: boolean;
   compact?: boolean;
   className?: string;
 }) {
@@ -99,7 +101,9 @@ export function ParticipantTile({
         speaking ? "ring-2 ring-primary/70" : "ring-black/5 dark:ring-white/8",
         className,
       )}
-      aria-label={isSelf ? `You, ${speaking ? "speaking" : "listening"}` : `${person.name}, ${person.role}, ${stateCopy[state]}`}
+      aria-label={isSelf
+        ? `You, ${speaking ? "speaking" : microphoneEnabled ? "listening, microphone on" : "listening, microphone muted"}`
+        : `${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
       {track ? (
         <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className="absolute inset-0 size-full" />
@@ -114,8 +118,14 @@ export function ParticipantTile({
           <p className={cn("truncate font-semibold", compact ? "text-[11px] leading-4" : "text-[13px] leading-5")}>{person.name}</p>
           {compact ? null : <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{isSelf ? "Candidate" : person.role}</p>}
         </div>
-        <span className={cn("flex shrink-0 items-center gap-1", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : "Your microphone is live") : stateCopy[state]}>
-          {speaking ? <SpeakingBars /> : isSelf ? <Mic className="size-3.5" aria-hidden="true" /> : <PresenceIcon state={state} />}
+        <span className={cn("flex shrink-0 items-center gap-1", speaking ? "text-primary" : "text-[var(--tile-muted)]")} title={isSelf ? (speaking ? "You are speaking" : microphoneEnabled ? "Your microphone is on" : "Your microphone is muted") : stateCopy[state]}>
+          {speaking
+            ? <SpeakingBars />
+            : isSelf
+              ? microphoneEnabled
+                ? <Mic className="size-3.5" aria-hidden="true" />
+                : <MicOff className="size-3.5" aria-hidden="true" />
+              : <PresenceIcon state={state} />}
         </span>
       </div>
     </article>
@@ -131,6 +141,7 @@ export function participantGridClass(count: number, compact = false): string {
   // With the editor open everyone shares a single row, the way a coding-interview
   // client keeps faces present without taking the screen from the code.
   if (compact) {
+    if (count > 6) return "grid-cols-4 sm:grid-cols-7";
     const columns = ["grid-cols-1", "grid-cols-1", "grid-cols-2", "grid-cols-3", "grid-cols-4", "grid-cols-5", "grid-cols-6"];
     return columns[Math.min(Math.max(count, 1), 6)];
   }
@@ -152,6 +163,6 @@ export function participantGridHeightClass(count: number, compact = false): stri
   const rows = count <= 3 ? 1 : count === 4 ? 2 : 2;
   // A fixed height, not a cap: the strip no longer flexes, so auto-rows-fr has
   // nothing to divide unless the row track is given a size of its own.
-  if (compact) return "h-[6.5rem]";
+  if (compact) return count > 6 ? "h-[10rem] sm:h-[6.5rem]" : "h-[6.5rem]";
   return rows === 1 ? "max-h-[19rem]" : "max-h-[38rem]";
 }

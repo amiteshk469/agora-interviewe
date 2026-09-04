@@ -1,13 +1,14 @@
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import InterviewSession, PanelParticipant, TranscriptTurn
+from app.models import InterviewSession, PanelParticipant
 from app.services.evidence import (
     lock_transcript_session,
     persist_candidate_turn,
     persist_inferred_evidence,
+    persist_interviewer_turn,
 )
 
 
@@ -83,33 +84,14 @@ async def reconcile_agora_history(
             await persist_inferred_evidence(db, session, turn)
             reconciled += 1
             continue
-        existing = None
-        if agora_turn_id:
-            existing = await db.scalar(
-                select(TranscriptTurn).where(
-                    TranscriptTurn.session_id == session.id,
-                    TranscriptTurn.agora_turn_id == agora_turn_id,
-                )
-            )
-        if existing is not None:
-            continue
-        max_sequence = await db.scalar(
-            select(func.max(TranscriptTurn.sequence)).where(
-                TranscriptTurn.session_id == session.id
-            )
+        await persist_interviewer_turn(
+            db,
+            session,
+            content,
+            speaker_id=str(item.get("speaker_id") or item.get("uid") or "") or None,
+            source="agora-webhook-103",
+            agora_turn_id=agora_turn_id,
         )
-        db.add(
-            TranscriptTurn(
-                session_id=session.id,
-                sequence=(max_sequence or 0) + 1,
-                agora_turn_id=agora_turn_id,
-                speaker_type="interviewer",
-                speaker_id=str(item.get("speaker_id") or item.get("uid") or "") or None,
-                content=content,
-                turn_metadata={"source": "agora-webhook-103", "reconciled": True},
-            )
-        )
-        await db.flush()
         reconciled += 1
     return reconciled
 

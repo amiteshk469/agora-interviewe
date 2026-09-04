@@ -18,11 +18,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
-import { CodePane } from "@/components/code-pane";
+import { CodePane, type CodePaneHandle } from "@/components/code-pane";
 import { ParticipantTile, participantGridClass, participantGridHeightClass, type PanelPresence } from "@/components/panel-video";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { defaultPanelists, toolActivity, transcript, type Panelist } from "@/data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
+import { agentHintsFromTurn, isCodingQuestion } from "@/lib/code-highlight";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist, readLiveContradiction, speakerSequence } from "@/lib/live-panel";
 import { cn, formatDuration } from "@/lib/utils";
 import {
   createSessionInvite,
@@ -87,6 +88,7 @@ function trapFocus(event: ReactKeyboardEvent, container: HTMLElement | null) {
 const initialMedia: LiveMediaState = {
   microphoneEnabled: false,
   candidateSpeaking: false,
+  hostSpeaking: false,
   remoteVideos: [],
   connectionState: "DISCONNECTED",
 };
@@ -116,10 +118,15 @@ export function LiveInterviewScreen() {
   const [rolePack, setRolePack] = useState<RolePack | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
   const [hostPresence, setHostPresence] = useState<HostPresence | null>(null);
-  const [inviteState, setInviteState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+  const [hostMessages, setHostMessages] = useState<HostPresence["messages"]>([]);
+  const [inviteState, setInviteState] = useState<"idle" | "copying" | "copied" | "ready" | "error">("idle");
+  const [inviteLink, setInviteLink] = useState("");
+  const [dismissedHostMessageId, setDismissedHostMessageId] = useState("");
   const persistedTurns = useRef(new Set<string>());
   const pendingTurnWrites = useRef(new Set<Promise<unknown>>());
   const stoppedSessionId = useRef("");
+  const autoOpenedCodeFor = useRef("");
+  const codePaneRef = useRef<CodePaneHandle>(null);
   const evidenceDrawerRef = useRef<HTMLElement>(null);
   const evidenceTriggerRef = useRef<HTMLButtonElement>(null);
   const evidenceCloseRef = useRef<HTMLButtonElement>(null);
@@ -225,14 +232,26 @@ export function LiveInterviewScreen() {
   useEffect(() => {
     if (!storedSession || storedSession.demo) return;
     let cancelled = false;
-    const poll = () => void readHostPresence(storedSession.sessionId)
-      .then((presence) => { if (!cancelled) setHostPresence(presence); })
-      .catch(() => undefined);
-    poll();
-    const timer = window.setInterval(poll, 6000);
+    let timer: number | null = null;
+    const poll = async () => {
+      try {
+        const presence = await readHostPresence(storedSession.sessionId);
+        if (!cancelled) {
+          setHostPresence(presence);
+          if (presence?.messages.length) {
+            setHostMessages((current) => mergeRecordsById(current, presence.messages));
+          }
+        }
+      } catch {
+        // A missed presence refresh must not interrupt the live Agora room.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 6000);
+      }
+    };
+    void poll();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [storedSession]);
 
@@ -263,7 +282,24 @@ export function LiveInterviewScreen() {
     () => ({ ...defaultPanelists[0], id: "candidate", name: "You", role: "Candidate", initials: "YOU" }),
     [],
   );
-  const participants = useMemo(() => [...configuredPanel, candidateTile], [candidateTile, configuredPanel]);
+  const hostParticipant = useMemo<Panelist | null>(() => {
+    if (!hostPresence) return null;
+    const name = hostPresence.display_name || "Guest interviewer";
+    return {
+      ...defaultPanelists[0],
+      id: "human-host",
+      name,
+      role: "Human interviewer",
+      initials: name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
+      avatarImage: "",
+      avatarId: "",
+      avatarVendor: "generic",
+    };
+  }, [hostPresence]);
+  const participants = useMemo(
+    () => [...configuredPanel, ...(hostParticipant ? [hostParticipant] : []), candidateTile],
+    [candidateTile, configuredPanel, hostParticipant],
+  );
 
   const latestDirectorBid = useMemo(
     () => [...persistedTools].reverse().find((run) => run.tool_name === "panel.bid"),
@@ -283,20 +319,29 @@ export function LiveInterviewScreen() {
     : sessionIsDemo ? demoSpeakerIndex(demoStep, configuredPanel.length) : 0;
   const activePanelist = configuredPanel[activeIndex] || configuredPanel[0] || defaultPanelists[0];
 
+  const transcriptContext = useRef({ storedSession, selectedPanelistId });
+  useEffect(() => {
+    transcriptContext.current = { storedSession, selectedPanelistId };
+  }, [selectedPanelistId, storedSession]);
+
   const handleLiveTranscript = useCallback((turns: LiveTranscriptTurn[]) => {
     setLiveTurns(turns);
-    if (!storedSession || storedSession.demo) return;
+    const current = transcriptContext.current;
+    const session = current.storedSession;
+    if (!session || session.demo) return;
     turns.forEach((turn, index) => {
       // Candidate text is already committed at the custom-LLM boundary before a
       // response is generated. RTM remains authoritative for interviewer output;
       // reposting the local side creates duplicate sequence writers under load.
       if (turn.isLocal || !turn.final || !turn.text || persistedTurns.current.has(turn.id)) return;
       persistedTurns.current.add(turn.id);
-      const write = persistSessionTurn(storedSession.sessionId, {
+      const write = persistSessionTurn(session.sessionId, {
         sequence: index + 1,
         agora_turn_id: turn.id,
         speaker_type: turn.isLocal ? "candidate" : "interviewer",
-        speaker_id: turn.isLocal ? undefined : turn.uid,
+        speaker_id: turn.isLocal
+          ? undefined
+          : current.selectedPanelistId || panelistIdForAgoraUid(turn.uid, session.connection?.panelists) || turn.uid,
         content: turn.text,
         interrupted: turn.interrupted,
         metadata: { source: "agora_rtm" },
@@ -307,21 +352,31 @@ export function LiveInterviewScreen() {
       pendingTurnWrites.current.add(write);
       void write.finally(() => pendingTurnWrites.current.delete(write));
     });
-  }, [storedSession]);
+  }, []);
 
   async function copyInviteLink() {
     if (!storedSession || storedSession.demo) return;
     setInviteState("copying");
+    let link = inviteLink;
     try {
-      const invite = await createSessionInvite(storedSession.sessionId);
-      const link = new URL(invite.join_path, window.location.origin).toString();
-      await navigator.clipboard.writeText(link);
-      setInviteState("copied");
-      window.setTimeout(() => setInviteState("idle"), 4000);
+      if (!link) {
+        const invite = await createSessionInvite(storedSession.sessionId);
+        link = new URL(invite.join_path, window.location.origin).toString();
+        setInviteLink(link);
+      }
     } catch (error) {
       console.warn("Invite link could not be created", error);
       setInviteState("error");
-      window.setTimeout(() => setInviteState("idle"), 4000);
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(link);
+      setInviteState("copied");
+      window.setTimeout(() => setInviteState("ready"), 4000);
+    } catch {
+      // The visible read-only field remains a usable manual-copy fallback.
+      setInviteState("ready");
     }
   }
 
@@ -352,6 +407,7 @@ export function LiveInterviewScreen() {
     setEndError("");
     try {
       if (storedSession && !storedSession.demo) {
+        await codePaneRef.current?.flush();
         await Promise.allSettled([...pendingTurnWrites.current]);
         if (stoppedSessionId.current !== storedSession.sessionId) {
           await endInterviewSession(storedSession.sessionId);
@@ -375,8 +431,8 @@ export function LiveInterviewScreen() {
   const displayedTranscript = useMemo(() => {
     if (!liveTurns.length) return sessionIsDemo ? transcript : [];
     return mergeLiveTurns(liveTurns).map((turn, index) => {
-      const participant = storedSession?.connection?.panelists?.find((item) => String(item.agent_uid) === String(turn.uid));
-      const panelist = configuredPanel.find((person) => person.id === participant?.panelist_id);
+      const panelistId = panelistIdForAgoraUid(turn.uid, storedSession?.connection?.panelists);
+      const panelist = configuredPanel.find((person) => person.id === panelistId);
       return {
         id: turn.id || `live-${index}`,
         speaker: turn.isLocal ? "You" : panelist?.name || "Live panel",
@@ -424,6 +480,23 @@ export function LiveInterviewScreen() {
     : `${activePanelist.name} is ${agentState || (rtcConnected ? "listening" : "waiting for audio")}`;
   const backgroundInert = detailsOpen || endOpen;
   const coding = rolePack?.supports_coding ? rolePack.coding : null;
+  const codingTask = useMemo(() => {
+    if (!coding) return null;
+    const turn = liveTurns.find(
+      (item) => !item.isLocal && item.final && Boolean(item.text) && isCodingQuestion(item.text),
+    );
+    return turn ? { id: turn.id, text: turn.text } : null;
+  }, [coding, liveTurns]);
+  const agentHints = useMemo(
+    () => Array.from(new Set(
+      liveTurns
+        .filter((turn) => !turn.isLocal && turn.final && Boolean(turn.text))
+        .flatMap((turn) => agentHintsFromTurn(turn.text)),
+    )),
+    [liveTurns],
+  );
+  const latestHostMessage = hostMessages.at(-1) ?? null;
+  const visibleHostMessage = latestHostMessage?.id === dismissedHostMessageId ? null : latestHostMessage;
   const canInvite = Boolean(storedSession && !storedSession.demo);
   const inviteLabel = inviteState === "copied"
     ? "Link copied"
@@ -431,7 +504,16 @@ export function LiveInterviewScreen() {
       ? "Link failed"
       : inviteState === "copying"
         ? "Creating link"
-        : "Invite interviewer";
+        : inviteState === "ready"
+          ? "Share link"
+          : "Invite interviewer";
+
+  useEffect(() => {
+    const key = codingTask ? `${storedSession?.sessionId ?? "demo"}:${codingTask.id}` : "";
+    if (!key || autoOpenedCodeFor.current === key) return;
+    autoOpenedCodeFor.current = key;
+    setCodeOpen(true);
+  }, [codingTask, storedSession?.sessionId]);
 
   return (
     <div className="flex min-h-[100dvh] flex-col overflow-x-hidden bg-background pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] pe-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] xl:h-[100dvh] xl:overflow-hidden">
@@ -462,6 +544,7 @@ export function LiveInterviewScreen() {
               className="h-8 gap-1.5 px-2 text-xs"
               onClick={() => void copyInviteLink()}
               disabled={inviteState === "copying"}
+              aria-label={inviteLabel}
             >
               <Link2 className="size-3.5" aria-hidden="true" />
               <span className="hidden sm:inline">{inviteLabel}</span>
@@ -470,6 +553,24 @@ export function LiveInterviewScreen() {
           <span className="font-mono text-sm tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
         </div>
       </header>
+
+      {inviteLink ? (
+        <div inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-secondary/55 px-3 py-2 sm:px-4" role="status">
+          <UserRoundCheck className="size-4 shrink-0 text-primary" aria-hidden="true" />
+          <span className="text-xs font-medium">Human interviewer link</span>
+          <input
+            value={inviteLink}
+            readOnly
+            onFocus={(event) => event.currentTarget.select()}
+            aria-label="Human interviewer share link"
+            className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <Button size="sm" variant="outline" onClick={() => void copyInviteLink()} disabled={inviteState === "copying"}>
+            <Link2 className="size-3.5" aria-hidden="true" />{inviteState === "copied" ? "Copied" : "Copy"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => { setInviteLink(""); setInviteState("idle"); }}>Close</Button>
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col xl:flex-row xl:overflow-hidden">
         <main id="live-stage" inert={backgroundInert ? true : undefined} aria-hidden={backgroundInert ? true : undefined} className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--stage)]">
@@ -480,9 +581,12 @@ export function LiveInterviewScreen() {
             >
               {participants.map((person) => {
                 const isSelf = person.id === candidateTile.id;
+                const isHumanHost = person.id === hostParticipant?.id;
                 const configuredIndex = configuredPanel.findIndex((item) => item.id === person.id);
                 const state: PanelPresence = isSelf
                   ? (mediaState.candidateSpeaking ? "speaking" : "listening")
+                  : isHumanHost
+                    ? (mediaState.hostSpeaking ? "speaking" : "listening")
                   : person.id === activePanelist.id
                     ? selectedPresence(agentState, sessionIsDemo)
                     : sessionIsDemo ? presenceForPanelist(Math.max(0, configuredIndex), idlePhase, false) : "listening";
@@ -493,7 +597,8 @@ export function LiveInterviewScreen() {
                     person={person}
                     state={state}
                     isSelf={isSelf}
-                    toneIndex={isSelf ? configuredPanel.length : configuredIndex}
+                    microphoneEnabled={isSelf ? mediaState.microphoneEnabled : undefined}
+                    toneIndex={isSelf ? configuredPanel.length + 1 : isHumanHost ? configuredPanel.length : configuredIndex}
                     track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
                     compact={codeOpen}
                     className="size-full"
@@ -502,19 +607,30 @@ export function LiveInterviewScreen() {
               })}
             </div>
 
-            {coding && codeOpen ? (
+            {coding ? (
               <CodePane
+                ref={codePaneRef}
                 sessionId={storedSession?.demo ? undefined : storedSession?.sessionId}
                 languages={coding.languages}
                 defaultLanguage={coding.default_language}
                 prompt={coding.prompt}
-                className="mx-auto min-h-[16rem] w-full flex-1"
+                question={codingTask?.text}
+                hints={agentHints.length ? agentHints : undefined}
+                className={cn("mx-auto min-h-[18rem] w-full flex-1", !codeOpen && "hidden")}
               />
             ) : null}
           </div>
 
           <footer className="shrink-0 border-t bg-background px-3 py-3 sm:px-4" aria-labelledby="current-question-title">
             <div className="mx-auto flex max-w-[64rem] flex-col gap-3">
+              {visibleHostMessage ? (
+                <Alert
+                  title={visibleHostMessage.mode === "ask" ? `${visibleHostMessage.author} suggested a panel question` : `Note from ${visibleHostMessage.author}`}
+                  onDismiss={() => setDismissedHostMessageId(visibleHostMessage.id)}
+                >
+                  <span className="break-words text-xs leading-5">{visibleHostMessage.text}</span>
+                </Alert>
+              ) : null}
               <div className="min-w-0">
                 <p className="text-xs text-muted-foreground">
                   <span className="font-medium text-foreground">{activePanelist.name}</span> · {activePanelist.role}

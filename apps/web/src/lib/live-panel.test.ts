@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPanelists } from "../data/demo";
-import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, joinSegments, mergeLiveTurns, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
+import { avatarUidForPanelist, demoSpeakerIndex, describeToolRun, interviewerToolRuns, joinSegments, mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist, readLiveContradiction, speakerSequence } from "./live-panel";
 
 describe("live panel presentation", () => {
   it("keeps the selected interviewer in the speaking state", () => {
@@ -211,5 +211,28 @@ describe("live transcript merging", () => {
     ]);
     expect(merged).toHaveLength(1);
     expect(merged[0].interrupted).toBe(true);
+  });
+});
+
+describe("co-host polling", () => {
+  it("deduplicates an overlapping response while keeping its newest value", () => {
+    expect(mergeRecordsById(
+      [{ id: "turn-1", content: "partial" }],
+      [{ id: "turn-1", content: "final" }, { id: "turn-2", content: "next" }],
+    )).toEqual([
+      { id: "turn-1", content: "final" },
+      { id: "turn-2", content: "next" },
+    ]);
+  });
+
+  it("maps a distinct Agora uid but refuses to guess when one agent represents the panel", () => {
+    expect(panelistIdForAgoraUid("101", [
+      { panelist_id: "platform", agent_uid: "101", video_mode: "audio" },
+      { panelist_id: "people", agent_uid: "102", video_mode: "audio" },
+    ])).toBe("platform");
+    expect(panelistIdForAgoraUid("101", [
+      { panelist_id: "platform", agent_uid: "101", video_mode: "audio" },
+      { panelist_id: "people", agent_uid: "101", video_mode: "audio" },
+    ])).toBeNull();
   });
 });

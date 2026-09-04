@@ -1,7 +1,7 @@
 import hmac
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, cast
 from uuid import UUID, uuid4
@@ -16,7 +16,6 @@ from app.core.config import SettingsDep
 from app.core.database import Db
 from app.core.security import CurrentUser
 from app.domain import (
-    DEFAULT_PANEL,
     DEFAULT_RUBRIC,
     PanelDirector,
     compile_agent_prompt,
@@ -36,7 +35,7 @@ from app.models import (
     TranscriptTurn,
 )
 from app.role_packs import catalog as role_pack_catalog
-from app.role_packs import get_role_pack
+from app.role_packs import get_role_pack, tailor_panel
 from app.schemas import (
     INTERVIEWER_TOOL_NAMES,
     AgoraWebhookOut,
@@ -47,6 +46,7 @@ from app.schemas import (
     ConnectionConfig,
     EvidenceCreate,
     EvidenceOut,
+    GuestHeartbeatOut,
     GuestPanelist,
     GuestSessionOut,
     HostMessageCreate,
@@ -100,9 +100,9 @@ from app.services.documents import (
 )
 from app.services.evidence import (
     lock_transcript_session,
-    normalize_transcript_content,
     persist_candidate_turn,
     persist_inferred_evidence,
+    persist_interviewer_turn,
 )
 from app.services.host_invite import (
     DEFAULT_INVITE_TTL_SECONDS,
@@ -114,6 +114,9 @@ from app.services.host_invite import (
 from app.services.tools import DEFINITIONS, execute_tool
 
 router = APIRouter(prefix="/v1")
+
+HOST_HEARTBEAT_INTERVAL_SECONDS = 10
+HOST_PRESENCE_TIMEOUT_SECONDS = 30
 
 
 async def _owned(db: Db, model: Any, object_id: UUID, user_id: UUID) -> Any:
@@ -285,6 +288,9 @@ async def upload_job_description(
             "character_count": len(text),
             "word_count": len(text.split()),
             "role_title": recommendations["role_title"],
+            "company": recommendations["company"],
+            "skills": recommendations["skills"],
+            "suggested_profession": recommendations["suggested_profession"],
         },
         recommendations=recommendations,
     )
@@ -325,6 +331,9 @@ async def refresh_job_recommendations(document_id: UUID, db: Db, user: CurrentUs
     document.extracted = {
         **document.extracted,
         "role_title": document.recommendations["role_title"],
+        "company": document.recommendations["company"],
+        "skills": document.recommendations["skills"],
+        "suggested_profession": document.recommendations["suggested_profession"],
     }
     await db.flush()
     return document
@@ -424,22 +433,20 @@ async def create_interview_config(payload: InterviewConfigCreate, db: Db, user: 
     if payload.job_description_id is not None:
         document = await _owned(db, JobDescription, payload.job_description_id, user.id)
         recommendations = document.recommendations
-    # The role pack supplies the interview's shape. A JD recommendation still
-    # wins over it, and anything the candidate edited wins over both.
+    # The chosen role pack owns the panel and rubric. A JD adds context and focus;
+    # it cannot silently turn a selected engineering loop into a PM loop.
     pack = get_role_pack(payload.profession)
-    panel_models = payload.panel or [
+    source_panel = [member.model_dump(mode="json") for member in payload.panel] if payload.panel else None
+    panel_models = [
         PanelistInput.model_validate(item)
-        for item in recommendations.get("panel", pack.panel or DEFAULT_PANEL)
+        for item in tailor_panel(pack, recommendations, source_panel=source_panel)
     ]
     if not 2 <= len(panel_models) <= 5:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Panel must contain 2 to 5 interviewers",
         )
-    rubric_models = payload.rubric or [
-        RubricCriterion.model_validate(item)
-        for item in recommendations.get("rubric", pack.rubric or DEFAULT_RUBRIC)
-    ]
+    rubric_models = payload.rubric or [RubricCriterion.model_validate(item) for item in (pack.rubric or DEFAULT_RUBRIC)]
     enabled_tools = payload.enabled_tools if payload.enabled_tools is not None else list(pack.enabled_tools)
     unknown_tools = sorted(set(enabled_tools) - INTERVIEWER_TOOL_NAMES)
     if unknown_tools:
@@ -716,6 +723,7 @@ async def dispatch_panel_turn(
     agora: AgoraDep,
 ) -> PanelDispatchOut:
     session = await _owned(db, InterviewSession, session_id, user.id)
+    session = await lock_transcript_session(db, session_id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "Only a live panel can dispatch a turn")
     panel = [PanelistInput.model_validate(item) for item in session.config_snapshot["panel"]]
@@ -761,7 +769,7 @@ async def dispatch_panel_turn(
         state.panelist_question_counts.get(decision.next_speaker_id, 0) + 1
     )
     state.last_question = decision.suggested_question
-    session.memory_state = state.model_dump()
+    session.memory_state = state.model_dump(mode="json")
     other_agent_ids = list(
         dict.fromkeys(
             str(agent_id)
@@ -953,6 +961,40 @@ async def append_transcript_turn(
     # All transcript sources lock the parent first. This keeps the FK and sequence
     # lock order consistent with the custom LLM and Agora webhook writers.
     await lock_transcript_session(db, session_id)
+    if payload.agora_turn_id and payload.speaker_type == "candidate":
+        source = str(payload.metadata.get("source") or "agora-client")
+        turn = await persist_candidate_turn(
+            db,
+            session,
+            payload.content,
+            source=source,
+            agora_turn_id=payload.agora_turn_id,
+        )
+        turn.interrupted = payload.interrupted
+        turn.confidence = payload.confidence
+        turn.started_at = payload.started_at
+        turn.ended_at = payload.ended_at
+        turn.turn_metadata = {
+            **turn.turn_metadata,
+            **{key: value for key, value in payload.metadata.items() if key != "source"},
+            "reconciled_source": source,
+        }
+        await persist_inferred_evidence(db, session, turn)
+        return turn
+    if payload.agora_turn_id and payload.speaker_type == "interviewer":
+        return await persist_interviewer_turn(
+            db,
+            session,
+            payload.content,
+            speaker_id=payload.speaker_id,
+            source=str(payload.metadata.get("source") or "agora-client"),
+            agora_turn_id=payload.agora_turn_id,
+            metadata=payload.metadata,
+            interrupted=payload.interrupted,
+            confidence=payload.confidence,
+            started_at=payload.started_at,
+            ended_at=payload.ended_at,
+        )
     if payload.agora_turn_id:
         prior = await db.scalar(
             select(TranscriptTurn).where(
@@ -961,49 +1003,7 @@ async def append_transcript_turn(
             )
         )
         if prior is not None:
-            if prior.speaker_type == "candidate" and payload.speaker_type == "candidate":
-                normalized_content = normalize_transcript_content(payload.content)
-                if len(normalized_content) > len(normalize_transcript_content(prior.content)):
-                    prior.content = normalized_content
-                prior.interrupted = payload.interrupted
-                prior.confidence = payload.confidence
-                prior.started_at = payload.started_at
-                prior.ended_at = payload.ended_at
-                prior.turn_metadata = {
-                    **prior.turn_metadata,
-                    **payload.metadata,
-                    "stable_turn_updated": True,
-                }
-                await persist_inferred_evidence(db, session, prior)
             return prior
-        if payload.speaker_type == "candidate":
-            synthetic = await db.scalar(
-                select(TranscriptTurn)
-                .where(
-                    TranscriptTurn.session_id == session_id,
-                )
-                .order_by(TranscriptTurn.sequence.desc())
-                .limit(1)
-            )
-            if (
-                synthetic is not None
-                and synthetic.speaker_type == "candidate"
-                and synthetic.agora_turn_id is None
-                and normalize_transcript_content(synthetic.content) == normalize_transcript_content(payload.content)
-            ):
-                synthetic.agora_turn_id = payload.agora_turn_id
-                synthetic.interrupted = payload.interrupted
-                synthetic.confidence = payload.confidence
-                synthetic.started_at = payload.started_at
-                synthetic.ended_at = payload.ended_at
-                synthetic.turn_metadata = {
-                    **synthetic.turn_metadata,
-                    **payload.metadata,
-                    "reconciled_source": "agora-rtm",
-                }
-                await persist_inferred_evidence(db, session, synthetic)
-                await db.flush()
-                return synthetic
     exists = await db.scalar(
         select(TranscriptTurn.id).where(
             TranscriptTurn.session_id == session_id,
@@ -1105,6 +1105,7 @@ async def choose_next_panelist(
     user: CurrentUser,
 ) -> PanelDecision:
     session = await _owned(db, InterviewSession, session_id, user.id)
+    session = await lock_transcript_session(db, session_id)
     state = PanelState.model_validate(session.memory_state)
     panel = [PanelistInput.model_validate(member) for member in session.config_snapshot["panel"]]
     decision = PanelDirector.choose_next(panel, state, payload.last_candidate_turn)
@@ -1113,7 +1114,7 @@ async def choose_next_panelist(
         state.panelist_question_counts.get(decision.next_speaker_id, 0) + 1
     )
     state.last_question = decision.suggested_question
-    session.memory_state = state.model_dump()
+    session.memory_state = state.model_dump(mode="json")
     await db.flush()
     return decision
 
@@ -1476,6 +1477,7 @@ async def write_code_buffer(
 ) -> CodeBufferOut:
     """Push the editor contents so the panel can read them mid-answer."""
     session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
+    session = await lock_transcript_session(db, session_id)
     if session.status not in {"configured", "starting", "live"}:
         raise HTTPException(status.HTTP_409_CONFLICT, "Session is no longer accepting code")
     pack = get_role_pack(_session_role_pack(session))
@@ -1486,7 +1488,6 @@ async def write_code_buffer(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"{pack.label} interviews do not use {payload.language}",
         )
-    await lock_transcript_session(db, session_id)
     state = _read_panel_state(session)
     state.code_buffer = CodeBufferState(
         language=payload.language,
@@ -1532,6 +1533,25 @@ def _host_messages_out(state: PanelState) -> list[HostMessageOut]:
     ]
 
 
+def _host_is_active(host: HostState | None, *, now: datetime | None = None) -> bool:
+    if host is None or host.joined_at is None or host.left_at is not None:
+        return False
+    last_seen = host.last_seen_at or host.joined_at
+    return last_seen >= (now or datetime.now(UTC)) - timedelta(seconds=HOST_PRESENCE_TIMEOUT_SECONDS)
+
+
+def _host_presence_out(state: PanelState, *, now: datetime | None = None) -> HostPresenceOut | None:
+    host = state.host
+    if not _host_is_active(host, now=now) or host is None or host.joined_at is None:
+        return None
+    return HostPresenceOut(
+        display_name=host.display_name,
+        joined_at=host.joined_at,
+        last_seen_at=host.last_seen_at or host.joined_at,
+        messages=_host_messages_out(state),
+    )
+
+
 @router.post(
     "/sessions/{session_id}/invite",
     response_model=SessionInviteOut,
@@ -1545,7 +1565,7 @@ async def create_session_invite(
 ) -> SessionInviteOut:
     """Mint a link that lets one human interviewer sit in on this session."""
     session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
-    if session.status in {"completed", "failed"}:
+    if session.status in {"ended", "failed"}:
         raise HTTPException(status.HTTP_409_CONFLICT, "This session has already finished")
     token, expires_at = mint_invite(
         session.id,
@@ -1567,14 +1587,7 @@ async def create_session_invite(
 async def read_host_presence(session_id: UUID, db: Db, user: CurrentUser) -> HostPresenceOut | None:
     """What the candidate sees of the human interviewer, if one joined."""
     session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
-    state = _read_panel_state(session)
-    if state.host is None or state.host.joined_at is None:
-        return None
-    return HostPresenceOut(
-        display_name=state.host.display_name,
-        joined_at=state.host.joined_at,
-        messages=_host_messages_out(state),
-    )
+    return _host_presence_out(_read_panel_state(session))
 
 
 @router.get(
@@ -1595,24 +1608,29 @@ async def join_session_as_host(
     and the candidate live without displacing either.
     """
     session = await _session_for_invite(db, token, settings)
+    session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
     if session.channel_name is None or session.agent_uid is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Live session connection is incomplete")
     name = (display_name or "Guest interviewer").strip()[:60] or "Guest interviewer"
-    await lock_transcript_session(db, session.id)
     state = _read_panel_state(session)
-    if state.host is None or state.host.joined_at is None:
-        state.host = HostState(display_name=name, joined_at=datetime.now(UTC), messages=[])
-    else:
-        state.host.display_name = name
-    session.memory_state = state.model_dump(mode="json")
-    await db.commit()
+    now = datetime.now(UTC)
+    host = state.host or HostState(messages=[])
     connection = agora.generate_connection(
         channel=session.channel_name,
-        uid=None,
+        uid=host.rtc_uid,
         agent_uid=session.agent_uid,
     )
+    if not _host_is_active(host, now=now):
+        host.joined_at = now
+    host.display_name = name
+    host.last_seen_at = now
+    host.left_at = None
+    host.rtc_uid = int(connection["uid"])
+    state.host = host
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
     snapshot = session.config_snapshot or {}
     pack = get_role_pack(_session_role_pack(session))
     return GuestSessionOut(
@@ -1631,7 +1649,91 @@ async def join_session_as_host(
             for item in snapshot.get("panel", [])
         ],
         supports_coding=pack.supports_coding,
+        heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
     )
+
+
+@router.post(
+    "/guest/sessions/{token}/token",
+    response_model=ConnectionConfig,
+    tags=["Human interviewer"],
+)
+async def renew_host_token(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+    agora: AgoraDep,
+) -> ConnectionConfig:
+    """Renew the invited guest's RTC token without changing their Agora uid."""
+    session = await _session_for_invite(db, token, settings)
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    if session.channel_name is None or session.agent_uid is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Live session connection is incomplete")
+    state = _read_panel_state(session)
+    if state.host is None or state.host.rtc_uid is None or state.host.left_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before renewing its token")
+    connection = agora.generate_connection(
+        channel=session.channel_name,
+        uid=state.host.rtc_uid,
+        agent_uid=session.agent_uid,
+    )
+    state.host.last_seen_at = datetime.now(UTC)
+    state.host.left_at = None
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return ConnectionConfig.model_validate(connection)
+
+
+@router.post(
+    "/guest/sessions/{token}/heartbeat",
+    response_model=GuestHeartbeatOut,
+    tags=["Human interviewer"],
+)
+async def heartbeat_host(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+) -> GuestHeartbeatOut:
+    """Keep candidate-visible guest presence alive while the join page is connected."""
+    session = await _session_for_invite(db, token, settings)
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    state = _read_panel_state(session)
+    if (
+        state.host is None
+        or state.host.rtc_uid is None
+        or state.host.joined_at is None
+        or state.host.left_at is not None
+    ):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before sending a heartbeat")
+    now = datetime.now(UTC)
+    state.host.last_seen_at = now
+    state.host.left_at = None
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return GuestHeartbeatOut(last_seen_at=now)
+
+
+@router.post(
+    "/guest/sessions/{token}/leave",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Human interviewer"],
+)
+async def leave_host(token: str, db: Db, settings: SettingsDep) -> Response:
+    """Remove the invited guest from candidate-visible presence immediately."""
+    session = await _session_for_invite(db, token, settings)
+    session = await lock_transcript_session(db, session.id)
+    state = _read_panel_state(session)
+    if state.host is not None:
+        now = datetime.now(UTC)
+        state.host.last_seen_at = now
+        state.host.left_at = now
+        session.memory_state = state.model_dump(mode="json")
+        await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -1648,17 +1750,21 @@ async def post_host_message(
 ) -> HostMessageOut:
     """Send a note to the candidate, or hand the panel a question to ask next."""
     session = await _session_for_invite(db, token, settings)
+    session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
-    await lock_transcript_session(db, session.id)
     state = _read_panel_state(session)
     host = state.host or HostState(display_name="Guest interviewer", joined_at=datetime.now(UTC))
+    now = datetime.now(UTC)
+    host.joined_at = host.joined_at or now
+    host.last_seen_at = now
+    host.left_at = None
     record = HostTurnRecord(
         id=f"host-{uuid4().hex[:10]}",
         mode=payload.mode,
         text=payload.text,
         author=host.display_name or "Guest interviewer",
-        created_at=datetime.now(UTC),
+        created_at=now,
     )
     # Keep the tail only; this rides inside the session live-state blob.
     host.messages = [*host.messages, record][-50:]

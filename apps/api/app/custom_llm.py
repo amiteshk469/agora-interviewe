@@ -46,6 +46,7 @@ from app.services.evidence import (
     persist_candidate_turn,
     persist_contradiction_evidence,
     persist_inferred_evidence,
+    persist_interviewer_turn,
 )
 from app.services.tools import execute_tool
 from app.services.voice_profiles import minimax_tts_params, resolve_minimax_voice
@@ -262,6 +263,31 @@ def _inspect_upstream_stream(raw: bytes) -> tuple[bool, bool]:
     return has_content, has_done
 
 
+def _stream_content(raw: bytes) -> str:
+    """Collect assistant text from a complete or partially completed SSE stream."""
+    parts: list[str] = []
+    for line in raw.decode(errors="ignore").splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        choices = event.get("choices") if isinstance(event, dict) else None
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            content = delta.get("content") if isinstance(delta, dict) else None
+            if isinstance(content, str):
+                parts.append(content)
+    return "".join(parts).strip()
+
+
 def _local_completion_response(
     content: str,
     *,
@@ -409,6 +435,31 @@ async def _execute_live_tool(
             "result": result,
         }
     ], prompt_context
+
+
+async def _persist_interviewer_response(
+    db: Db,
+    session: InterviewSession,
+    *,
+    content: str,
+    panelist_id: str,
+    candidate_turn_id: UUID,
+    panel_bid_id: UUID | None,
+) -> None:
+    if not normalize_transcript_content(content):
+        return
+    await persist_interviewer_turn(
+        db,
+        session,
+        content,
+        speaker_id=panelist_id,
+        source="agora-custom-llm",
+        metadata={
+            "candidate_turn_id": str(candidate_turn_id),
+            "panel_bid_id": str(panel_bid_id) if panel_bid_id is not None else None,
+        },
+    )
+    await db.commit()
 
 
 @router.post("/llm/chat/completions", response_model=None)
@@ -644,7 +695,7 @@ async def panel_chat_completions(
             for item in inferred_evidence
         ],
     }
-    session.memory_state = state.model_dump()
+    session.memory_state = state.model_dump(mode="json")
     panel_bid = replayed_bid
     if replayed_bid is None:
         panel_bid = ToolRun(
@@ -706,7 +757,12 @@ async def panel_chat_completions(
             (
                 f"<STUDENT_CUSTOMIZATION>\n{selected.custom_prompt}\n</STUDENT_CUSTOMIZATION>"
                 if selected.custom_prompt
-                else None
+                else (
+                    f"<SELECTED_INTERVIEWER_MANDATE>\n{selected.default_prompt}\n"
+                    "</SELECTED_INTERVIEWER_MANDATE>"
+                    if selected.default_prompt
+                    else None
+                )
             ),
             delimit_untrusted("panelist-knowledge", selected.knowledge_prompt) if selected.knowledge_prompt else None,
             delimit_untrusted("candidate-editor", code_context) if code_context else None,
@@ -757,8 +813,17 @@ async def panel_chat_completions(
                 stream=False,
             )
         if response is None:
+            fallback = _director_continuation(decision.suggested_question)
+            await _persist_interviewer_response(
+                db,
+                session,
+                content=fallback,
+                panelist_id=selected.id,
+                candidate_turn_id=candidate_turn.id,
+                panel_bid_id=panel_bid.id if panel_bid is not None else None,
+            )
             return _local_completion_response(
-                _director_continuation(decision.suggested_question),
+                fallback,
                 stream=False,
                 model=payload.model,
                 metadata=metadata,
@@ -771,7 +836,11 @@ async def panel_chat_completions(
             if not isinstance(choices, list) or not choices:
                 raise TypeError("completion choices are missing")
             message = choices[0].get("message") if isinstance(choices[0], dict) else None
-            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            if (
+                not isinstance(message, dict)
+                or not isinstance(message.get("content"), str)
+                or not message["content"].strip()
+            ):
                 raise TypeError("completion message content is missing")
         except (TypeError, ValueError) as exc:
             _log_upstream_failure(
@@ -781,12 +850,29 @@ async def panel_chat_completions(
                 response=response,
                 error=exc,
             )
+            fallback = _director_continuation(decision.suggested_question)
+            await _persist_interviewer_response(
+                db,
+                session,
+                content=fallback,
+                panelist_id=selected.id,
+                candidate_turn_id=candidate_turn.id,
+                panel_bid_id=panel_bid.id if panel_bid is not None else None,
+            )
             return _local_completion_response(
-                _director_continuation(decision.suggested_question),
+                fallback,
                 stream=False,
                 model=payload.model,
                 metadata=metadata,
             )
+        await _persist_interviewer_response(
+            db,
+            session,
+            content=message["content"],
+            panelist_id=selected.id,
+            candidate_turn_id=candidate_turn.id,
+            panel_bid_id=panel_bid.id if panel_bid is not None else None,
+        )
         body["roundcraft"] = metadata
         return JSONResponse(body)
 
@@ -804,8 +890,17 @@ async def panel_chat_completions(
         raise
     if response is None:
         await client.aclose()
+        fallback = _director_continuation(decision.suggested_question)
+        await _persist_interviewer_response(
+            db,
+            session,
+            content=fallback,
+            panelist_id=selected.id,
+            candidate_turn_id=candidate_turn.id,
+            panel_bid_id=panel_bid.id if panel_bid is not None else None,
+        )
         return _local_completion_response(
-            _director_continuation(decision.suggested_question),
+            fallback,
             stream=True,
             model=payload.model,
             metadata=metadata,
@@ -816,6 +911,7 @@ async def panel_chat_completions(
         upstream_bytes = bytearray()
         pending_bytes = bytearray()
         content_started = False
+        persistence_attempted = False
         try:
             yield f"data: {json.dumps(first_chunk, separators=(',', ':'))}\n\n".encode()
             try:
@@ -874,14 +970,53 @@ async def panel_chat_completions(
                 )
             has_content, has_done = _inspect_upstream_stream(bytes(upstream_bytes))
             if not has_content:
+                fallback = _director_continuation(decision.suggested_question)
+                persistence_attempted = True
+                await _persist_interviewer_response(
+                    db,
+                    session,
+                    content=fallback,
+                    panelist_id=selected.id,
+                    candidate_turn_id=candidate_turn.id,
+                    panel_bid_id=panel_bid.id if panel_bid is not None else None,
+                )
                 for event in _local_stream_events(
-                    _director_continuation(decision.suggested_question),
+                    fallback,
                     payload.model,
                 ):
                     yield event
-            elif not has_done:
-                yield b"\ndata: [DONE]\n\n"
+            else:
+                spoken_content = _stream_content(bytes(upstream_bytes))
+                if spoken_content:
+                    persistence_attempted = True
+                    await _persist_interviewer_response(
+                        db,
+                        session,
+                        content=spoken_content,
+                        panelist_id=selected.id,
+                        candidate_turn_id=candidate_turn.id,
+                        panel_bid_id=panel_bid.id if panel_bid is not None else None,
+                    )
+                if not has_done:
+                    yield b"\ndata: [DONE]\n\n"
         finally:
+            if not persistence_attempted:
+                spoken_content = _stream_content(bytes(upstream_bytes))
+                if spoken_content:
+                    try:
+                        await _persist_interviewer_response(
+                            db,
+                            session,
+                            content=spoken_content,
+                            panelist_id=selected.id,
+                            candidate_turn_id=candidate_turn.id,
+                            panel_bid_id=panel_bid.id if panel_bid is not None else None,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist a partial interviewer response for session %s",
+                            session.id,
+                        )
             await response.aclose()
             await client.aclose()
 

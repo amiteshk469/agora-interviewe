@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInterviewConfig, createInterviewSession, createPromptTemplate, forkPromptTemplate, generateSessionReport, listPromptTemplates, renewInterviewSessionToken, startInterviewSession, stopAgoraAgent } from "./api";
+import { createInterviewConfig, createInterviewSession, createPromptTemplate, forkPromptTemplate, generateSessionReport, heartbeatHostSession, leaveHostSession, listPromptTemplates, readSessionCode, renewHostSessionToken, renewInterviewSessionToken, saveSessionCode, startInterviewSession, stopAgoraAgent } from "./api";
 
 const storage = new Map<string, string>([["roundcraft.supabase_access_token", "test-jwt"]]);
 const localStorageMock = {
@@ -58,6 +58,26 @@ describe("configured interview flow", () => {
     expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
   });
 
+  it("keeps an invited human interviewer connected through guest-scoped endpoints", async () => {
+    const connection = { app_id: "app", token: "fresh", uid: "7001", channel_name: "roundcraft", agent_uid: "10000001" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(connection), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connected: true, last_seen_at: "2026-09-04T00:00:00Z" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(renewHostSessionToken("invite.token")).resolves.toMatchObject({ uid: "7001" });
+    await expect(heartbeatHostSession("invite.token")).resolves.toMatchObject({ connected: true });
+    await expect(leaveHostSession("invite.token")).resolves.toBeNull();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `${productBase}/guest/sessions/invite.token/token`,
+      `${productBase}/guest/sessions/invite.token/heartbeat`,
+      `${productBase}/guest/sessions/invite.token/leave`,
+    ]);
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST", keepalive: true });
+  });
+
   it("regenerates a cached assessment only when explicitly requested", async () => {
     vi.stubGlobal("window", { localStorage: localStorageMock });
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -77,6 +97,22 @@ describe("configured interview flow", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe(`${productBase}/sessions/session-1/report?regenerate=true`);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("restores and persists an intentionally empty code buffer", async () => {
+    vi.stubGlobal("window", { localStorage: localStorageMock });
+    const emptyBuffer = { language: "python", content: "", line_count: 1, updated_at: "2026-09-04T00:00:00Z" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(emptyBuffer), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(emptyBuffer), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(readSessionCode("session-1")).resolves.toMatchObject({ content: "" });
+    await expect(saveSessionCode("session-1", "python", "")).resolves.toMatchObject({ content: "" });
+
+    expect(fetchMock.mock.calls[1][0]).toBe(`${productBase}/sessions/session-1/code`);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ language: "python", content: "" });
   });
 
   it("lists, creates, and forks immutable prompt templates", async () => {

@@ -126,6 +126,7 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
   const roomToneRef = useRef<RoomToneGraph | null>(null);
   const [micLevel, setMicLevel] = useState(0);
   const [candidateSpeaking, setCandidateSpeaking] = useState(false);
+  const [hostSpeaking, setHostSpeaking] = useState(false);
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
@@ -137,10 +138,11 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     onMediaState?.({
       microphoneEnabled: enabled,
       candidateSpeaking: enabled && candidateSpeaking,
+      hostSpeaking,
       remoteVideos: videoTracks.map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [candidateSpeaking, connectionState, enabled, onMediaState, videoTracks]);
+  }, [candidateSpeaking, connectionState, enabled, hostSpeaking, onMediaState, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -213,6 +215,29 @@ function VoiceChannel({ config, sessionId, rtmClient, onTranscript, onAgentState
     }, 120);
     return () => window.clearInterval(timer);
   }, [enabled, localMicrophoneTrack]);
+
+  useEffect(() => {
+    const panelUids = new Set([
+      String(config.agent_uid),
+      ...(config.panelists ?? []).flatMap((participant) => [
+        String(participant.agent_uid),
+        ...(participant.avatar_uid ? [String(participant.avatar_uid)] : []),
+      ]),
+    ]);
+    let spokeAt = 0;
+    const timer = window.setInterval(() => {
+      const level = Math.max(
+        0,
+        ...audioTracks
+          .filter((track) => !panelUids.has(String(track.getUserId())))
+          .map((track) => track.getVolumeLevel()),
+      );
+      const now = Date.now();
+      if (level >= SPEAKING_RISE_LEVEL) spokeAt = now;
+      setHostSpeaking(level >= SPEAKING_FALL_LEVEL && now - spokeAt < SPEAKING_HOLD_MS);
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [audioTracks, config.agent_uid, config.panelists]);
 
   useClientEvent(client, "connection-state-change", (current) => setConnectionState(current));
   useClientEvent(client, "token-privilege-will-expire", async () => {

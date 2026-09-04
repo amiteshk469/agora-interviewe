@@ -13,6 +13,7 @@ from app.services.assessment import (
     _finalize_assessment,
     final_candidate_turns,
     panel_view_for,
+    select_assessment_rubric,
 )
 
 
@@ -109,6 +110,39 @@ def test_final_candidate_turns_does_not_merge_distinct_prefix_answers() -> None:
             "text": "I chose activation and week-four retention as guardrails.",
         },
     ]
+
+
+def test_role_rubric_gets_complete_default_anchors_without_replacing_explicit_ones() -> None:
+    rubric = select_assessment_rubric(
+        {
+            "panel": [
+                {
+                    "role_rubric": [
+                        {
+                            "key": "code_quality",
+                            "label": "Code quality",
+                            "description": "Writes correct, readable code.",
+                        },
+                        {
+                            "key": "tradeoffs",
+                            "label": "Tradeoffs",
+                            "description": "Explains material design tradeoffs.",
+                            "anchors": {"5": "Makes the decisive tradeoff explicit."},
+                        },
+                    ]
+                }
+            ]
+        }
+    )
+
+    assert rubric[0]["anchors"] == {
+        "1": "Shows little or incorrect evidence of: Writes correct, readable code.",
+        "3": "Shows partial but generally sound evidence of: Writes correct, readable code.",
+        "5": "Shows complete, precise, well-supported evidence of: Writes correct, readable code.",
+    }
+    assert rubric[1]["anchors"]["1"].startswith("Shows little")
+    assert rubric[1]["anchors"]["3"].startswith("Shows partial")
+    assert rubric[1]["anchors"]["5"] == "Makes the decisive tradeoff explicit."
 
 
 async def _ended_anchored_session(client: AsyncClient, auth_headers: dict[str, str]) -> tuple[str, list[str], str]:
@@ -275,10 +309,20 @@ async def test_structured_report_uses_anchored_final_turns_and_is_idempotent(
     assert captured["url"] == "https://llm.test/v1/chat/completions"
     request_body = captured["json"]
     assert request_body["model"]
+    assessment_prompt = request_body["messages"][0]["content"]
+    assert "selected hiring track" in assessment_prompt
+    assert "Product Management" not in assessment_prompt
+    assert "score from 0 to 100 and confidence from 0 to 1" in assessment_prompt
+    assert "only when no supplied final candidate turn contains assessable evidence" in assessment_prompt
+    assert "Partial, weak, or incomplete evidence must receive a low numeric score" in assessment_prompt
     assert request_body["response_format"] == {"type": "json_object"}
     assert request_body["max_completion_tokens"] == 1_800
     assessment_input = json.loads(request_body["messages"][1]["content"])
-    assert set(assessment_input) == {"final_candidate_turns", "panel", "rubric"}
+    assert set(assessment_input) == {"final_candidate_turns", "hiring_track", "panel", "rubric"}
+    assert assessment_input["hiring_track"] == {
+        "id": "product_management",
+        "label": "Product Management",
+    }
     assert [item["id"] for item in assessment_input["final_candidate_turns"]] == final_ids
     assert interrupted_id not in request_body["messages"][1]["content"]
     assert assessment_input["rubric"][0]["anchors"]["5"].startswith("Prioritizes")

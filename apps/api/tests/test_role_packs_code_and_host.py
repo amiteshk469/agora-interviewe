@@ -1,13 +1,20 @@
 """Role packs, the shared code editor, and the human co-host."""
 
+import asyncio
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
 
-from app.domain import apply_host_directive, describe_code_buffer
+from app.domain import (
+    apply_host_directive,
+    compile_agent_prompt,
+    describe_code_buffer,
+    jd_recommendations,
+)
 from app.role_packs import ROLE_PACKS, catalog, get_role_pack, supports_coding
 from app.schemas import CodeBufferState, HostState, PanelDecision, PanelState
+from app.services.evidence import lock_transcript_session
 from app.services.host_invite import InviteError, mint_invite, read_invite
 
 SECRET = "a-test-signing-secret-long-enough"
@@ -24,6 +31,50 @@ def test_every_pack_is_a_usable_interview(pack_id: str) -> None:
     assert len({member["id"] for member in pack.panel}) == len(pack.panel)
     assert abs(sum(item["weight"] for item in pack.rubric) - 1) < 0.01
     assert pack.enabled_tools, "a panel with no tools cannot ground anything"
+    for member in pack.panel:
+        assert len(member["default_prompt"]) >= 40
+        assert member["prompt_slug"]
+
+
+def test_catalog_covers_materially_distinct_placement_role_families() -> None:
+    assert {
+        "data_engineering",
+        "ui_ux_design",
+        "cybersecurity",
+        "electrical_electronics",
+        "aerospace_robotics",
+        "operations_management",
+        "finance_risk",
+        "civil_chemical_materials",
+    } <= ROLE_PACKS.keys()
+    slugs = [member["prompt_slug"] for pack in ROLE_PACKS.values() for member in pack.panel]
+    assert len(slugs) == len(set(slugs))
+
+
+@pytest.mark.parametrize(
+    ("catalogue_title", "expected_pack"),
+    [
+        ("Software Development Engineer", "software_engineering"),
+        ("Full Stack Developer", "software_engineering"),
+        ("Backend Developer", "software_engineering"),
+        ("Design Engineer", "core_engineering"),
+        ("Embedded Software Engineer", "embedded_systems"),
+        ("Data Engineer 2", "data_engineering"),
+        ("UI/UX Designer", "ui_ux_design"),
+        ("Security Research Specialist", "cybersecurity"),
+        ("Power Electronics Engineer", "electrical_electronics"),
+        ("Junior Robotics Engineer", "aerospace_robotics"),
+        ("Senior Supply Chain Manager", "operations_management"),
+        ("Risk Management", "finance_risk"),
+        ("Civil & Structural Engineer", "civil_chemical_materials"),
+    ],
+)
+def test_real_placement_catalogue_titles_suggest_the_right_pack(
+    catalogue_title: str, expected_pack: str
+) -> None:
+    recommendations = jd_recommendations(f"Role: {catalogue_title}")
+
+    assert recommendations["suggested_profession"] == expected_pack
 
 
 def test_product_management_panel_is_unchanged_by_role_packs() -> None:
@@ -55,6 +106,52 @@ def test_catalog_leads_with_the_default_track() -> None:
 def test_consulting_has_no_editor_but_software_does() -> None:
     assert supports_coding("software_engineering") is True
     assert supports_coding("consulting") is False
+
+
+def test_live_prompt_tracks_the_role_and_only_coding_tracks_get_hint_rules() -> None:
+    software = get_role_pack("software_engineering")
+    software_prompt = compile_agent_prompt(
+        {"profession": software.id, "difficulty": "balanced", "panel": software.panel}
+    )
+    assert "Software Engineering mock-interview panel" in software_prompt
+    assert "Product Management mock-interview panel" not in software_prompt
+    assert "exact task, inputs, outputs, constraints, and an example" in software_prompt
+    assert "prefixed 'Hint:'" in software_prompt
+
+    design = get_role_pack("ui_ux_design")
+    design_prompt = compile_agent_prompt(
+        {"profession": design.id, "difficulty": "balanced", "panel": design.panel}
+    )
+    assert "UI/UX & Product Design mock-interview panel" in design_prompt
+    assert "prefixed 'Hint:'" not in design_prompt
+
+
+def test_global_live_prompt_excludes_panelist_mandates() -> None:
+    software = get_role_pack("software_engineering")
+    member = {
+        **software.panel[0],
+        "custom_prompt": "CUSTOM MANDATE: test incident leadership with a concrete postmortem.",
+    }
+
+    prompt = compile_agent_prompt(
+        {"profession": software.id, "difficulty": "balanced", "panel": [member, software.panel[1]]}
+    )
+
+    assert "CUSTOM MANDATE: test incident leadership" not in prompt
+    assert str(software.panel[0]["default_prompt"]) not in prompt
+    assert str(software.panel[1]["default_prompt"]) not in prompt
+    assert f"- {member['id']}: {member['role']}" in prompt
+
+
+def test_labelled_role_and_real_company_beat_generic_jd_section_headings() -> None:
+    recommendations = jd_recommendations(
+        "About Us\nOur data organization builds reporting systems.\nRole: Software Development Engineer\n"
+        "Company: Northstar Labs"
+    )
+
+    assert recommendations["role_title"] == "Software Development Engineer"
+    assert recommendations["company"] == "Northstar Labs"
+    assert recommendations["suggested_profession"] == "software_engineering"
 
 
 # --- role packs through the API ---------------------------------------------
@@ -123,6 +220,64 @@ async def test_an_unknown_track_is_rejected(client: AsyncClient, auth_headers: d
     )
 
     assert response.status_code == 422
+
+
+async def test_selected_track_stays_authoritative_when_a_jd_suggests_another(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    upload = await client.post(
+        "/v1/job-descriptions",
+        headers=auth_headers,
+        files={
+            "file": (
+                "data-engineer.txt",
+                b"Company: Acme Cloud\nRole: Data Engineer\nBuild Python, SQL and Spark data pipelines.",
+                "text/plain",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    jd = upload.json()
+    assert jd["recommendations"]["company"] == "Acme Cloud"
+    assert jd["recommendations"]["role_title"] == "Data Engineer"
+    assert jd["recommendations"]["suggested_profession"] == "data_engineering"
+
+    response = await client.post(
+        "/v1/interview-configs",
+        headers=auth_headers,
+        json={
+            "title": "Security interview using a data-company JD",
+            "profession": "cybersecurity",
+            "job_description_id": jd["id"],
+            # The production wizard submits the selected pack's panel explicitly.
+            # JD context must still augment that panel instead of being bypassed.
+            "panel": [
+                {
+                    **member,
+                    "expertise": [member["role"], "Challenging"],
+                }
+                for member in get_role_pack("cybersecurity").panel
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    config = response.json()
+    assert config["profession"] == "cybersecurity"
+    assert [member["role"] for member in config["panel"]] == [
+        "Security Engineering Manager",
+        "Security Researcher",
+        "Incident Responder",
+    ]
+    assert {item["key"] for item in config["rubric"]} == {
+        "threat_modelling",
+        "security_depth",
+        "investigation",
+        "mitigation_response",
+        "communication",
+    }
+    assert all("Acme Cloud" in member["knowledge_prompt"] for member in config["panel"])
+    assert any("data engineering" in member["expertise"] for member in config["panel"])
+    assert "risk prioritization" in config["panel"][0]["expertise"]
 
 
 # --- the shared editor ------------------------------------------------------
@@ -300,9 +455,19 @@ async def test_an_invite_admits_a_guest_who_can_then_lead_the_panel(
     assert body["display_name"] == "Amitesh"
     assert body["role_pack"] == "Software Engineering"
     assert body["supports_coding"] is True
+    assert body["heartbeat_interval_seconds"] == 10
     # The guest shares the candidate's channel on a uid of their own.
     assert body["connection"]["channel_name"]
     assert body["connection"]["uid"] != str(session.get("user_uid"))
+    guest_uid = body["connection"]["uid"]
+
+    renewed = await client.post(f"/v1/guest/sessions/{token}/token")
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["channel_name"] == body["connection"]["channel_name"]
+    assert renewed.json()["uid"] == guest_uid
+    heartbeat = await client.post(f"/v1/guest/sessions/{token}/heartbeat")
+    assert heartbeat.status_code == 200, heartbeat.text
+    assert heartbeat.json()["connected"] is True
 
     asked = await client.post(
         f"/v1/guest/sessions/{token}/messages",
@@ -324,6 +489,8 @@ async def test_an_invite_admits_a_guest_who_can_then_lead_the_panel(
 
 async def test_a_forged_invite_admits_nobody(client: AsyncClient) -> None:
     assert (await client.get("/v1/guest/sessions/forged.token")).status_code == 401
+    assert (await client.post("/v1/guest/sessions/forged.token/token")).status_code == 401
+    assert (await client.post("/v1/guest/sessions/forged.token/heartbeat")).status_code == 401
     assert (
         await client.post("/v1/guest/sessions/forged.token/messages", json={"mode": "chat", "text": "hi"})
     ).status_code == 401
@@ -340,6 +507,20 @@ async def test_a_guest_cannot_join_before_the_interview_is_live(
     assert response.status_code == 409
 
 
+async def test_an_invite_cannot_be_created_after_the_session_ends(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    ended = await client.post(f"/v1/sessions/{session['id']}/end", headers=auth_headers)
+    assert ended.status_code == 200, ended.text
+
+    invite = await client.post(f"/v1/sessions/{session['id']}/invite", headers=auth_headers)
+
+    assert invite.status_code == 409
+
+
 async def test_the_candidate_sees_nobody_until_a_guest_arrives(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:
@@ -349,3 +530,151 @@ async def test_the_candidate_sees_nobody_until_a_guest_arrives(
 
     assert presence.status_code == 200
     assert presence.json() is None
+
+
+async def test_guest_leave_and_heartbeat_expiry_remove_candidate_presence(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    invite = await client.post(f"/v1/sessions/{session['id']}/invite", headers=auth_headers)
+    token = invite.json()["token"]
+    joined = await client.get(f"/v1/guest/sessions/{token}")
+    assert joined.status_code == 200, joined.text
+    uid = joined.json()["connection"]["uid"]
+
+    monkeypatch.setattr("app.api.HOST_PRESENCE_TIMEOUT_SECONDS", 0)
+    expired = await client.get(f"/v1/sessions/{session['id']}/host", headers=auth_headers)
+    assert expired.status_code == 200
+    assert expired.json() is None
+    monkeypatch.setattr("app.api.HOST_PRESENCE_TIMEOUT_SECONDS", 30)
+    assert (await client.post(f"/v1/guest/sessions/{token}/heartbeat")).status_code == 200
+    present = await client.get(f"/v1/sessions/{session['id']}/host", headers=auth_headers)
+    assert present.status_code == 200
+    assert present.json()["last_seen_at"]
+
+    left = await client.post(f"/v1/guest/sessions/{token}/leave")
+    assert left.status_code == 204, left.text
+    absent = await client.get(f"/v1/sessions/{session['id']}/host", headers=auth_headers)
+    assert absent.status_code == 200
+    assert absent.json() is None
+    assert (await client.post(f"/v1/guest/sessions/{token}/heartbeat")).status_code == 409
+    assert (await client.post(f"/v1/guest/sessions/{token}/token")).status_code == 409
+
+    rejoined = await client.get(f"/v1/guest/sessions/{token}")
+    assert rejoined.status_code == 200, rejoined.text
+    assert rejoined.json()["connection"]["uid"] == uid
+
+
+async def test_guest_token_cannot_renew_after_the_session_ends(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    invite = await client.post(f"/v1/sessions/{session['id']}/invite", headers=auth_headers)
+    token = invite.json()["token"]
+    assert (await client.get(f"/v1/guest/sessions/{token}")).status_code == 200
+    ended = await client.post(f"/v1/sessions/{session['id']}/end", headers=auth_headers)
+    assert ended.status_code == 200, ended.text
+
+    renewed = await client.post(f"/v1/guest/sessions/{token}/token")
+    assert renewed.status_code == 409
+
+
+async def test_guest_heartbeat_does_not_erase_a_concurrent_code_update(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+    assert (
+        await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    ).status_code == 200
+    invite = await client.post(f"/v1/sessions/{session['id']}/invite", headers=auth_headers)
+    token = invite.json()["token"]
+    assert (await client.get(f"/v1/guest/sessions/{token}")).status_code == 200
+
+    first_writer_loaded = asyncio.Event()
+    release_first_writer = asyncio.Event()
+    lock_calls = 0
+
+    async def delay_first_lock(db: Any, session_id: Any) -> Any:
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 1:
+            first_writer_loaded.set()
+            await release_first_writer.wait()
+        return await lock_transcript_session(db, session_id)
+
+    monkeypatch.setattr("app.api.lock_transcript_session", delay_first_lock)
+    heartbeat_task = asyncio.create_task(client.post(f"/v1/guest/sessions/{token}/heartbeat"))
+    await asyncio.wait_for(first_writer_loaded.wait(), timeout=1)
+    try:
+        written = await asyncio.wait_for(
+            client.post(
+                f"/v1/sessions/{session['id']}/code",
+                headers=auth_headers,
+                json={"language": "python", "content": "answer = 42"},
+            ),
+            timeout=1,
+        )
+        assert written.status_code == 200, written.text
+    finally:
+        release_first_writer.set()
+
+    heartbeat = await asyncio.wait_for(heartbeat_task, timeout=1)
+    assert heartbeat.status_code == 200, heartbeat.text
+    code = await client.get(f"/v1/sessions/{session['id']}/code", headers=auth_headers)
+    assert code.json()["content"] == "answer = 42"
+
+
+async def test_panel_state_update_does_not_erase_a_concurrent_guest_message(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _session_for(client, auth_headers, "software_engineering")
+    assert (
+        await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    ).status_code == 200
+    invite = await client.post(f"/v1/sessions/{session['id']}/invite", headers=auth_headers)
+    token = invite.json()["token"]
+    assert (await client.get(f"/v1/guest/sessions/{token}")).status_code == 200
+
+    first_writer_loaded = asyncio.Event()
+    release_first_writer = asyncio.Event()
+    lock_calls = 0
+
+    async def delay_first_lock(db: Any, session_id: Any) -> Any:
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 1:
+            first_writer_loaded.set()
+            await release_first_writer.wait()
+        return await lock_transcript_session(db, session_id)
+
+    monkeypatch.setattr("app.api.lock_transcript_session", delay_first_lock)
+    decision_task = asyncio.create_task(
+        client.post(
+            f"/v1/sessions/{session['id']}/panel/next",
+            headers=auth_headers,
+            json={"last_candidate_turn": "I would start with a hash map."},
+        )
+    )
+    await asyncio.wait_for(first_writer_loaded.wait(), timeout=1)
+    try:
+        message = await asyncio.wait_for(
+            client.post(
+                f"/v1/guest/sessions/{token}/messages",
+                json={"mode": "chat", "text": "Probe the candidate's complexity analysis."},
+            ),
+            timeout=1,
+        )
+        assert message.status_code == 201, message.text
+    finally:
+        release_first_writer.set()
+
+    decision = await asyncio.wait_for(decision_task, timeout=1)
+    assert decision.status_code == 200, decision.text
+    view = await client.get(f"/v1/guest/sessions/{token}/state")
+    assert [item["text"] for item in view.json()["messages"]] == [
+        "Probe the candidate's complexity analysis."
+    ]

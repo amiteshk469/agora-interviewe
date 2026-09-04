@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KNOWN_LANGUAGES, indentSelection, languageLabel, lineNumbers, tokenize } from "@/lib/code-highlight";
+import { KNOWN_LANGUAGES, agentHintsFromTurn, codingHintsForQuestion, cursorPosition, indentSelection, isCodingQuestion, languageLabel, lineNumbers, tokenize } from "@/lib/code-highlight";
 
 function kinds(source: string, language: string) {
   return tokenize(source, language).map((token) => `${token.kind}:${token.text}`);
@@ -72,6 +72,19 @@ describe("tokenize", () => {
     expect(keywords).toContain("begin");
   });
 
+  it("recognises MATLAB comments and control-flow keywords for robotics tracks", () => {
+    const tokens = tokenize("for i = 1:3 % sweep\nend", "matlab");
+    expect(tokens.some((token) => token.kind === "keyword" && token.text === "for")).toBe(true);
+    expect(tokens.some((token) => token.kind === "comment" && token.text === "% sweep")).toBe(true);
+    expect(tokens.some((token) => token.kind === "keyword" && token.text === "end")).toBe(true);
+  });
+
+  it("recognises Scala declarations for data-engineering tracks", () => {
+    const tokens = tokenize("object Job { def run = true }", "scala");
+    const keywords = tokens.filter((token) => token.kind === "keyword").map((token) => token.text);
+    expect(keywords).toEqual(["object", "def", "true"]);
+  });
+
   it("marks numbers including decimals and exponents", () => {
     const numbers = tokenize("x = 1 + 2.5 + 3e10", "python")
       .filter((token) => token.kind === "number")
@@ -89,6 +102,7 @@ describe("languageLabel", () => {
   it("names known languages and falls back for unknown ones", () => {
     expect(languageLabel("cpp")).toBe("C++");
     expect(languageLabel("systemverilog")).toBe("SystemVerilog");
+    expect(languageLabel("matlab")).toBe("MATLAB");
     expect(languageLabel("cobol")).toBe("COBOL");
   });
 });
@@ -129,5 +143,34 @@ describe("indentSelection", () => {
   it("indents from the start of the line the caret sits inside", () => {
     const result = indentSelection("first\nsecond", 8, 10, false);
     expect(result.value).toBe("first\n  second");
+  });
+});
+
+describe("coding workspace guidance", () => {
+  it("opens for explicit coding tasks without treating every technical question as code", () => {
+    expect(isCodingQuestion("Implement an LRU cache and explain its time complexity.")).toBe(true);
+    expect(isCodingQuestion("Write a SQL query that returns the top customers.")).toBe(true);
+    expect(isCodingQuestion("Given an array of orders, return the highest-value three.")).toBe(true);
+    expect(isCodingQuestion("How would you prioritize reliability against speed?")).toBe(false);
+    expect(isCodingQuestion("What is the time complexity of the approach you just described?")).toBe(false);
+    expect(isCodingQuestion("Hint: a hash map can reduce the runtime.")).toBe(false);
+  });
+
+  it("extracts only explicitly marked agent hints", () => {
+    expect(agentHintsFromTurn("Hint: Start by sorting the intervals.\nWhat is the runtime?")).toEqual([
+      "Start by sorting the intervals.",
+    ]);
+    expect(agentHintsFromTurn("Consider a hash map next.")).toEqual([]);
+  });
+
+  it("gives SQL-specific progressive hints without revealing an answer", () => {
+    const hints = codingHintsForQuestion("Write a query joining orders and customers", "sql");
+    expect(hints).toHaveLength(3);
+    expect(hints[0]).toContain("rows and columns");
+    expect(hints[1]).toContain("nulls");
+  });
+
+  it("reports a one-based cursor position", () => {
+    expect(cursorPosition("first\nsecond", 8)).toEqual({ line: 2, column: 3 });
   });
 });

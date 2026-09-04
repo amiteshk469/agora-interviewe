@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -53,13 +54,17 @@ def normalize_transcript_content(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip()
 
 
-async def lock_transcript_session(db: AsyncSession, session_id: UUID) -> None:
-    """Serialize every writer that allocates a transcript sequence for a session."""
-    locked_session_id = await db.scalar(
-        select(InterviewSession.id).where(InterviewSession.id == session_id).with_for_update()
+async def lock_transcript_session(db: AsyncSession, session_id: UUID) -> InterviewSession:
+    """Lock and reload the session before changing transcript or live-state data."""
+    session = await db.scalar(
+        select(InterviewSession)
+        .where(InterviewSession.id == session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if locked_session_id is None:
+    if session is None:
         raise LookupError("Interview session not found while locking transcript")
+    return session
 
 
 def infer_candidate_evidence(text: str, rubric: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -163,6 +168,117 @@ async def persist_candidate_turn(
         speaker_type="candidate",
         content=content,
         turn_metadata={"source": source, "reconciled": True},
+    )
+    db.add(turn)
+    await db.flush()
+    return turn
+
+
+async def persist_interviewer_turn(
+    db: AsyncSession,
+    session: InterviewSession,
+    content: str,
+    *,
+    speaker_id: str | None,
+    source: str,
+    agora_turn_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    interrupted: bool = False,
+    confidence: float | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+) -> TranscriptTurn:
+    """Persist a generated question, then attach Agora's stable turn id later."""
+    content = normalize_transcript_content(content)
+    if not content:
+        raise ValueError("Interviewer transcript content cannot be empty")
+    await lock_transcript_session(db, session.id)
+    extra_metadata = {key: value for key, value in (metadata or {}).items() if key != "source"}
+    if agora_turn_id:
+        existing = await db.scalar(
+            select(TranscriptTurn).where(
+                TranscriptTurn.session_id == session.id,
+                TranscriptTurn.agora_turn_id == agora_turn_id,
+            )
+        )
+        if existing is not None:
+            if existing.speaker_type != "interviewer":
+                return existing
+            if len(content) > len(normalize_transcript_content(existing.content)):
+                existing.content = content
+            if existing.speaker_id is None:
+                existing.speaker_id = speaker_id
+            existing.interrupted = interrupted
+            existing.confidence = confidence if confidence is not None else existing.confidence
+            existing.started_at = started_at or existing.started_at
+            existing.ended_at = ended_at or existing.ended_at
+            existing.turn_metadata = {
+                **existing.turn_metadata,
+                **extra_metadata,
+                "reconciled_source": source,
+                "stable_turn_updated": True,
+            }
+            return existing
+
+        unmatched = list(
+            (
+                await db.execute(
+                    select(TranscriptTurn)
+                    .where(
+                        TranscriptTurn.session_id == session.id,
+                        TranscriptTurn.speaker_type == "interviewer",
+                        TranscriptTurn.agora_turn_id.is_(None),
+                    )
+                    .order_by(TranscriptTurn.sequence)
+                )
+            ).scalars()
+        )
+        synthetic = next(
+            (
+                turn
+                for turn in unmatched
+                if turn.turn_metadata.get("source") == "agora-custom-llm"
+                and normalize_transcript_content(turn.content) == content
+            ),
+            None,
+        )
+        if synthetic is not None:
+            synthetic.agora_turn_id = agora_turn_id
+            synthetic.content = content
+            if synthetic.speaker_id is None:
+                synthetic.speaker_id = speaker_id
+            synthetic.interrupted = interrupted
+            synthetic.confidence = confidence
+            synthetic.started_at = started_at or synthetic.started_at
+            synthetic.ended_at = ended_at or synthetic.ended_at
+            synthetic.turn_metadata = {
+                **synthetic.turn_metadata,
+                **extra_metadata,
+                "reconciled_source": source,
+                "stable_turn_reconciled": True,
+            }
+            return synthetic
+
+    max_sequence = await db.scalar(
+        select(func.max(TranscriptTurn.sequence)).where(TranscriptTurn.session_id == session.id)
+    )
+    turn = TranscriptTurn(
+        id=uuid4(),
+        session_id=session.id,
+        sequence=(max_sequence or 0) + 1,
+        agora_turn_id=agora_turn_id,
+        speaker_type="interviewer",
+        speaker_id=speaker_id,
+        content=content,
+        interrupted=interrupted,
+        confidence=confidence,
+        started_at=started_at,
+        ended_at=ended_at,
+        turn_metadata={
+            "source": source,
+            "reconciled": True,
+            **extra_metadata,
+        },
     )
     db.add(turn)
     await db.flush()

@@ -35,7 +35,7 @@ Before connecting the Blueprint to an existing service, match its exact service 
 
 ## Database migrations
 
-Render does not receive a Supabase management credential. Apply backward-compatible migrations before merging an API change that needs them:
+Render does not receive a Supabase management credential. Apply backward-compatible migrations before merging an API change that needs them. The 18-role release specifically requires `202609040001_future_proof_role_packs.sql`; without it, Supabase's older fixed profession allowlist rejects the new role IDs even though the API recognizes them.
 
 ```bash
 supabase db push --dry-run --db-url "$SUPABASE_DB_URL"

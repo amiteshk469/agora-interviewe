@@ -66,7 +66,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
-    description="Agora-first, evidence-linked Product Management mock interview API.",
+    description="Agora-first, evidence-linked multi-role mock interview API.",
     lifespan=lifespan,
 )
 app.add_middleware(

@@ -59,11 +59,23 @@ class PromptRubricCriterion(ApiModel):
 class PromptTemplateKnowledge(ApiModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    role_pack_id: str | None = Field(
+        default=None,
+        max_length=60,
+        exclude_if=lambda value: value is None,
+    )
     case_type: str | None = Field(default=None, max_length=120)
     domains: list[str] = Field(default_factory=list, max_length=12)
     scenario_seeds: list[str] = Field(default_factory=list, max_length=8)
     scoring_focus: list[str] = Field(default_factory=list, max_length=8)
     rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
+
+    @field_validator("role_pack_id")
+    @classmethod
+    def validate_role_pack_id(cls, value: str | None) -> str | None:
+        if value is not None and value not in ROLE_PACK_IDS:
+            raise ValueError("role_pack_id must reference a supported role pack")
+        return value
 
     @field_validator("domains", "scoring_focus")
     @classmethod
@@ -200,6 +212,8 @@ class PanelistInput(ApiModel):
     template_knowledge: PromptTemplateKnowledge = Field(default_factory=PromptTemplateKnowledge)
     template_behavior: PromptTemplateBehavior = Field(default_factory=PromptTemplateBehavior)
     role_rubric: list[PromptRubricCriterion] = Field(default_factory=list, max_length=8)
+    default_prompt: str | None = Field(default=None, min_length=40, max_length=20_000)
+    prompt_slug: str | None = Field(default=None, max_length=100, pattern=r"^[a-z0-9-]+$")
     custom_prompt: str | None = Field(default=None, max_length=20_000)
     knowledge_prompt: str | None = Field(default=None, max_length=10_000)
     voice: str = Field(default="indian-calm", max_length=80)
@@ -211,14 +225,14 @@ class PanelistInput(ApiModel):
     avatar_vendor: Literal["liveavatar", "generic", "akool", "anam"] | None = None
     avatar_image: str | None = Field(default=None, max_length=2000)
 
-    @field_validator("custom_prompt")
+    @field_validator("default_prompt", "custom_prompt")
     @classmethod
     def validate_custom_prompt_policy(cls, value: str | None) -> str | None:
         return _validate_interviewer_prompt(value)
 
 
 class InterviewConfigCreate(ApiModel):
-    title: str = Field(default="Product Management mock interview", min_length=2, max_length=160)
+    title: str = Field(default="Mock interview", min_length=2, max_length=160)
     # The hiring track. Each id resolves to a role pack that supplies the default
     # panel, rubric, and tools when the caller does not override them.
     profession: str = Field(default=DEFAULT_ROLE_PACK_ID, max_length=60)
@@ -434,6 +448,9 @@ class HostState(ApiModel):
 
     display_name: str = ""
     joined_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    left_at: datetime | None = None
+    rtc_uid: int | None = Field(default=None, gt=0)
     messages: list[HostTurnRecord] = Field(default_factory=list)
     # Set when the human asks the panel to put a question. The next panelist to
     # speak must ask it, which is what "leading" the panel means here.
@@ -620,6 +637,7 @@ class GuestSessionOut(ApiModel):
     connection: "ConnectionConfig"
     panel: list[GuestPanelist]
     supports_coding: bool
+    heartbeat_interval_seconds: int
 
 
 class HostMessageCreate(ApiModel):
@@ -644,4 +662,10 @@ class HostMessageOut(ApiModel):
 class HostPresenceOut(ApiModel):
     display_name: str
     joined_at: datetime
+    last_seen_at: datetime
     messages: list[HostMessageOut]
+
+
+class GuestHeartbeatOut(ApiModel):
+    connected: Literal[True] = True
+    last_seen_at: datetime

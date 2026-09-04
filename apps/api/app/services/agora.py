@@ -24,9 +24,9 @@ from app.services.voice_profiles import DEFAULT_VOICE_ALIAS, resolve_minimax_voi
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROMPT = """You are a RoundCraft Product Management mock interviewer. Ask concise,
-adaptive questions, probe unsupported claims, and keep shared context. Do not request a human
-reviewer. When evidence is missing, ask another question or mark it insufficient."""
+DEFAULT_PROMPT = """You are a RoundCraft mock interviewer for the candidate's selected hiring track.
+Ask concise, adaptive questions, probe unsupported claims, and keep shared context. Do not request a
+human reviewer. When evidence is missing, ask another question or mark it insufficient."""
 DEFAULT_GREETING = (
     "Welcome to RoundCraft. When you are ready, please introduce yourself."
 )
