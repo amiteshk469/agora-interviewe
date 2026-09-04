@@ -24,6 +24,7 @@ const agora = vi.hoisted(() => {
     subscribe: vi.fn().mockResolvedValue(undefined),
     remoteUsers: [] as Array<{
       uid: string | number;
+      hasVideo?: boolean;
       audioTrack?: { play: () => void; stop: () => void };
       videoTrack?: { play: () => void; stop: () => void };
     }>,
@@ -156,7 +157,7 @@ describe("human interviewer Agora room", () => {
       mediaType: "audio" | "video",
     ) => void;
     const videoTrack = { play: vi.fn(), stop: vi.fn() };
-    const remoteUser = { uid: 4102, videoTrack };
+    const remoteUser = { uid: 4102, hasVideo: true, videoTrack };
     agora.client.remoteUsers.push(remoteUser);
 
     published(remoteUser, "video");
@@ -165,6 +166,23 @@ describe("human interviewer Agora room", () => {
     expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({
       remoteVideos: [{ uid: "4102", track: videoTrack }],
     }));
+    await room.leave();
+  });
+
+  it("removes an unpublished remote camera instead of displaying a black tile", async () => {
+    const onMediaState = vi.fn();
+    const room = await joinHostRtcRoom(session, { onMediaState });
+    const unpublished = agora.client.on.mock.calls.find(([event]) => event === "user-unpublished")?.[1] as () => void;
+    const remoteUser = { uid: 4102, hasVideo: true, videoTrack: { play: vi.fn(), stop: vi.fn() } };
+    agora.client.remoteUsers.push(remoteUser);
+    unpublished();
+    expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({
+      remoteVideos: [{ uid: "4102", track: remoteUser.videoTrack }],
+    }));
+
+    remoteUser.hasVideo = false;
+    unpublished();
+    expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({ remoteVideos: [] }));
     await room.leave();
   });
 
