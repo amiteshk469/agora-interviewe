@@ -14,6 +14,7 @@ def test_builtin_indian_english_profiles_are_audibly_distinct() -> None:
         "indian-bright",
     }
     assert all(profile.voice_id.startswith("hindi_") for profile in VOICE_PROFILES.values())
+    assert all(1.06 <= profile.speed <= 1.14 for profile in VOICE_PROFILES.values())
     signatures = {
         (
             profile.voice_id,
@@ -38,7 +39,7 @@ def test_legacy_aliases_resolve_to_indian_profiles_and_current_minimax_shape() -
     assert params == {
         "voice_setting": {
             "voice_id": "hindi_female_1_v2",
-            "speed": 1.02,
+            "speed": 1.12,
             "vol": 1.03,
             "pitch": 0,
             "emotion": "fluent",

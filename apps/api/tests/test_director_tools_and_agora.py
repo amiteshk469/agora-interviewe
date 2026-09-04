@@ -384,7 +384,7 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert first["metadata"]["tts_params"]["params"] == {
         "voice_setting": {
             "voice_id": "hindi_female_1_v2",
-            "speed": 1.02,
+            "speed": 1.12,
             "vol": 1.03,
             "pitch": 0,
             "emotion": "fluent",
@@ -1457,7 +1457,7 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
     assert "avatar" not in captured
     assert captured["tts"]["sample_rate"] is None
     assert captured["tts"]["voice_id"] == "hindi_female_2_v1"
-    assert captured["tts"]["speed"] == 0.94
+    assert captured["tts"]["speed"] == 1.08
     assert captured["tts"]["vol"] == 1.0
     assert captured["tts"]["pitch"] == -1
     assert captured["tts"]["emotion"] == "calm"

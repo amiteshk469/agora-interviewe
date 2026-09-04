@@ -30,6 +30,7 @@ import { Alert, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
+import { VoiceActivityDetector } from "@/lib/voice-activity";
 import { renewAgoraSeatTokens } from "@/lib/agora-seat";
 
 type Props = {
@@ -60,51 +61,75 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-// Speech rises well above room noise, so trigger high and release low, and hold briefly
-// so the gaps between words do not make the tile flicker.
-const SPEAKING_RISE_LEVEL = 0.18;
-const SPEAKING_FALL_LEVEL = 0.08;
-const SPEAKING_HOLD_MS = 500;
-
 type RoomToneGraph = {
   context: AudioContext;
-  source: AudioBufferSourceNode;
+  sources: AudioScheduledSourceNode[];
 };
 
 function createRoomTone(): RoomToneGraph {
   const context = new AudioContext();
   const seconds = 20;
-  const buffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
-  const samples = buffer.getChannelData(0);
+  const baseBuffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
+  const baseSamples = baseBuffer.getChannelData(0);
   let brown = 0;
-  for (let index = 0; index < samples.length; index += 1) {
+  for (let index = 0; index < baseSamples.length; index += 1) {
     const white = Math.random() * 2 - 1;
     brown = (brown + 0.02 * white) / 1.02;
-    samples[index] = brown * 3.5;
+    baseSamples[index] = brown * 3.8;
   }
 
-  const source = context.createBufferSource();
+  const airBuffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
+  const airSamples = airBuffer.getChannelData(0);
+  for (let index = 0; index < airSamples.length; index += 1) {
+    airSamples[index] = (Math.random() * 2 - 1) * 0.16;
+  }
+
+  const baseSource = context.createBufferSource();
+  const airSource = context.createBufferSource();
   const highpass = context.createBiquadFilter();
   const lowpass = context.createBiquadFilter();
-  const gain = context.createGain();
-  source.buffer = buffer;
-  source.loop = true;
+  const airBand = context.createBiquadFilter();
+  const airGain = context.createGain();
+  const masterGain = context.createGain();
+  const drift = context.createOscillator();
+  const driftDepth = context.createGain();
+
+  baseSource.buffer = baseBuffer;
+  baseSource.loop = true;
+  airSource.buffer = airBuffer;
+  airSource.loop = true;
   highpass.type = "highpass";
   highpass.frequency.value = 70;
   lowpass.type = "lowpass";
-  lowpass.frequency.value = 900;
-  gain.gain.setValueAtTime(0, context.currentTime);
-  gain.gain.linearRampToValueAtTime(0.018, context.currentTime + 0.8);
-  source.connect(highpass).connect(lowpass).connect(gain).connect(context.destination);
-  source.start();
-  return { context, source };
+  lowpass.frequency.value = 1_250;
+  airBand.type = "bandpass";
+  airBand.frequency.value = 1_800;
+  airBand.Q.value = 0.55;
+  airGain.gain.value = 0.18;
+  drift.frequency.value = 0.07;
+  driftDepth.gain.value = 0.045;
+  masterGain.gain.setValueAtTime(0, context.currentTime);
+  // The previous 0.018 gain vanished beneath laptop fan noise. This is still
+  // background-level, but deliberately audible when the user switches it on.
+  masterGain.gain.linearRampToValueAtTime(0.052, context.currentTime + 0.9);
+
+  baseSource.connect(highpass).connect(lowpass).connect(masterGain);
+  airSource.connect(airBand).connect(airGain).connect(masterGain);
+  drift.connect(driftDepth).connect(airGain.gain);
+  masterGain.connect(context.destination);
+  baseSource.start();
+  airSource.start();
+  drift.start();
+  return { context, sources: [baseSource, airSource, drift] };
 }
 
 function disposeRoomTone(graph: RoomToneGraph | null) {
   if (!graph) return;
-  try {
-    graph.source.stop();
-  } catch {}
+  for (const source of graph.sources) {
+    try {
+      source.stop();
+    } catch {}
+  }
   void graph.context.close();
 }
 
@@ -204,16 +229,12 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   }, []);
 
   useEffect(() => {
-    // Sampled rather than animated: the ring only needs to show the room is hearing you.
-    let spokeAt = 0;
+    const detector = new VoiceActivityDetector();
     const timer = window.setInterval(() => {
       const level = localMicrophoneTrack && enabled ? localMicrophoneTrack.getVolumeLevel() : 0;
-      setMicLevel(level);
-      const now = Date.now();
-      if (level >= SPEAKING_RISE_LEVEL) spokeAt = now;
-      // Kept as its own state, not derived, so the room only re-renders when speaking
-      // actually flips rather than on every 120ms sample.
-      setCandidateSpeaking(level >= SPEAKING_FALL_LEVEL && now - spokeAt < SPEAKING_HOLD_MS);
+      const activity = detector.sample(level, performance.now());
+      setMicLevel(activity.visualLevel);
+      setCandidateSpeaking(activity.speaking);
     }, 120);
     return () => window.clearInterval(timer);
   }, [enabled, localMicrophoneTrack]);
@@ -226,7 +247,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
         ...(participant.avatar_uid ? [String(participant.avatar_uid)] : []),
       ]),
     ]);
-    let spokeAt = 0;
+    const detector = new VoiceActivityDetector();
     const timer = window.setInterval(() => {
       const level = Math.max(
         0,
@@ -234,9 +255,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
           .filter((track) => !panelUids.has(String(track.getUserId())))
           .map((track) => track.getVolumeLevel()),
       );
-      const now = Date.now();
-      if (level >= SPEAKING_RISE_LEVEL) spokeAt = now;
-      setHostSpeaking(level >= SPEAKING_FALL_LEVEL && now - spokeAt < SPEAKING_HOLD_MS);
+      setHostSpeaking(detector.sample(level, performance.now()).speaking);
     }, 120);
     return () => window.clearInterval(timer);
   }, [audioTracks, config.agent_uid, config.panelists]);
@@ -329,7 +348,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
           )}
         >
           {enabled ? <Mic className="size-5" aria-hidden="true" /> : <MicOff className="size-5" aria-hidden="true" />}
-          {enabled && micLevel > SPEAKING_FALL_LEVEL ? (
+          {enabled && candidateSpeaking ? (
             <span
               className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-primary/70 motion-reduce:hidden"
               style={{ transform: `scale(${1 + Math.min(micLevel, 1) * 0.28})`, opacity: 0.35 + Math.min(micLevel, 1) * 0.45 }}
@@ -344,8 +363,8 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
           className="h-11 w-14 rounded-xl"
           onClick={toggleRoomTone}
           aria-pressed={roomToneEnabled}
-          title="Play quiet room ambience on this device only. It is never sent to the interviewers."
-          aria-label="Toggle room tone"
+          title={roomToneEnabled ? "Turn off room ambience" : "Play room ambience on this device only. It is never sent to the interviewers."}
+          aria-label={roomToneEnabled ? "Turn off room ambience" : "Turn on room ambience"}
         >
           <Waves aria-hidden="true" />
         </Button>

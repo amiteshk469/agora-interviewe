@@ -18,35 +18,35 @@ DEFAULT_VOICE_ALIAS = "indian-calm"
 VOICE_PROFILES: dict[str, MiniMaxVoiceProfile] = {
     "indian-calm": MiniMaxVoiceProfile(
         voice_id="hindi_female_2_v1",
-        speed=0.94,
+        speed=1.08,
         vol=1.0,
         pitch=-1,
         emotion="calm",
     ),
     "indian-advisor": MiniMaxVoiceProfile(
         voice_id="hindi_male_1_v2",
-        speed=0.97,
+        speed=1.1,
         vol=1.02,
         pitch=0,
         emotion="calm",
     ),
     "indian-anchor": MiniMaxVoiceProfile(
         voice_id="hindi_female_1_v2",
-        speed=1.02,
+        speed=1.12,
         vol=1.03,
         pitch=0,
         emotion="fluent",
     ),
     "indian-deep": MiniMaxVoiceProfile(
         voice_id="hindi_male_1_v2",
-        speed=0.9,
+        speed=1.06,
         vol=1.05,
         pitch=-3,
         emotion="calm",
     ),
     "indian-bright": MiniMaxVoiceProfile(
         voice_id="hindi_female_2_v1",
-        speed=1.06,
+        speed=1.14,
         vol=0.98,
         pitch=2,
         emotion="fluent",
@@ -86,7 +86,7 @@ def resolve_minimax_voice(requested_voice: str | None) -> MiniMaxVoiceProfile:
     if requested in _DIRECT_VOICE_IDS:
         return MiniMaxVoiceProfile(
             voice_id=requested,
-            speed=0.96,
+            speed=1.08,
             vol=1.0,
             pitch=0,
             emotion="calm",
