@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, Clock3, Code2, Loader2, Mic2, MonitorUp, ShieldAlert, ShieldCheck, UserRound, UsersRound } from "lucide-react";
+import { Check, Clock3, Code2, FileCheck2, FileUp, Loader2, Mic2, MonitorUp, ShieldAlert, ShieldCheck, UserRound, UsersRound } from "lucide-react";
 import { AgoraLivePanel, type LiveAgentState, type LiveMediaState, type LiveTranscriptTurn } from "@/components/agora-live";
 import { Brand } from "@/components/app-shell";
 import { CodePane } from "@/components/code-pane";
@@ -20,6 +20,7 @@ import {
   readCandidateGuestView,
   renewCandidateSessionToken,
   saveCandidateGuestCode,
+  uploadCandidateInviteResume,
   type CodingTask,
   type GuestInvitePreview,
   type GuestSession,
@@ -29,7 +30,7 @@ import {
   type StoredLiveSession,
 } from "@/lib/api";
 import type { BrowserFocusEvent } from "@/lib/focus-guard";
-import { mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
+import { humanVideoTrack, mergeLiveTurns, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist, shouldAutoOpenCodingTask } from "@/lib/live-panel";
 import { useCandidateFocusGuard } from "@/lib/use-candidate-focus-guard";
 import { cn } from "@/lib/utils";
 
@@ -74,6 +75,8 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const [microphoneReady, setMicrophoneReady] = useState(false);
   const [testingMicrophone, setTestingMicrophone] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [uploadingResume, setUploadingResume] = useState(false);
+  const [resumeError, setResumeError] = useState("");
   const [session, setSession] = useState<GuestSession | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState(initialPreview.status);
@@ -93,6 +96,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const statusRef = useRef(initialPreview.status);
   const cameraWasEnabled = useRef(false);
   const cameraMissingReported = useRef(false);
+  const dismissedCodingTaskId = useRef<string | null>(null);
 
   const sendFocusEvent = useCallback(async (event: BrowserFocusEvent, detail: string) => {
     try {
@@ -171,6 +175,24 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
     }
   }, [enterFocusMode, name, token]);
 
+  const uploadResume = useCallback(async (file?: File) => {
+    if (!file) return;
+    setResumeError("");
+    if (!/\.(pdf|docx|txt|md)$/i.test(file.name) || file.size > 10 * 1024 * 1024) {
+      setResumeError("Choose a PDF, DOCX, TXT, or MD file smaller than 10 MB.");
+      return;
+    }
+    setUploadingResume(true);
+    try {
+      const candidateResume = await uploadCandidateInviteResume(token, file);
+      setPreview((current) => ({ ...current, candidate_resume: candidateResume }));
+    } catch (cause) {
+      setResumeError(cause instanceof Error ? cause.message : "Your CV could not be attached.");
+    } finally {
+      setUploadingResume(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
@@ -187,7 +209,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
         setHost(view.host ?? null);
         if (view.focus_guard) setFocusGuardSummary(view.focus_guard);
         setCodingTask(view.coding_task ?? null);
-        if (view.coding_task?.active) setCodeOpen(true);
+        if (shouldAutoOpenCodingTask(view.coding_task, dismissedCodingTaskId.current)) setCodeOpen(true);
         if (view.turns.length) {
           lastSequence.current = Math.max(lastSequence.current, ...view.turns.map((turn) => turn.sequence));
           setStoredTurns((current) => mergeRecordsById(current, view.turns).sort((left, right) => left.sequence - right.sequence));
@@ -262,6 +284,14 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const renewConnection = useCallback(() => renewCandidateSessionToken(token), [token]);
   const loadCode = useCallback(() => readCandidateGuestCode(token), [token]);
   const saveCode = useCallback((language: string, content: string) => saveCandidateGuestCode(token, language, content), [token]);
+  const closeCode = useCallback(() => {
+    dismissedCodingTaskId.current = codingTask?.id ?? null;
+    setCodeOpen(false);
+  }, [codingTask?.id]);
+  const openCode = useCallback(() => {
+    dismissedCodingTaskId.current = null;
+    setCodeOpen(true);
+  }, []);
 
   if (!session) {
     const waiting = preview.status === "configured" || preview.status === "starting";
@@ -285,6 +315,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
               <form className="space-y-4" onSubmit={join}>
                 <label className="block text-sm font-medium" htmlFor="candidate-name">Your name</label>
                 <Input id="candidate-name" name="candidate_name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Candidate name…" autoComplete="name" />
+                <div className="rounded-lg border bg-background p-3"><div className="flex items-center gap-3">{preview.candidate_resume ? <FileCheck2 className="size-5 shrink-0 text-primary" aria-hidden="true" /> : <FileUp className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />}<div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{preview.candidate_resume?.original_filename || "Add your CV"}</p><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{preview.candidate_resume ? "Visible to this interview's human host and AI panel" : "Optional, private to this interview"}</p></div><label className="shrink-0"><input name="candidate_resume" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="sr-only" disabled={uploadingResume} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void uploadResume(file); }} /><span className="inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium hover:bg-accent">{uploadingResume ? "Reading…" : preview.candidate_resume ? "Replace" : "Upload"}</span></label></div>{resumeError ? <p className="mt-2 text-xs text-destructive" role="alert">{resumeError}</p> : null}</div>
                 <Button type="button" className="w-full" variant={microphoneReady ? "secondary" : "outline"} onClick={() => void testMicrophone()} disabled={testingMicrophone}>{testingMicrophone ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : microphoneReady ? <Check aria-hidden="true" /> : <Mic2 aria-hidden="true" />}{testingMicrophone ? "Testing camera and microphone" : microphoneReady ? "Camera and microphone ready" : "Test camera and microphone"}</Button>
                 <Button type="submit" size="lg" className="w-full" disabled={preview.status !== "live" || joining} loading={joining}><UsersRound aria-hidden="true" />{waiting ? "Waiting for host" : joining ? "Joining interview" : "Join interview"}</Button>
                 <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden="true" />Focus guard records tab changes, window focus loss, fullscreen exits and camera shutdowns. It never reads other windows.</p>
@@ -303,11 +334,10 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const lastRemote = [...merged].reverse().find((turn) => !turn.isLocal);
   const activePanelistId = panelistIdForAgoraUid(lastRemote?.uid, session.connection.panelists) ?? panelists[0]?.id;
   const candidatePerson: Panelist = { id: "candidate", name: session.display_name, role: "Candidate", initials: session.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "candidate", avatarVendor: "generic", mood: "Focused", behavior: "Answering", voice: "", prompt: "" };
-  const hostPerson: Panelist | null = host ? { id: "human-host", name: host.display_name, role: "Human interviewer", initials: host.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "human-host", avatarVendor: "generic", mood: "Focused", behavior: "Leading", voice: "", prompt: "" } : null;
-  const hostVideo = host?.rtc_uid
-    ? media.remoteVideos.find((video) => video.uid === String(host.rtc_uid))?.track
-    : undefined;
-  const participantCount = panelists.length + 1 + (hostPerson ? 1 : 0);
+  const hostName = host?.display_name || "Interviewer";
+  const hostPerson: Panelist = { id: "human-host", name: hostName, role: host ? "Human interviewer" : "Human interviewer · Waiting to join", initials: hostName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "human-host", avatarVendor: "generic", mood: "Focused", behavior: "Leading", voice: "", prompt: "" };
+  const hostVideo = humanVideoTrack(media.remoteVideos, host?.rtc_uid, session.connection.panelists);
+  const participantCount = panelists.length + 2;
   const prepared: StoredLiveSession = { sessionId: session.session_id, agentId: "", connection: session.connection, configSnapshot: { panel: session.panel }, demo: false };
   const currentQuestion = codingTask?.question || [...storedTurns].reverse().find((turn) => turn.speaker_type === "interviewer")?.content || lastRemote?.text;
 
@@ -324,7 +354,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
               const track = videoUid ? media.remoteVideos.find((video) => video.uid === String(videoUid))?.track : undefined;
               return <ParticipantTile key={person.id} person={person} state={presenceForPanelist(index, storedTurns.length, agentState === "speaking" && person.id === activePanelistId)} track={track} toneIndex={index} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />;
             })}
-            {hostPerson ? <ParticipantTile person={hostPerson} state={media.hostSpeaking ? "speaking" : "listening"} track={hostVideo} toneIndex={panelists.length} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} /> : null}
+            <ParticipantTile person={hostPerson} state={media.hostSpeaking ? "speaking" : "listening"} track={hostVideo} toneIndex={panelists.length} compact={codeOpen} className={cn(codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48", !host && !hostVideo && "opacity-65")} />
             <ParticipantTile person={candidatePerson} state={media.candidateSpeaking ? "speaking" : "listening"} track={media.localVideo} isSelf microphoneEnabled={media.microphoneEnabled} compact={codeOpen} className={codeOpen ? "h-[6.5rem]" : "h-40 sm:h-48"} />
           </div>
 
@@ -339,10 +369,11 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
               prompt={session.coding.prompt}
               question={codingTask?.question}
               hints={codingTask?.hints}
+              onClose={closeCode}
               className="min-h-[24rem] flex-1"
             />
           ) : (
-            <Card className="grid min-h-48 flex-1 place-items-center p-6 text-center"><div><UserRound className="mx-auto size-7 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Answer naturally</p><p className="mx-auto mt-1 max-w-md text-xs leading-5 text-muted-foreground">The panel shares context and may return to an earlier topic. You can interrupt the active speaker when needed.</p>{session.supports_coding ? <Button className="mt-4" size="sm" variant="secondary" onClick={() => setCodeOpen(true)}><Code2 aria-hidden="true" />Open coding workspace</Button> : null}</div></Card>
+            <Card className="grid min-h-48 flex-1 place-items-center p-6 text-center"><div><UserRound className="mx-auto size-7 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Answer naturally</p><p className="mx-auto mt-1 max-w-md text-xs leading-5 text-muted-foreground">The panel shares context and may return to an earlier topic. You can interrupt the active speaker when needed.</p>{session.supports_coding ? <Button className="mt-4" size="sm" variant="secondary" onClick={openCode}><Code2 aria-hidden="true" />Open coding workspace</Button> : null}</div></Card>
           )}
 
           <div className="shrink-0 rounded-xl border bg-card p-2"><AgoraLivePanel prepared={prepared} renewConnection={renewConnection} onTranscript={handleTranscript} onAgentState={setAgentState} onMediaState={setMedia} /></div>

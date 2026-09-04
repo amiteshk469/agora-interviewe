@@ -620,6 +620,7 @@ export function LiveInterviewScreen() {
                 prompt={coding.prompt}
                 question={codingTask?.text}
                 hints={agentHints.length ? agentHints : undefined}
+                onClose={() => setCodeOpen(false)}
                 className={cn("mx-auto min-h-[18rem] w-full flex-1", !codeOpen && "hidden")}
               />
             ) : null}

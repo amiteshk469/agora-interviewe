@@ -1,8 +1,10 @@
 """Role packs, the shared code editor, and the human co-host."""
 
 import asyncio
+import time
 from typing import Any
 
+import jwt
 import pytest
 from httpx import AsyncClient
 
@@ -278,6 +280,63 @@ async def test_selected_track_stays_authoritative_when_a_jd_suggests_another(
     assert all("Acme Cloud" in member["knowledge_prompt"] for member in config["panel"])
     assert any("data engineering" in member["expertise"] for member in config["panel"])
     assert "risk prioritization" in config["panel"][0]["expertise"]
+
+
+async def test_candidate_cv_is_private_and_attached_to_a_practice_session(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    upload = await client.post(
+        "/v1/candidate-resumes",
+        headers=auth_headers,
+        files={
+            "file": (
+                "riya-resume.txt",
+                b"Riya Shah\nExperience\nBuilt a streaming fraud detector.\nSkills\nPython, SQL, Kafka",
+                "text/plain",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    resume = upload.json()
+    assert resume["original_filename"] == "riya-resume.txt"
+    assert resume["extracted"]["word_count"] > 5
+    assert "raw_text" not in resume
+
+    config = await client.post(
+        "/v1/interview-configs",
+        headers=auth_headers,
+        json={
+            "title": "Resume-aware data interview",
+            "profession": "data_engineering",
+            "candidate_resume_id": resume["id"],
+        },
+    )
+    assert config.status_code == 201, config.text
+    assert config.json()["candidate_resume_id"] == resume["id"]
+
+    session = await client.post(
+        "/v1/sessions",
+        headers=auth_headers,
+        json={"interview_config_id": config.json()["id"]},
+    )
+    assert session.status_code == 201, session.text
+    assert session.json()["candidate_resume_id"] == resume["id"]
+    assert session.json()["config_snapshot"]["candidate_resume"]["original_filename"] == "riya-resume.txt"
+
+    token = jwt.encode(
+        {
+            "sub": "00000000-0000-4000-8000-000000000009",
+            "role": "authenticated",
+            "aud": "authenticated",
+            "iss": "https://test.supabase.co/auth/v1",
+            "exp": int(time.time()) + 300,
+        },
+        "test-supabase-jwt-secret-at-least-32-bytes",
+        algorithm="HS256",
+    )
+    stranger = {"Authorization": f"Bearer {token}"}
+    assert (await client.get("/v1/candidate-resumes", headers=stranger)).json() == []
 
 
 # --- the shared editor ------------------------------------------------------
@@ -638,6 +697,78 @@ async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_
 
     assert (await client.post(f"/v1/guest/candidates/{candidate_token}/leave")).status_code == 204
     assert (await client.get(f"/v1/sessions/{session['id']}/candidate", headers=auth_headers)).json() is None
+
+
+async def test_invited_candidate_cv_reaches_the_human_host_and_ai_session(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    session = await _session_for(
+        client,
+        auth_headers,
+        "software_engineering",
+        interview_mode="interviewer_led",
+    )
+    candidate_invite = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "candidate"},
+    )
+    candidate_token = candidate_invite.json()["token"]
+    host_invite = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "interviewer"},
+    )
+    host_token = host_invite.json()["token"]
+
+    upload = await client.post(
+        f"/v1/guest/candidates/{candidate_token}/resume",
+        files={
+            "file": (
+                "candidate-cv.txt",
+                b"Riya Shah\nExperience\nOwned checkout reliability at Northstar.\nProjects\nBuilt a Go rate limiter.",
+                "text/plain",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    resume = upload.json()
+    assert "raw_text" not in resume
+
+    preview = await client.get(f"/v1/guest/invites/{candidate_token}")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["candidate_resume"]["id"] == resume["id"]
+
+    started = await client.post(
+        f"/v1/sessions/{session['id']}/start",
+        headers=auth_headers,
+        json={},
+    )
+    assert started.status_code == 200, started.text
+    assert (
+        await client.get(
+            f"/v1/guest/candidates/{candidate_token}",
+            params={"display_name": "Riya"},
+        )
+    ).status_code == 200
+    assert (
+        await client.get(
+            f"/v1/guest/sessions/{host_token}",
+            params={"display_name": "Amitesh"},
+        )
+    ).status_code == 200
+
+    host_view = await client.get(f"/v1/guest/sessions/{host_token}/state")
+    assert host_view.status_code == 200, host_view.text
+    assert host_view.json()["candidate_resume"]["original_filename"] == "candidate-cv.txt"
+    assert "checkout reliability" in host_view.json()["candidate_resume"]["raw_text"]
+
+    wrong_seat = await client.post(
+        f"/v1/guest/candidates/{host_token}/resume",
+        files={"file": ("blocked.txt", b"should not upload", "text/plain")},
+    )
+    assert wrong_seat.status_code == 403
 
 
 async def test_candidate_invite_is_rejected_for_candidate_owned_practice(

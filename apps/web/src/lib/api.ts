@@ -131,6 +131,23 @@ export type JobDescriptionResponse = {
   error?: string | null;
 };
 
+export type CandidateResumeResponse = {
+  id: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  status: "processing" | "ready" | "failed";
+  extracted: {
+    character_count?: number;
+    word_count?: number;
+    headline?: string;
+    sections?: string[];
+  };
+  raw_text?: string;
+  error?: string | null;
+  created_at: string;
+};
+
 export type PromptTemplateRecord = {
   id: string;
   owner_id: string | null;
@@ -203,6 +220,7 @@ export type InterviewConfigPayload = {
   profession: string;
   interview_mode?: "candidate_practice" | "interviewer_led";
   job_description_id?: string;
+  candidate_resume_id?: string;
   difficulty?: "supportive" | "balanced" | "challenging" | "executive";
   duration_minutes: number;
   panel?: ProductPanelist[];
@@ -212,6 +230,7 @@ export type InterviewConfigPayload = {
 export type ProductSession = {
   id: string;
   interview_config_id: string;
+  candidate_resume_id?: string | null;
   status: string;
   config_snapshot: Record<string, unknown>;
   memory_state?: Record<string, unknown>;
@@ -350,6 +369,12 @@ export async function uploadJobDescription(file: File) {
   const form = new FormData();
   form.set("file", file);
   return productRequest<JobDescriptionResponse>("/job-descriptions", { method: "POST", body: form });
+}
+
+export async function uploadCandidateResume(file: File) {
+  const form = new FormData();
+  form.set("file", file);
+  return productRequest<CandidateResumeResponse>("/candidate-resumes", { method: "POST", body: form });
 }
 
 export async function refreshJobRecommendations(id: string) {
@@ -502,6 +527,7 @@ export type GuestSession = {
   coding: RolePackCoding | null;
   heartbeat_interval_seconds: number;
   candidate_rtc_uid?: number | null;
+  candidate_resume?: CandidateResumeResponse | null;
 };
 
 export type GuestInvitePreview = {
@@ -514,6 +540,7 @@ export type GuestInvitePreview = {
   panel: GuestSession["panel"];
   supports_coding: boolean;
   coding: RolePackCoding | null;
+  candidate_resume?: CandidateResumeResponse | null;
 };
 
 export type GuestView = {
@@ -533,12 +560,13 @@ export type GuestView = {
   host?: HostPresence | null;
   coding_task?: CodingTask | null;
   focus_guard?: FocusGuardSummary;
+  candidate_resume?: CandidateResumeResponse | null;
 };
 
 async function guestRequest<T>(path: string, init?: RequestInit) {
   const response = await fetch(`${productBase()}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...init?.headers },
   });
   const body = (await response.json().catch(() => null)) as T | { detail?: string } | null;
   const detail = body && typeof body === "object" && "detail" in body ? body.detail : undefined;
@@ -597,6 +625,15 @@ export function sendHostCodingTask(token: string, question: string, language: st
 export function joinSessionAsCandidate(token: string, displayName: string) {
   const search = new URLSearchParams({ display_name: displayName });
   return guestRequest<GuestSession>(`/guest/candidates/${encodeURIComponent(token)}?${search}`);
+}
+
+export function uploadCandidateInviteResume(token: string, file: File) {
+  const form = new FormData();
+  form.set("file", file);
+  return guestRequest<CandidateResumeResponse>(`/guest/candidates/${encodeURIComponent(token)}/resume`, {
+    method: "POST",
+    body: form,
+  });
 }
 
 export function renewCandidateSessionToken(token: string) {

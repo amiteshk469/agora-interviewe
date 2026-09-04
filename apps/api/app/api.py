@@ -24,6 +24,7 @@ from app.domain import (
 from app.models import (
     AgoraWebhookEvent,
     AssessmentReport,
+    CandidateResume,
     EvidenceItem,
     InterviewConfig,
     InterviewSession,
@@ -41,6 +42,8 @@ from app.schemas import (
     AgoraWebhookOut,
     AssessmentReportOut,
     CandidatePresenceOut,
+    CandidateResumeOut,
+    CandidateResumeView,
     CandidateState,
     CandidateTurnCreate,
     CodeBufferOut,
@@ -312,6 +315,106 @@ async def upload_job_description(
     return document
 
 
+def _resume_extracted(text: str) -> dict[str, Any]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    section_terms = {
+        "experience": "experience",
+        "education": "education",
+        "projects": "projects",
+        "skills": "skills",
+        "certifications": "certifications",
+        "summary": "summary",
+    }
+    sections = [
+        label
+        for term, label in section_terms.items()
+        if any(line.lower().rstrip(":") == term for line in lines)
+    ]
+    return {
+        "character_count": len(text),
+        "word_count": len(text.split()),
+        "headline": lines[0][:160] if lines else "",
+        "sections": sections,
+    }
+
+
+async def _store_candidate_resume(
+    *,
+    db: Db,
+    storage: StorageDep,
+    settings: SettingsDep,
+    owner_id: UUID,
+    file: UploadFile,
+) -> CandidateResume:
+    filename = Path(file.filename or "candidate-resume.txt").name
+    mime_type = file.content_type or "application/octet-stream"
+    if mime_type not in SUPPORTED_DOCUMENT_TYPES and Path(filename).suffix.lower() not in {
+        ".pdf",
+        ".docx",
+        ".txt",
+        ".md",
+    }:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Use PDF, DOCX, TXT, or Markdown")
+    data = await file.read(settings.jd_max_upload_bytes + 1)
+    if len(data) > settings.jd_max_upload_bytes:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Candidate CV is too large")
+    text = await extract_document(data, mime_type, filename)
+    resume_id = uuid4()
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "-", filename)[:160]
+    storage_path = f"{owner_id}/candidate-resumes/{resume_id}/{safe_name}"
+    await storage.upload(settings.supabase_documents_bucket, storage_path, data, mime_type)
+    resume = CandidateResume(
+        id=resume_id,
+        user_id=owner_id,
+        original_filename=filename,
+        storage_path=storage_path,
+        mime_type=mime_type,
+        size_bytes=len(data),
+        status="ready",
+        raw_text=text,
+        extracted=_resume_extracted(text),
+    )
+    db.add(resume)
+    await db.flush()
+    return resume
+
+
+@router.post(
+    "/candidate-resumes",
+    response_model=CandidateResumeOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Candidate resumes"],
+)
+async def upload_candidate_resume(
+    db: Db,
+    user: CurrentUser,
+    storage: StorageDep,
+    settings: SettingsDep,
+    file: Annotated[UploadFile, File()],
+) -> CandidateResume:
+    return await _store_candidate_resume(
+        db=db,
+        storage=storage,
+        settings=settings,
+        owner_id=user.id,
+        file=file,
+    )
+
+
+@router.get(
+    "/candidate-resumes",
+    response_model=list[CandidateResumeOut],
+    tags=["Candidate resumes"],
+)
+async def list_candidate_resumes(db: Db, user: CurrentUser) -> list[CandidateResume]:
+    result = await db.execute(
+        select(CandidateResume)
+        .where(CandidateResume.user_id == user.id)
+        .order_by(CandidateResume.created_at.desc())
+    )
+    return list(result.scalars())
+
+
 @router.get(
     "/job-descriptions",
     response_model=list[JobDescriptionOut],
@@ -446,6 +549,8 @@ async def create_interview_config(payload: InterviewConfigCreate, db: Db, user: 
     if payload.job_description_id is not None:
         document = await _owned(db, JobDescription, payload.job_description_id, user.id)
         recommendations = document.recommendations
+    if payload.candidate_resume_id is not None:
+        await _owned(db, CandidateResume, payload.candidate_resume_id, user.id)
     # The chosen role pack owns the panel and rubric. A JD adds context and focus;
     # it cannot silently turn a selected engineering loop into a PM loop.
     pack = get_role_pack(payload.profession)
@@ -470,6 +575,7 @@ async def create_interview_config(payload: InterviewConfigCreate, db: Db, user: 
     config = InterviewConfig(
         user_id=user.id,
         job_description_id=payload.job_description_id,
+        candidate_resume_id=payload.candidate_resume_id,
         title=payload.title,
         profession=payload.profession,
         interview_mode=payload.interview_mode,
@@ -532,6 +638,17 @@ async def create_session(payload: SessionCreate, db: Db, user: CurrentUser) -> I
             "extracted": document.extracted,
             "recommendations": document.recommendations,
         }
+    resume_context: dict[str, Any] | None = None
+    if config.candidate_resume_id is not None:
+        resume = await _owned(db, CandidateResume, config.candidate_resume_id, user.id)
+        resume_context = {
+            "id": str(resume.id),
+            "original_filename": resume.original_filename,
+            "mime_type": resume.mime_type,
+            "size_bytes": resume.size_bytes,
+            "status": resume.status,
+            "extracted": resume.extracted,
+        }
     snapshot = {
         "config_id": str(config.id),
         "title": config.title,
@@ -543,10 +660,13 @@ async def create_session(payload: SessionCreate, db: Db, user: CurrentUser) -> I
         "rubric": config.rubric,
         "enabled_tools": config.enabled_tools,
         "job_description": job_context,
+        "candidate_resume_id": str(config.candidate_resume_id) if config.candidate_resume_id else None,
+        "candidate_resume": resume_context,
     }
     session = InterviewSession(
         user_id=user.id,
         interview_config_id=config.id,
+        candidate_resume_id=config.candidate_resume_id,
         status="configured",
         config_snapshot=snapshot,
         memory_state=PanelState().model_dump(),
@@ -1561,6 +1681,49 @@ async def _session_for_invite(
     return session
 
 
+async def _session_candidate_resume(db: Db, session: InterviewSession) -> CandidateResume | None:
+    if session.candidate_resume_id is None:
+        return None
+    return cast(
+        CandidateResume | None,
+        await db.scalar(
+            select(CandidateResume).where(
+                CandidateResume.id == session.candidate_resume_id,
+                CandidateResume.user_id == session.user_id,
+            )
+        )
+    )
+
+
+@router.post(
+    "/guest/candidates/{token}/resume",
+    response_model=CandidateResumeOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Candidate guest"],
+)
+async def upload_candidate_invite_resume(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+    storage: StorageDep,
+    file: Annotated[UploadFile, File()],
+) -> CandidateResume:
+    """Attach a CV through a private candidate-seat invite before the room starts."""
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    if session.status in {"ended", "failed"}:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview has already finished")
+    resume = await _store_candidate_resume(
+        db=db,
+        storage=storage,
+        settings=settings,
+        owner_id=session.user_id,
+        file=file,
+    )
+    session.candidate_resume_id = resume.id
+    await db.commit()
+    return resume
+
+
 def _guest_panel(session: InterviewSession) -> list[GuestPanelist]:
     snapshot = session.config_snapshot or {}
     return [
@@ -1741,6 +1904,7 @@ async def preview_session_invite(
         Literal["candidate_practice", "interviewer_led"],
         raw_mode if raw_mode in {"candidate_practice", "interviewer_led"} else "candidate_practice",
     )
+    resume = await _session_candidate_resume(db, session)
     return GuestInvitePreviewOut(
         session_id=session.id,
         title=str(snapshot.get("title") or "RoundCraft interview"),
@@ -1751,6 +1915,7 @@ async def preview_session_invite(
         panel=_guest_panel(session),
         supports_coding=pack.supports_coding,
         coding=_coding_profile(session),
+        candidate_resume=CandidateResumeOut.model_validate(resume) if resume else None,
     )
 
 
@@ -1809,6 +1974,7 @@ async def join_session_as_host(
     await db.commit()
     snapshot = session.config_snapshot or {}
     pack = get_role_pack(_session_role_pack(session))
+    resume = await _session_candidate_resume(db, session)
     return GuestSessionOut(
         session_id=session.id,
         title=str(snapshot.get("title") or "RoundCraft interview"),
@@ -1822,6 +1988,7 @@ async def join_session_as_host(
         coding=_coding_profile(session),
         heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
         candidate_rtc_uid=session.user_uid,
+        candidate_resume=CandidateResumeOut.model_validate(resume) if resume else None,
     )
 
 
@@ -1969,6 +2136,7 @@ async def read_host_view(
     session = await _session_for_invite(db, token, settings, seat="interviewer")
     state = _read_panel_state(session)
     candidate_presence = _candidate_presence_out(state)
+    resume = await _session_candidate_resume(db, session)
     turns = list(
         (
             await db.execute(
@@ -2001,6 +2169,7 @@ async def read_host_view(
         "candidate": candidate_presence.model_dump(mode="json") if candidate_presence else None,
         "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
         "focus_guard": _focus_guard_out(state).model_dump(mode="json"),
+        "candidate_resume": CandidateResumeView.model_validate(resume).model_dump(mode="json") if resume else None,
     }
 
 
@@ -2128,6 +2297,7 @@ async def join_session_as_candidate(
     await db.commit()
     snapshot = session.config_snapshot or {}
     pack = get_role_pack(_session_role_pack(session))
+    resume = await _session_candidate_resume(db, session)
     return GuestSessionOut(
         session_id=session.id,
         title=str(snapshot.get("title") or "RoundCraft interview"),
@@ -2141,6 +2311,7 @@ async def join_session_as_candidate(
         coding=_coding_profile(session),
         heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
         candidate_rtc_uid=session.user_uid,
+        candidate_resume=CandidateResumeOut.model_validate(resume) if resume else None,
     )
 
 

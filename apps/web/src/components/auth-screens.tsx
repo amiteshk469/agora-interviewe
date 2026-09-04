@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, CheckCircle2, KeyRound, LoaderCircle, MailCheck } from "lucide-react";
+import { ArrowRight, BriefcaseBusiness, CheckCircle2, GraduationCap, KeyRound, LoaderCircle, MailCheck } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useAuth } from "@/components/auth-provider";
+import { useAuth, type AccountType } from "@/components/auth-provider";
 import { Brand } from "@/components/app-shell";
-import { PanelSequence } from "@/components/marketing";
+import { PanelSequence } from "@/components/panel-sequence";
 import { Alert, Button, Field, Input } from "@/components/ui";
 import { safeReturnPath } from "@/lib/supabase";
 
@@ -35,11 +35,16 @@ function AuthShell({ title, description, children }: { title: string; descriptio
   );
 }
 
-export function AuthScreen({ mode, nextPath }: { mode: "sign-in" | "sign-up"; nextPath?: string }) {
+export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { mode: "sign-in" | "sign-up"; nextPath?: string; initialAudience?: AccountType }) {
   const router = useRouter();
   const { status, signIn, signUp } = useAuth();
   const signup = mode === "sign-up";
-  const destination = safeReturnPath(nextPath);
+  const [audience, setAudience] = useState<AccountType>(initialAudience);
+  const destination = nextPath
+    ? safeReturnPath(nextPath)
+    : signup
+      ? audience === "recruiter" ? "/recruiter" : "/candidate"
+      : "/dashboard";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -58,7 +63,7 @@ export function AuthScreen({ mode, nextPath }: { mode: "sign-in" | "sign-up"; ne
     const password = String(form.get("password") || "");
     try {
       if (signup) {
-        const result = await signUp(String(form.get("name") || "").trim(), email, password, destination);
+        const result = await signUp(String(form.get("name") || "").trim(), email, password, audience, destination);
         if (result.confirmationRequired) {
           setMessage("Check your inbox to confirm your email. This page can stay open while you finish.");
         } else {
@@ -77,11 +82,12 @@ export function AuthScreen({ mode, nextPath }: { mode: "sign-in" | "sign-up"; ne
 
   return (
     <AuthShell
-      title={signup ? "Create your candidate workspace" : "Welcome back"}
-      description={signup ? "Save every panel, transcript, report, and replay drill in one private workspace." : "Continue your interview practice with the panels and evidence you already built."}
+      title={signup ? audience === "recruiter" ? "Create your recruiter workspace" : "Create your candidate workspace" : "Welcome back"}
+      description={signup ? audience === "recruiter" ? "Build interview rooms, invite candidates, and work beside an adaptive AI panel." : "Practice against role-matched panels and turn every transcript into focused evidence." : "Open the workspace where you prepare, interview, and review evidence."}
     >
       {status === "authenticated" ? <div className="mt-8 flex items-center gap-3 rounded-lg border bg-secondary p-4 text-sm" role="status" aria-live="polite" aria-busy="true"><LoaderCircle className="size-4 animate-spin text-primary" aria-hidden="true" />Opening your workspace…</div> : (
         <form className="mt-8 space-y-4" onSubmit={submit}>
+          {signup ? <fieldset><legend className="text-sm font-medium">How will you use RoundCraft?</legend><div className="mt-2 grid grid-cols-2 gap-2"><label><input type="radio" name="audience" value="candidate" checked={audience === "candidate"} onChange={() => setAudience("candidate")} className="peer sr-only" /><span className="flex min-h-24 flex-col rounded-lg border bg-background p-3 text-sm transition-colors peer-checked:border-primary peer-checked:bg-primary/5 peer-focus-visible:ring-2 peer-focus-visible:ring-ring"><GraduationCap className="size-4 text-primary" aria-hidden="true" /><span className="mt-3 font-medium">Candidate</span><span className="mt-1 text-xs text-muted-foreground">Practice and improve</span></span></label><label><input type="radio" name="audience" value="recruiter" checked={audience === "recruiter"} onChange={() => setAudience("recruiter")} className="peer sr-only" /><span className="flex min-h-24 flex-col rounded-lg border bg-background p-3 text-sm transition-colors peer-checked:border-primary peer-checked:bg-primary/5 peer-focus-visible:ring-2 peer-focus-visible:ring-ring"><BriefcaseBusiness className="size-4 text-primary" aria-hidden="true" /><span className="mt-3 font-medium">Recruiter</span><span className="mt-1 text-xs text-muted-foreground">Create and run interviews</span></span></label></div></fieldset> : null}
           {signup ? <Field label="Full name" required><Input name="name" autoComplete="name" required placeholder="e.g. Priya Sharma…" /></Field> : null}
           <Field label="Email" required><Input name="email" type="email" autoComplete="email" inputMode="email" spellCheck={false} required placeholder="e.g. you@example.com…" /></Field>
           <Field label="Password" hint={signup ? "8 characters minimum" : undefined} required>
@@ -93,7 +99,7 @@ export function AuthScreen({ mode, nextPath }: { mode: "sign-in" | "sign-up"; ne
           <Button type="submit" size="lg" loading={loading} className="mt-2 w-full">{signup ? "Create workspace" : "Sign in"}<ArrowRight aria-hidden="true" /></Button>
         </form>
       )}
-      <p className="mt-7 text-center text-sm text-muted-foreground">{signup ? "Already have an account?" : "New to RoundCraft?"} <Link className="font-medium text-foreground hover:underline" href={signup ? `/auth/sign-in?next=${encodeURIComponent(destination)}` : `/auth/sign-up?next=${encodeURIComponent(destination)}`}>{signup ? "Sign in" : "Create an account"}</Link></p>
+      <p className="mt-7 text-center text-sm text-muted-foreground">{signup ? "Already have an account?" : "New to RoundCraft?"} <Link className="font-medium text-foreground hover:underline" href={signup ? `/auth/sign-in?next=${encodeURIComponent(destination)}` : "/auth/sign-up"}>{signup ? "Sign in" : "Create an account"}</Link></p>
     </AuthShell>
   );
 }

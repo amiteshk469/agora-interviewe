@@ -26,6 +26,7 @@ from app.domain import (
     record_metric_claim,
 )
 from app.models import (
+    CandidateResume,
     EvidenceItem,
     InterviewConfig,
     InterviewSession,
@@ -343,12 +344,22 @@ async def _prepare_live_tool(
         for turn in (await db.execute(select(TranscriptTurn).where(TranscriptTurn.session_id == session.id))).scalars()
     ]
     config = await db.scalar(select(InterviewConfig).where(InterviewConfig.id == session.interview_config_id))
-    has_jd = False
+    has_reference_document = False
     if config and config.job_description_id:
         document = await db.scalar(select(JobDescription).where(JobDescription.id == config.job_description_id))
         if document:
-            has_jd = True
+            has_reference_document = True
             corpus.append({"source": f"job-description:{document.id}", "text": document.raw_text})
+    if session.candidate_resume_id is not None:
+        resume = await db.scalar(
+            select(CandidateResume).where(
+                CandidateResume.id == session.candidate_resume_id,
+                CandidateResume.user_id == session.user_id,
+            )
+        )
+        if resume is not None:
+            has_reference_document = True
+            corpus.append({"source": f"candidate-resume:{resume.id}", "text": resume.raw_text})
 
     plans: list[tuple[str, dict[str, Any]]] = []
     if "calculator" in enabled_tools:
@@ -367,7 +378,7 @@ async def _prepare_live_tool(
                 if claim.claimed_percent is not None:
                     arguments["claimed_relative_change_percent"] = str(claim.claimed_percent)
                 plans.append(("calculator", arguments))
-    if has_jd and "knowledge_search" in enabled_tools:
+    if has_reference_document and "knowledge_search" in enabled_tools:
         plans.append(("knowledge_search", {"query": candidate_text[-500:]}))
     if (
         settings.web_search_enabled
@@ -512,6 +523,16 @@ async def panel_chat_completions(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Upstream LLM is not configured")
 
     snapshot = session.config_snapshot
+    candidate_resume_text: str | None = None
+    if session.candidate_resume_id is not None:
+        resume = await db.scalar(
+            select(CandidateResume).where(
+                CandidateResume.id == session.candidate_resume_id,
+                CandidateResume.user_id == session.user_id,
+            )
+        )
+        if resume is not None:
+            candidate_resume_text = resume.raw_text[:30_000]
     state = PanelState.model_validate(session.memory_state)
     panel = [PanelistInput.model_validate(item) for item in snapshot["panel"]]
     candidate_turn: TranscriptTurn | None = None
@@ -765,6 +786,7 @@ async def panel_chat_completions(
                 )
             ),
             delimit_untrusted("panelist-knowledge", selected.knowledge_prompt) if selected.knowledge_prompt else None,
+            delimit_untrusted("candidate-resume", candidate_resume_text) if candidate_resume_text else None,
             delimit_untrusted("candidate-editor", code_context) if code_context else None,
             *tool_context,
             PLATFORM_INVARIANTS,

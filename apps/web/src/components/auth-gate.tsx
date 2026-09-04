@@ -36,7 +36,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     router.replace(`/auth/sign-in${target}`);
   }, [pathname, router, status]);
 
-  if (status === "loading") return <AuthState kind="loading" message="Validating your secure session and loading candidate data…" />;
+  if (status === "loading") return <AuthState kind="loading" message="Validating your secure session and loading workspace data…" />;
   if (status === "anonymous") return <AuthState kind="redirecting" message="Taking you to sign in…" />;
   if (status === "error") return <AuthState kind="error" message={error || "Authentication could not be verified."} onRetry={() => void refresh()} />;
   return children;

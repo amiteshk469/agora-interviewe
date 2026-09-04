@@ -176,7 +176,7 @@ export function InterviewerRoomScreen() {
   }, []);
 
   if (!room) {
-    return <main className="grid min-h-[100dvh] place-items-center bg-background p-6"><Card className="max-w-md"><CardHeader><CardTitle>Interviewer room not found</CardTitle><CardDescription>Return to setup and start an interviewer-led session from its lobby.</CardDescription></CardHeader><CardContent><Button onClick={() => router.push("/setup?mode=interviewer_led")}>Build an interview</Button></CardContent></Card></main>;
+    return <main className="grid min-h-[100dvh] place-items-center bg-background p-6"><Card className="max-w-md"><CardHeader><CardTitle>Interviewer room not found</CardTitle><CardDescription>Return to setup and start an interviewer-led session from its lobby.</CardDescription></CardHeader><CardContent><Button onClick={() => router.push("/recruiter/interviews/new")}>Build an interview</Button></CardContent></Card></main>;
   }
 
   return <HostConsole token={room.hostToken} autoJoinName={displayName || "Interviewer"} ownerSessionId={room.sessionId} candidateInvite={room.candidateInvite} />;

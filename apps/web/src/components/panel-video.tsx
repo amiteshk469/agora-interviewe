@@ -1,6 +1,7 @@
 "use client";
 
-import { AvatarVideoDisplay, type PlayableVideoTrack } from "agora-agent-uikit";
+import type { PlayableVideoTrack } from "agora-agent-uikit";
+import { LocalVideoTrack, RemoteVideoTrack, type ILocalVideoTrack, type IRemoteVideoTrack } from "agora-rtc-react";
 import { Brain, Ear, Hand, Mic, MicOff, MoveDown } from "lucide-react";
 import type { Panelist } from "@/data/demo";
 import { cn } from "@/lib/utils";
@@ -105,7 +106,25 @@ export function ParticipantTile({
         : `${person.name}, ${person.role}, ${stateCopy[state]}`}
     >
       {track ? (
-        <AvatarVideoDisplay videoTrack={track} state="connected" objectFit="cover" className={cn("absolute inset-0 size-full", isSelf && "[&_video]:-scale-x-100")} />
+        <div className="absolute inset-0 size-full bg-black">
+          {isSelf ? (
+            <LocalVideoTrack
+              track={track as unknown as ILocalVideoTrack}
+              play
+              videoPlayerConfig={{ fit: "cover", mirror: true }}
+              className="size-full"
+              aria-label="Your live camera preview"
+            />
+          ) : (
+            <RemoteVideoTrack
+              track={track as unknown as IRemoteVideoTrack}
+              play
+              videoPlayerConfig={{ fit: "cover", mirror: false }}
+              className="size-full"
+              aria-label={`${person.name}'s live video`}
+            />
+          )}
+        </div>
       ) : (
         <div className="absolute inset-0 grid place-items-center">
           <Avatar person={person} toneIndex={toneIndex} speaking={speaking} compact={compact} />
