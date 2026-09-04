@@ -25,6 +25,7 @@ import {
   Target,
   Trash2,
   UserRound,
+  UsersRound,
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -133,7 +134,7 @@ export function DashboardScreen() {
   }
 
   return (
-    <AppShell screen="dashboard" title={`Welcome back, ${displayName}`} description="Practice with purpose, then use the evidence to improve." actions={<Button asChild><Link href="/setup"><Plus aria-hidden="true" />New interview</Link></Button>}>
+    <AppShell screen="dashboard" title={`Welcome back, ${displayName}`} description="Practice as a candidate or run a structured AI-assisted interview." actions={<><Button asChild variant="secondary"><Link href="/setup?mode=candidate_practice"><UserRound aria-hidden="true" />Practice interview</Link></Button><Button asChild><Link href="/setup?mode=interviewer_led"><UsersRound aria-hidden="true" />Interview a candidate</Link></Button></>}>
       {unavailableReports ? <div className="mb-5"><Alert title="Some assessments are still unavailable"><span>{unavailableReports} completed {unavailableReports === 1 ? "session has" : "sessions have"} no readable report yet. Session history is still shown below.</span></Alert></div> : null}
 
       <div className="grid gap-4 md:grid-cols-3">

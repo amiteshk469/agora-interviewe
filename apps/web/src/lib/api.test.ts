@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInterviewConfig, createInterviewSession, createPromptTemplate, forkPromptTemplate, generateSessionReport, heartbeatHostSession, leaveHostSession, listPromptTemplates, readSessionCode, renewHostSessionToken, renewInterviewSessionToken, saveSessionCode, startInterviewSession, stopAgoraAgent } from "./api";
+import { createInterviewConfig, createInterviewSession, createPromptTemplate, createScopedSessionInvite, forkPromptTemplate, generateSessionReport, heartbeatCandidateSession, heartbeatHostSession, joinSessionAsCandidate, leaveCandidateSession, leaveHostSession, listPromptTemplates, persistCandidateGuestTurn, previewSessionInvite, readCandidateGuestCode, readSessionCode, renewCandidateSessionToken, renewHostSessionToken, renewInterviewSessionToken, saveCandidateGuestCode, saveSessionCode, startInterviewSession, stopAgoraAgent } from "./api";
 
 const storage = new Map<string, string>([["roundcraft.supabase_access_token", "test-jwt"]]);
 const localStorageMock = {
@@ -76,6 +76,56 @@ describe("configured interview flow", () => {
       `${productBase}/guest/sessions/invite.token/leave`,
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "POST", keepalive: true });
+  });
+
+  it("keeps the invited candidate on candidate-scoped room and editor endpoints", async () => {
+    const preview = { session_id: "session-1", title: "SDE loop", role_pack: "Software Engineering", interview_mode: "interviewer_led", status: "live", seat: "candidate", panel: [], supports_coding: true, coding: { languages: ["python"], default_language: "python", prompt: "Solve it" } };
+    const joined = { ...preview, display_name: "Riya", connection: { app_id: "app", token: "candidate-token", uid: "222", channel_name: "roundcraft", agent_uid: "111" }, heartbeat_interval_seconds: 10 };
+    const code = { language: "python", content: "answer = 42", line_count: 1, updated_at: "2026-09-04T00:00:00Z" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(joined), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(joined.connection), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connected: true, last_seen_at: "2026-09-04T00:00:00Z" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(code), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(code), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "turn-1" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(previewSessionInvite("candidate.token")).resolves.toMatchObject({ seat: "candidate" });
+    await expect(joinSessionAsCandidate("candidate.token", "Riya")).resolves.toMatchObject({ display_name: "Riya" });
+    await expect(renewCandidateSessionToken("candidate.token")).resolves.toMatchObject({ uid: "222" });
+    await heartbeatCandidateSession("candidate.token");
+    await readCandidateGuestCode("candidate.token");
+    await saveCandidateGuestCode("candidate.token", "python", "answer = 42");
+    await persistCandidateGuestTurn("candidate.token", { agora_turn_id: "agora-turn-1", content: "I used a map." });
+    await leaveCandidateSession("candidate.token");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `${productBase}/guest/invites/candidate.token`,
+      `${productBase}/guest/candidates/candidate.token?display_name=Riya`,
+      `${productBase}/guest/candidates/candidate.token/token`,
+      `${productBase}/guest/candidates/candidate.token/heartbeat`,
+      `${productBase}/guest/candidates/candidate.token/code`,
+      `${productBase}/guest/candidates/candidate.token/code`,
+      `${productBase}/guest/candidates/candidate.token/turns`,
+      `${productBase}/guest/candidates/candidate.token/leave`,
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ language: "python", content: "answer = 42" });
+    expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: "POST", keepalive: true });
+  });
+
+  it("mints candidate and interviewer links only through the owner API", async () => {
+    vi.stubGlobal("window", { localStorage: localStorageMock });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ token: "signed", join_path: "/join/signed", expires_at: "2026-09-04T06:00:00Z", seat: "candidate" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createScopedSessionInvite("session-1", "candidate");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${productBase}/sessions/session-1/invites`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ seat: "candidate" });
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer test-jwt");
   });
 
   it("regenerates a cached assessment only when explicitly requested", async () => {

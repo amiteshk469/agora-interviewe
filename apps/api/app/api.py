@@ -3,7 +3,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -40,13 +40,20 @@ from app.schemas import (
     INTERVIEWER_TOOL_NAMES,
     AgoraWebhookOut,
     AssessmentReportOut,
+    CandidatePresenceOut,
+    CandidateState,
+    CandidateTurnCreate,
     CodeBufferOut,
     CodeBufferState,
     CodeBufferUpdate,
+    CodingTaskCreate,
+    CodingTaskOut,
+    CodingTaskState,
     ConnectionConfig,
     EvidenceCreate,
     EvidenceOut,
     GuestHeartbeatOut,
+    GuestInvitePreviewOut,
     GuestPanelist,
     GuestSessionOut,
     HostMessageCreate,
@@ -73,9 +80,11 @@ from app.schemas import (
     PromptTemplateKnowledge,
     PromptTemplateOut,
     ReplayDrillOut,
+    RolePackCoding,
     RolePackOut,
     RubricCriterion,
     SessionCreate,
+    SessionInviteCreate,
     SessionInviteOut,
     SessionOut,
     SessionStartOut,
@@ -459,6 +468,7 @@ async def create_interview_config(payload: InterviewConfigCreate, db: Db, user: 
         job_description_id=payload.job_description_id,
         title=payload.title,
         profession=payload.profession,
+        interview_mode=payload.interview_mode,
         difficulty=(
             payload.difficulty.value
             if payload.difficulty is not None
@@ -522,6 +532,7 @@ async def create_session(payload: SessionCreate, db: Db, user: CurrentUser) -> I
         "config_id": str(config.id),
         "title": config.title,
         "profession": config.profession,
+        "interview_mode": config.interview_mode,
         "difficulty": config.difficulty,
         "duration_minutes": config.duration_minutes,
         "panel": config.panel,
@@ -1506,15 +1517,74 @@ def _resolved_invite_secret(settings: SettingsDep) -> str:
     return invite_secret(settings.session_invite_secret, settings.agora_llm_bearer_secret)
 
 
-async def _session_for_invite(db: Db, token: str, settings: SettingsDep) -> InterviewSession:
+async def _session_for_invite(
+    db: Db,
+    token: str,
+    settings: SettingsDep,
+    *,
+    seat: str | None = None,
+) -> InterviewSession:
     try:
         claims = read_invite(token, _resolved_invite_secret(settings))
     except InviteError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+    if seat is not None and claims.seat != seat:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"This invite is for the {claims.seat} seat")
     session = await db.get(InterviewSession, claims.session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Resource not found")
     return session
+
+
+def _guest_panel(session: InterviewSession) -> list[GuestPanelist]:
+    snapshot = session.config_snapshot or {}
+    return [
+        GuestPanelist(
+            id=str(item.get("id", "")),
+            display_name=str(item.get("display_name", "")),
+            role=str(item.get("role", "")),
+            avatar_image=str(item.get("avatar_image")) if item.get("avatar_image") else None,
+        )
+        for item in snapshot.get("panel", [])
+    ]
+
+
+def _coding_profile(session: InterviewSession) -> RolePackCoding | None:
+    pack = get_role_pack(_session_role_pack(session))
+    return RolePackCoding.model_validate(pack.coding.as_dict()) if pack.coding else None
+
+
+async def _candidate_connection(
+    db: Db,
+    session: InterviewSession,
+    agora: AgoraDep,
+) -> ConnectionConfig:
+    if session.channel_name is None or session.user_uid is None or session.agent_uid is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Live session connection is incomplete")
+    connection = agora.generate_connection(
+        channel=session.channel_name,
+        uid=session.user_uid,
+        agent_uid=session.agent_uid,
+    )
+    participants = list(
+        (
+            await db.execute(
+                select(PanelParticipant)
+                .where(PanelParticipant.session_id == session.id)
+                .order_by(PanelParticipant.created_at)
+            )
+        ).scalars()
+    )
+    connection["panelists"] = [
+        {
+            "panelist_id": item.panelist_id,
+            "agent_uid": str(item.agent_uid),
+            "avatar_uid": str(item.avatar_uid),
+            "video_mode": item.video_mode,
+        }
+        for item in participants
+    ]
+    return ConnectionConfig.model_validate(connection)
 
 
 def _host_messages_out(state: PanelState) -> list[HostMessageOut]:
@@ -1576,6 +1646,81 @@ async def create_session_invite(
         token=token,
         join_path=f"/join/{token}",
         expires_at=datetime.fromtimestamp(expires_at, tz=UTC),
+        seat="interviewer",
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/invites",
+    response_model=SessionInviteOut,
+    tags=["Interview sessions"],
+)
+async def create_scoped_session_invite(
+    session_id: UUID,
+    payload: SessionInviteCreate,
+    db: Db,
+    user: CurrentUser,
+    settings: SettingsDep,
+) -> SessionInviteOut:
+    """Mint a candidate or interviewer seat without exposing the Agora project secret."""
+    session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
+    if session.status in {"ended", "failed"}:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This session has already finished")
+    mode = str((session.config_snapshot or {}).get("interview_mode") or "candidate_practice")
+    if payload.seat == "candidate" and mode != "interviewer_led":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Candidate invites are available for interviewer-led sessions",
+        )
+    token, expires_at = mint_invite(
+        session.id,
+        _resolved_invite_secret(settings),
+        ttl_seconds=DEFAULT_INVITE_TTL_SECONDS,
+        seat=payload.seat,
+    )
+    return SessionInviteOut(
+        token=token,
+        join_path=f"/join/{token}",
+        expires_at=datetime.fromtimestamp(expires_at, tz=UTC),
+        seat=payload.seat,
+    )
+
+
+@router.get(
+    "/guest/invites/{token}",
+    response_model=GuestInvitePreviewOut,
+    tags=["Interview guests"],
+)
+async def preview_session_invite(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+) -> GuestInvitePreviewOut:
+    """Return safe lobby metadata before a room starts, just like a meeting prejoin."""
+    try:
+        claims = read_invite(token, _resolved_invite_secret(settings))
+    except InviteError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+    session = await db.get(InterviewSession, claims.session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resource not found")
+    snapshot = session.config_snapshot or {}
+    pack = get_role_pack(_session_role_pack(session))
+    raw_mode = str(snapshot.get("interview_mode") or "candidate_practice")
+    interview_mode = cast(
+        Literal["candidate_practice", "interviewer_led"],
+        raw_mode if raw_mode in {"candidate_practice", "interviewer_led"} else "candidate_practice",
+    )
+    return GuestInvitePreviewOut(
+        session_id=session.id,
+        title=str(snapshot.get("title") or "RoundCraft interview"),
+        role_pack=pack.label,
+        interview_mode=interview_mode,
+        status=session.status,
+        seat=claims.seat,
+        panel=_guest_panel(session),
+        supports_coding=pack.supports_coding,
+        coding=_coding_profile(session),
     )
 
 
@@ -1607,7 +1752,7 @@ async def join_session_as_host(
     The guest joins the same Agora channel on a fresh uid, so they hear the panel
     and the candidate live without displacing either.
     """
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
@@ -1638,17 +1783,12 @@ async def join_session_as_host(
         title=str(snapshot.get("title") or "RoundCraft interview"),
         role_pack=pack.label,
         status=session.status,
+        seat="interviewer",
         display_name=name,
         connection=ConnectionConfig.model_validate(connection),
-        panel=[
-            GuestPanelist(
-                id=str(item.get("id", "")),
-                display_name=str(item.get("display_name", "")),
-                role=str(item.get("role", "")),
-            )
-            for item in snapshot.get("panel", [])
-        ],
+        panel=_guest_panel(session),
         supports_coding=pack.supports_coding,
+        coding=_coding_profile(session),
         heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
     )
 
@@ -1665,7 +1805,7 @@ async def renew_host_token(
     agora: AgoraDep,
 ) -> ConnectionConfig:
     """Renew the invited guest's RTC token without changing their Agora uid."""
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
@@ -1697,7 +1837,7 @@ async def heartbeat_host(
     settings: SettingsDep,
 ) -> GuestHeartbeatOut:
     """Keep candidate-visible guest presence alive while the join page is connected."""
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
@@ -1724,7 +1864,7 @@ async def heartbeat_host(
 )
 async def leave_host(token: str, db: Db, settings: SettingsDep) -> Response:
     """Remove the invited guest from candidate-visible presence immediately."""
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     state = _read_panel_state(session)
     if state.host is not None:
@@ -1749,7 +1889,7 @@ async def post_host_message(
     settings: SettingsDep,
 ) -> HostMessageOut:
     """Send a note to the candidate, or hand the panel a question to ask next."""
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     if session.status != "live":
         raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
@@ -1794,8 +1934,9 @@ async def read_host_view(
     after_sequence: int = 0,
 ) -> dict[str, Any]:
     """The guest read-only window: transcript tail, editor, and their own notes."""
-    session = await _session_for_invite(db, token, settings)
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
     state = _read_panel_state(session)
+    candidate_presence = _candidate_presence_out(state)
     turns = list(
         (
             await db.execute(
@@ -1825,7 +1966,324 @@ async def read_host_view(
         "code": _code_buffer_out(state).model_dump(mode="json"),
         "messages": [item.model_dump(mode="json") for item in _host_messages_out(state)],
         "pending_question": state.host.pending_question if state.host else None,
+        "candidate": candidate_presence.model_dump(mode="json") if candidate_presence else None,
+        "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
     }
+
+
+@router.post(
+    "/guest/sessions/{token}/coding-task",
+    response_model=CodingTaskOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Human interviewer"],
+)
+async def post_coding_task(
+    token: str,
+    payload: CodingTaskCreate,
+    db: Db,
+    settings: SettingsDep,
+) -> CodingTaskOut:
+    """Open or replace the candidate's shared coding task from the interviewer console."""
+    session = await _session_for_invite(db, token, settings, seat="interviewer")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    pack = get_role_pack(_session_role_pack(session))
+    if not pack.supports_coding or pack.coding is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview track has no coding round")
+    if payload.language not in pack.coding.languages:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{pack.label} interviews do not use {payload.language}",
+        )
+    state = _read_panel_state(session)
+    host = state.host
+    if not _host_is_active(host) or host is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before opening a coding task")
+    task = CodingTaskState(
+        id=f"code-task-{uuid4().hex[:10]}",
+        question=payload.question,
+        language=payload.language,
+        hints=payload.hints,
+        author=host.display_name or "Interviewer",
+        created_at=datetime.now(UTC),
+    )
+    state.coding_task = task
+    if state.code_buffer is None:
+        state.code_buffer = CodeBufferState(language=payload.language, content="")
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return CodingTaskOut.model_validate(task)
+
+
+def _candidate_is_active(candidate: CandidateState | None, *, now: datetime | None = None) -> bool:
+    if candidate is None or candidate.joined_at is None or candidate.left_at is not None:
+        return False
+    last_seen = candidate.last_seen_at or candidate.joined_at
+    return last_seen >= (now or datetime.now(UTC)) - timedelta(seconds=HOST_PRESENCE_TIMEOUT_SECONDS)
+
+
+def _candidate_presence_out(
+    state: PanelState,
+    *,
+    now: datetime | None = None,
+) -> CandidatePresenceOut | None:
+    candidate = state.candidate
+    if not _candidate_is_active(candidate, now=now) or candidate is None or candidate.joined_at is None:
+        return None
+    return CandidatePresenceOut(
+        display_name=candidate.display_name,
+        joined_at=candidate.joined_at,
+        last_seen_at=candidate.last_seen_at or candidate.joined_at,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/candidate",
+    response_model=CandidatePresenceOut | None,
+    tags=["Interview sessions"],
+)
+async def read_candidate_presence(
+    session_id: UUID,
+    db: Db,
+    user: CurrentUser,
+) -> CandidatePresenceOut | None:
+    session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
+    return _candidate_presence_out(_read_panel_state(session))
+
+
+@router.get(
+    "/guest/candidates/{token}",
+    response_model=GuestSessionOut,
+    tags=["Candidate guest"],
+)
+async def join_session_as_candidate(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+    agora: AgoraDep,
+    display_name: str = "Candidate",
+) -> GuestSessionOut:
+    """Exchange a candidate invite for the exact Agora uid targeted by ConvoAI."""
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "The interviewer has not started this room yet")
+    connection = await _candidate_connection(db, session, agora)
+    name = (display_name or "Candidate").strip()[:60] or "Candidate"
+    state = _read_panel_state(session)
+    now = datetime.now(UTC)
+    candidate = state.candidate or CandidateState()
+    if not _candidate_is_active(candidate, now=now):
+        candidate.joined_at = now
+    candidate.display_name = name
+    candidate.last_seen_at = now
+    candidate.left_at = None
+    candidate.rtc_uid = session.user_uid
+    state.candidate = candidate
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    snapshot = session.config_snapshot or {}
+    pack = get_role_pack(_session_role_pack(session))
+    return GuestSessionOut(
+        session_id=session.id,
+        title=str(snapshot.get("title") or "RoundCraft interview"),
+        role_pack=pack.label,
+        status=session.status,
+        seat="candidate",
+        display_name=name,
+        connection=connection,
+        panel=_guest_panel(session),
+        supports_coding=pack.supports_coding,
+        coding=_coding_profile(session),
+        heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
+    )
+
+
+@router.post(
+    "/guest/candidates/{token}/token",
+    response_model=ConnectionConfig,
+    tags=["Candidate guest"],
+)
+async def renew_candidate_token(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+    agora: AgoraDep,
+) -> ConnectionConfig:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    state = _read_panel_state(session)
+    if not _candidate_is_active(state.candidate):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before renewing its token")
+    if state.candidate is not None:
+        state.candidate.last_seen_at = datetime.now(UTC)
+        session.memory_state = state.model_dump(mode="json")
+        await db.commit()
+    return await _candidate_connection(db, session, agora)
+
+
+@router.post(
+    "/guest/candidates/{token}/heartbeat",
+    response_model=GuestHeartbeatOut,
+    tags=["Candidate guest"],
+)
+async def heartbeat_candidate(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+) -> GuestHeartbeatOut:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    state = _read_panel_state(session)
+    if state.candidate is None or state.candidate.joined_at is None or state.candidate.left_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before sending a heartbeat")
+    now = datetime.now(UTC)
+    state.candidate.last_seen_at = now
+    state.candidate.left_at = None
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return GuestHeartbeatOut(last_seen_at=now)
+
+
+@router.post(
+    "/guest/candidates/{token}/leave",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Candidate guest"],
+)
+async def leave_candidate(token: str, db: Db, settings: SettingsDep) -> Response:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    state = _read_panel_state(session)
+    if state.candidate is not None:
+        now = datetime.now(UTC)
+        state.candidate.last_seen_at = now
+        state.candidate.left_at = now
+        session.memory_state = state.model_dump(mode="json")
+        await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/guest/candidates/{token}/state",
+    response_model=dict[str, Any],
+    tags=["Candidate guest"],
+)
+async def read_candidate_view(
+    token: str,
+    db: Db,
+    settings: SettingsDep,
+    after_sequence: int = 0,
+) -> dict[str, Any]:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    state = _read_panel_state(session)
+    turns = list(
+        (
+            await db.execute(
+                select(TranscriptTurn)
+                .where(
+                    TranscriptTurn.session_id == session.id,
+                    TranscriptTurn.sequence > after_sequence,
+                )
+                .order_by(TranscriptTurn.sequence)
+                .limit(200)
+            )
+        ).scalars()
+    )
+    return {
+        "status": session.status,
+        "turns": [
+            {
+                "id": str(turn.id),
+                "sequence": turn.sequence,
+                "speaker_type": turn.speaker_type,
+                "speaker_id": turn.speaker_id,
+                "content": turn.content,
+                "created_at": turn.created_at.isoformat(),
+            }
+            for turn in turns
+        ],
+        "messages": [item.model_dump(mode="json") for item in _host_messages_out(state)],
+        "pending_question": state.host.pending_question if state.host else None,
+        "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
+    }
+
+
+@router.get(
+    "/guest/candidates/{token}/code",
+    response_model=CodeBufferOut,
+    tags=["Candidate guest"],
+)
+async def read_candidate_code(token: str, db: Db, settings: SettingsDep) -> CodeBufferOut:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    return _code_buffer_out(_read_panel_state(session))
+
+
+@router.post(
+    "/guest/candidates/{token}/code",
+    response_model=CodeBufferOut,
+    tags=["Candidate guest"],
+)
+async def write_candidate_code(
+    token: str,
+    payload: CodeBufferUpdate,
+    db: Db,
+    settings: SettingsDep,
+) -> CodeBufferOut:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Session is no longer accepting code")
+    pack = get_role_pack(_session_role_pack(session))
+    if not pack.supports_coding or pack.coding is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview track has no coding round")
+    if payload.language not in pack.coding.languages:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{pack.label} interviews do not use {payload.language}",
+        )
+    state = _read_panel_state(session)
+    state.code_buffer = CodeBufferState(
+        language=payload.language,
+        content=payload.content,
+        updated_at=datetime.now(UTC),
+    )
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return _code_buffer_out(state)
+
+
+@router.post(
+    "/guest/candidates/{token}/turns",
+    response_model=TranscriptTurnOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Candidate guest"],
+)
+async def append_candidate_turn(
+    token: str,
+    payload: CandidateTurnCreate,
+    db: Db,
+    settings: SettingsDep,
+) -> TranscriptTurn:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    turn = await persist_candidate_turn(
+        db,
+        session,
+        payload.content,
+        source="candidate-invite",
+        agora_turn_id=payload.agora_turn_id,
+    )
+    turn.interrupted = payload.interrupted
+    await persist_inferred_evidence(db, session, turn)
+    await db.commit()
+    return turn
 
 
 @router.post("/webhooks/agora", response_model=AgoraWebhookOut, tags=["Webhooks"])

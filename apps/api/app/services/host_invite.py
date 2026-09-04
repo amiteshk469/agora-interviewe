@@ -1,4 +1,4 @@
-"""Signed invite tokens that let one human interviewer into a live session.
+"""Signed, seat-scoped invite tokens for a RoundCraft interview room.
 
 The guest never authenticates with Supabase, so the token *is* the credential.
 It is therefore scoped as narrowly as the feature allows: it names exactly one
@@ -12,7 +12,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 # An invite outlives a long interview but not a working day.
@@ -52,6 +52,7 @@ def derive_key(secret: str) -> bytes:
 class InviteClaims:
     session_id: UUID
     expires_at: int
+    seat: Literal["interviewer", "candidate"] = "interviewer"
 
 
 def mint_invite(
@@ -59,12 +60,13 @@ def mint_invite(
     secret: str,
     *,
     ttl_seconds: int = DEFAULT_INVITE_TTL_SECONDS,
+    seat: Literal["interviewer", "candidate"] = "interviewer",
     now: float | None = None,
 ) -> tuple[str, int]:
     """Return the token and the epoch second it stops being valid."""
     issued = int(now if now is not None else time.time())
     expires_at = issued + max(60, ttl_seconds)
-    payload: dict[str, Any] = {"sid": str(session_id), "exp": expires_at}
+    payload: dict[str, Any] = {"sid": str(session_id), "exp": expires_at, "seat": seat}
     body = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature = hmac.new(derive_key(secret), body.encode("ascii"), hashlib.sha256).digest()
     return f"{body}.{_b64encode(signature)}", expires_at
@@ -83,11 +85,15 @@ def read_invite(token: str, secret: str, *, now: float | None = None) -> InviteC
         payload = json.loads(_b64decode(body))
         session_id = UUID(str(payload["sid"]))
         expires_at = int(payload["exp"])
+        # Tokens minted before two-sided rooms existed were interviewer links.
+        seat = str(payload.get("seat") or "interviewer")
+        if seat not in {"interviewer", "candidate"}:
+            raise ValueError("unknown invite seat")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise InviteError("Invite token is malformed") from exc
     if expires_at <= int(now if now is not None else time.time()):
         raise InviteError("Invite link has expired")
-    return InviteClaims(session_id=session_id, expires_at=expires_at)
+    return InviteClaims(session_id=session_id, expires_at=expires_at, seat=seat)  # type: ignore[arg-type]
 
 
 def invite_secret(configured: str, fallback: str) -> str:
