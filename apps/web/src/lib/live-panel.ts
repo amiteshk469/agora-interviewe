@@ -13,6 +13,28 @@ export function avatarUidForPanelist(panelist: Panelist, participants: AgoraPane
   return participants.find((participant) => participant.panelist_id === panelist.id)?.avatar_uid;
 }
 
+/** Resolve an Agora uid only when it points to one logical panelist. */
+export function panelistIdForAgoraUid(
+  uid: string | number | null | undefined,
+  participants: AgoraPanelParticipant[] = [],
+): string | null {
+  if (uid === null || uid === undefined) return null;
+  const value = String(uid);
+  const matches = new Set(
+    participants
+      .filter((participant) => String(participant.agent_uid) === value || String(participant.avatar_uid) === value)
+      .map((participant) => participant.panelist_id),
+  );
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+/** Merge polling results without duplicating records returned around a cursor boundary. */
+export function mergeRecordsById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) merged.set(item.id, item);
+  return [...merged.values()];
+}
+
 export function demoSpeakerIndex(step: number, panelSize: number) {
   if (panelSize <= 1) return 0;
   const sequence = [0, Math.min(2, panelSize - 1), 0, panelSize - 1, Math.min(1, panelSize - 1)];

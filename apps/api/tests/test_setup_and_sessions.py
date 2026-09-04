@@ -216,6 +216,38 @@ async def test_prompt_templates_are_versioned_by_fork(
     assert (await client.patch(f"/v1/prompt-templates/{source['id']}", headers=auth_headers)).status_code == 404
 
 
+async def test_prompt_template_knowledge_accepts_a_supported_role_pack(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    created = await client.post(
+        "/v1/prompt-templates",
+        headers=auth_headers,
+        json={
+            "slug": "security-incident-reasoning",
+            "name": "Security incident reasoning",
+            "role": "Security Interviewer",
+            "prompt": "Run an adaptive security incident interview and require defensible evidence for each decision.",
+            "knowledge": {"role_pack_id": "cybersecurity"},
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["knowledge"]["role_pack_id"] == "cybersecurity"
+
+    invalid = await client.post(
+        "/v1/prompt-templates",
+        headers=auth_headers,
+        json={
+            "slug": "unknown-role-pack",
+            "name": "Unknown role pack",
+            "role": "Interviewer",
+            "prompt": "Run an adaptive interview and require defensible evidence for every important decision.",
+            "knowledge": {"role_pack_id": "not-a-supported-pack"},
+        },
+    )
+    assert invalid.status_code == 422
+
+
 async def test_builtin_prompt_tool_policy_is_listed_forked_and_applied(
     client: AsyncClient, auth_headers: dict[str, str]
 ) -> None:

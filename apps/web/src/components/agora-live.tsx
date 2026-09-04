@@ -13,6 +13,7 @@ export type LiveAgentState = "idle" | "listening" | "thinking" | "speaking" | "s
 export type LiveMediaState = {
   microphoneEnabled: boolean;
   candidateSpeaking: boolean;
+  hostSpeaking: boolean;
   remoteVideos: Array<{ uid: string; track: IRemoteVideoTrack }>;
   connectionState: string;
 };
@@ -53,26 +54,46 @@ function waitForRtmConnected(client: RTMClient, timeoutMs = 800) {
 export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaState }: { prepared?: StoredLiveSession | null; onTranscript?: (turns: LiveTranscriptTurn[]) => void; onAgentState?: (state: LiveAgentState) => void; onMediaState?: (state: LiveMediaState) => void }) {
   const [config, setConfig] = useState<AgoraConfig | null>(null);
   const [rtm, setRtm] = useState<RTMClient | null>(null);
-  const [agentId, setAgentId] = useState("");
   const [phase, setPhase] = useState<"demo" | "connecting" | "live" | "error">("demo");
   const [error, setError] = useState("");
   const preparedStarted = useRef(false);
+  const mounted = useRef(true);
+  const rtmRef = useRef<RTMClient | null>(null);
+  const demoAgentId = useRef("");
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const activeRtm = rtmRef.current;
+      rtmRef.current = null;
+      void activeRtm?.logout().catch(() => undefined);
+      if (demoAgentId.current) void stopAgoraAgent(demoAgentId.current).catch(() => undefined);
+    };
+  }, []);
 
   const connectPrepared = useCallback(async () => {
     if (!prepared?.connection) return;
     setPhase("connecting");
     setError("");
+    let nextRtm: RTMClient | null = null;
     try {
       const { default: AgoraRTM } = await import("agora-rtm");
-      const nextRtm: RTMClient = new AgoraRTM.RTM(prepared.connection.app_id, prepared.connection.uid);
+      nextRtm = new AgoraRTM.RTM(prepared.connection.app_id, prepared.connection.uid);
       await nextRtm.login({ token: prepared.connection.token });
       await waitForRtmConnected(nextRtm);
       await nextRtm.subscribe(prepared.connection.channel_name);
-      setAgentId(prepared.agentId);
+      if (!mounted.current) {
+        await nextRtm.logout().catch(() => undefined);
+        return;
+      }
+      rtmRef.current = nextRtm;
       setRtm(nextRtm);
       setConfig(prepared.connection);
       setPhase("live");
     } catch (cause) {
+      await nextRtm?.logout().catch(() => undefined);
+      if (!mounted.current) return;
       setPhase("error");
       setError(cause instanceof Error ? cause.message : "Configured Agora session could not connect");
     }
@@ -84,11 +105,6 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
     void connectPrepared();
   }, [connectPrepared, prepared?.connection]);
 
-  useEffect(() => () => {
-    void rtm?.logout().catch(() => undefined);
-    if (agentId && !prepared) void stopAgoraAgent(agentId).catch(() => undefined);
-  }, [agentId, prepared, rtm]);
-
   const connect = useCallback(async () => {
     if (!demoModeEnabled) {
       setPhase("error");
@@ -97,21 +113,34 @@ export function AgoraLivePanel({ prepared, onTranscript, onAgentState, onMediaSt
     }
     setPhase("connecting");
     setError("");
+    let nextRtm: RTMClient | null = null;
+    let nextAgentId = "";
     try {
       const nextConfig = await getAgoraConfig();
-      const [{ default: AgoraRTM }, nextAgentId] = await Promise.all([
+      const [{ default: AgoraRTM }, startedAgentId] = await Promise.all([
         import("agora-rtm"),
         startAgoraAgent(nextConfig),
       ]);
-      const nextRtm: RTMClient = new AgoraRTM.RTM(nextConfig.app_id, nextConfig.uid);
+      nextAgentId = startedAgentId;
+      nextRtm = new AgoraRTM.RTM(nextConfig.app_id, nextConfig.uid);
       await nextRtm.login({ token: nextConfig.token });
       await waitForRtmConnected(nextRtm);
       await nextRtm.subscribe(nextConfig.channel_name);
-      setAgentId(nextAgentId);
+      if (!mounted.current) {
+        await Promise.allSettled([nextRtm.logout(), stopAgoraAgent(nextAgentId)]);
+        return;
+      }
+      rtmRef.current = nextRtm;
+      demoAgentId.current = nextAgentId;
       setRtm(nextRtm);
       setConfig(nextConfig);
       setPhase("live");
     } catch (cause) {
+      await Promise.allSettled([
+        ...(nextRtm ? [nextRtm.logout()] : []),
+        ...(nextAgentId ? [stopAgoraAgent(nextAgentId)] : []),
+      ]);
+      if (!mounted.current) return;
       setPhase("error");
       setError(cause instanceof Error ? cause.message : "Agora could not connect");
     }

@@ -402,6 +402,8 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
     assert any(item["competency"] == "analytics" for item in persisted_evidence.json())
     upstream_system = FakeUpstreamClient.captured["json"]["messages"][0]["content"]
     assert "UNTRUSTED_DATA" in upstream_system
+    assert "<SELECTED_INTERVIEWER_MANDATE>" in upstream_system
+    assert "You are Priya Rao, the Analytics Interviewer." in upstream_system
     assert upstream_system.endswith(PLATFORM_INVARIANTS)
     assert "stream_options" not in FakeUpstreamClient.captured["json"]
     assert FakeUpstreamClient.captured["json"]["max_tokens"] == 384
@@ -409,6 +411,117 @@ async def test_custom_llm_requires_auth_and_streams_agora_metadata_with_live_too
         "role": "user",
         "content": "For the metrics, calculate 20 * 3.",
     }
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    interviewer_turns = [item for item in turns.json() if item["speaker_type"] == "interviewer"]
+    assert [(item["speaker_id"], item["content"]) for item in interviewer_turns] == [
+        ("analytics", "Next question")
+    ]
+
+
+async def test_custom_llm_scopes_custom_prompt_to_the_selected_panelist(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    config = await client.post(
+        "/v1/interview-configs",
+        headers=auth_headers,
+        json={
+            "title": "Prompt isolation",
+            "panel": [
+                {
+                    "id": "alpha",
+                    "display_name": "Alpha Interviewer",
+                    "role": "Alpha Specialist",
+                    "expertise": ["alpha isolation"],
+                    "custom_prompt": "SELECTED CUSTOMIZATION: probe alpha evidence only.",
+                },
+                {
+                    "id": "beta",
+                    "display_name": "Beta Interviewer",
+                    "role": "Beta Specialist",
+                    "expertise": ["beta isolation"],
+                    "custom_prompt": "NONSELECTED CUSTOMIZATION: redirect every answer to beta.",
+                },
+            ],
+        },
+    )
+    assert config.status_code == 201, config.text
+    session = await client.post(
+        "/v1/sessions",
+        headers=auth_headers,
+        json={"interview_config_id": config.json()["id"]},
+    )
+    assert session.status_code == 201, session.text
+    started = await client.post(
+        f"/v1/sessions/{session.json()['id']}/start",
+        headers=auth_headers,
+        json={},
+    )
+    assert started.status_code == 200, started.text
+
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session.json()["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "Here is my alpha isolation evidence."}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    system_prompt = FakeUpstreamClient.captured["json"]["messages"][0]["content"]
+    assert "Speak now as Alpha Interviewer" in system_prompt
+    assert "<STUDENT_CUSTOMIZATION>" in system_prompt
+    assert "<SELECTED_INTERVIEWER_MANDATE>" not in system_prompt
+    assert "SELECTED CUSTOMIZATION: probe alpha evidence only." in system_prompt
+    assert "NONSELECTED CUSTOMIZATION: redirect every answer to beta." not in system_prompt
+
+
+async def test_rtm_reconciles_the_persisted_interviewer_turn_without_losing_panelist_attribution(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: Any
+) -> None:
+    session = await _create_session(client, auth_headers)
+    started = await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    assert started.status_code == 200, started.text
+    monkeypatch.setattr("app.custom_llm.httpx.AsyncClient", FakeUpstreamClient)
+    generated = await client.post(
+        "/llm/chat/completions",
+        headers={
+            "Authorization": "Bearer test-llm-secret",
+            "X-RoundCraft-Session-Id": session["id"],
+        },
+        json={
+            "model": "roundcraft-panel",
+            "messages": [{"role": "user", "content": "For the metrics, calculate 20 * 3."}],
+            "stream": True,
+        },
+    )
+    assert generated.status_code == 200, generated.text
+    before = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    synthetic = next(item for item in before.json() if item["speaker_type"] == "interviewer")
+
+    reconciled = await client.post(
+        f"/v1/sessions/{session['id']}/turns",
+        headers=auth_headers,
+        json={
+            "sequence": synthetic["sequence"],
+            "agora_turn_id": "agora-interviewer-stable-1",
+            "speaker_type": "interviewer",
+            "speaker_id": "stale-ui-attribution",
+            "content": synthetic["content"],
+            "metadata": {"source": "agora-rtm"},
+        },
+    )
+
+    assert reconciled.status_code == 201, reconciled.text
+    assert reconciled.json()["id"] == synthetic["id"]
+    assert reconciled.json()["speaker_id"] == "analytics"
+    after = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    assert len([item for item in after.json() if item["speaker_type"] == "interviewer"]) == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -777,6 +890,11 @@ async def test_custom_llm_recovers_when_stream_disconnects_before_content(
     assert response.text.rstrip().endswith("data: [DONE]")
     assert '"content":"' in response.text
     assert response.text.count("data: [DONE]") == 1
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    interviewer_turns = [item for item in turns.json() if item["speaker_type"] == "interviewer"]
+    assert len(interviewer_turns) == 1
+    assert interviewer_turns[0]["content"] in response.text
+    assert interviewer_turns[0]["speaker_id"]
 
 
 async def test_custom_llm_replaces_clean_non_audible_stream(
@@ -948,6 +1066,11 @@ async def test_custom_llm_replaces_malformed_non_stream_completion(
     assert response.status_code == 200, response.text
     assert response.json()["choices"][0]["message"]["content"]
     assert response.json()["roundcraft"]["selected_panelist"]
+    turns = await client.get(f"/v1/sessions/{session['id']}/turns", headers=auth_headers)
+    interviewer_turns = [item for item in turns.json() if item["speaker_type"] == "interviewer"]
+    assert len(interviewer_turns) == 1
+    assert interviewer_turns[0]["content"] == response.json()["choices"][0]["message"]["content"]
+    assert interviewer_turns[0]["speaker_id"]
 
 
 async def test_custom_llm_uses_director_continuation_after_transient_retries_exhausted(

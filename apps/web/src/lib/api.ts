@@ -125,7 +125,7 @@ export type JobDescriptionResponse = {
     role_title?: string;
     focus_areas?: string[];
     difficulty?: string;
-    panel?: Array<{ id?: string; display_name?: string; role?: string; expertise?: string[]; voice?: string; mood?: string; behavior?: string; interruption_style?: string }>;
+    panel?: Array<{ id?: string; display_name?: string; role?: string; expertise?: string[]; voice?: string; mood?: string; behavior?: string; interruption_style?: string; custom_prompt?: string; default_prompt?: string; prompt_slug?: string }>;
     rubric?: Array<{ key: string; label: string; weight: number; description?: string }>;
   } | null;
   error?: string | null;
@@ -186,6 +186,9 @@ export type ProductPanelist = {
   prompt_template_id?: string;
   custom_prompt?: string;
   knowledge_prompt?: string;
+  default_prompt?: string;
+  prompt_slug?: string;
+  allowed_tools?: string[];
   voice: string;
   mood: string;
   behavior: string;
@@ -427,6 +430,7 @@ export type HostMessage = {
 export type HostPresence = {
   display_name: string;
   joined_at: string;
+  last_seen_at: string;
   messages: HostMessage[];
 };
 
@@ -448,6 +452,7 @@ export type GuestSession = {
   connection: AgoraConfig;
   panel: Array<{ id: string; display_name: string; role: string }>;
   supports_coding: boolean;
+  heartbeat_interval_seconds: number;
 };
 
 export type GuestView = {
@@ -479,6 +484,26 @@ async function guestRequest<T>(path: string, init?: RequestInit) {
 export function joinSessionAsHost(token: string, displayName: string) {
   const search = new URLSearchParams({ display_name: displayName });
   return guestRequest<GuestSession>(`/guest/sessions/${encodeURIComponent(token)}?${search}`);
+}
+
+export function renewHostSessionToken(token: string) {
+  return guestRequest<AgoraConfig>(`/guest/sessions/${encodeURIComponent(token)}/token`, {
+    method: "POST",
+  });
+}
+
+export function heartbeatHostSession(token: string) {
+  return guestRequest<{ connected: true; last_seen_at: string }>(
+    `/guest/sessions/${encodeURIComponent(token)}/heartbeat`,
+    { method: "POST" },
+  );
+}
+
+export function leaveHostSession(token: string) {
+  return guestRequest<void>(`/guest/sessions/${encodeURIComponent(token)}/leave`, {
+    method: "POST",
+    keepalive: true,
+  });
 }
 
 export function readGuestView(token: string, afterSequence = 0) {

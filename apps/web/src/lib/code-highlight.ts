@@ -142,6 +142,19 @@ const RULES: Record<string, LanguageRules> = {
       "unsafe", "use", "where", "while",
     ],
   },
+  scala: {
+    label: "Scala",
+    lineComments: ["//"],
+    blockComment: ["/*", "*/"],
+    quotes: C_FAMILY_QUOTES,
+    keywords: [
+      "abstract", "case", "catch", "class", "def", "do", "else", "enum", "export", "extends",
+      "false", "final", "finally", "for", "given", "if", "implicit", "import", "lazy", "match",
+      "new", "null", "object", "opaque", "override", "package", "private", "protected", "return",
+      "sealed", "super", "then", "this", "throw", "trait", "transparent", "true", "try", "type",
+      "using", "val", "var", "while", "with", "yield",
+    ],
+  },
   sql: {
     label: "SQL",
     lineComments: ["--"],
@@ -163,6 +176,17 @@ const RULES: Record<string, LanguageRules> = {
     keywords: [
       "break", "else", "FALSE", "for", "function", "if", "Inf", "NA", "NaN", "next", "NULL",
       "repeat", "return", "TRUE", "while", "library", "require",
+    ],
+  },
+  matlab: {
+    label: "MATLAB",
+    lineComments: ["%"],
+    blockComment: ["%{", "%}"],
+    quotes: ['"', "'"],
+    keywords: [
+      "break", "case", "catch", "classdef", "continue", "else", "elseif", "end", "enumeration",
+      "events", "for", "function", "global", "if", "methods", "otherwise", "parfor", "persistent",
+      "properties", "return", "spmd", "switch", "try", "while", "true", "false",
     ],
   },
   bash: {
@@ -220,6 +244,50 @@ export const KNOWN_LANGUAGES = Object.keys(RULES);
 
 export function languageLabel(language: string): string {
   return RULES[language]?.label ?? language.toUpperCase();
+}
+
+const CODING_TASK = /(?:\b(?:implement|code|debug|refactor)\b|\bwrite\s+(?:a|an|the)?\s*(?:function|method|class|(?:sql\s+)?query|program|solution|api endpoint)\b|\bgiven\b[^.!?\n]{0,180}\b(?:return|find|compute|calculate|print|produce|determine)\b)/i;
+
+/** Open the workspace for an explicit coding task, not every technical discussion. */
+export function isCodingQuestion(question: string): boolean {
+  return CODING_TASK.test(question);
+}
+
+/** Pull explicit agent hints out of spoken turns without treating ordinary follow-ups as hints. */
+export function agentHintsFromTurn(turn: string): string[] {
+  const hints: string[] = [];
+  for (const line of turn.split(/\r?\n/)) {
+    const match = line.match(/^\s*Hint:\s*(.+?)\s*$/i);
+    if (match?.[1] && !hints.includes(match[1])) hints.push(match[1]);
+  }
+  return hints;
+}
+
+/**
+ * Small, progressive prompts for the candidate when the live agent has not sent
+ * bespoke hints. They coach the process without revealing an answer.
+ */
+export function codingHintsForQuestion(question: string, language: string): string[] {
+  const normalized = question.toLowerCase();
+  const first = language === "sql" || /\b(sql|query|table|join)\b/.test(normalized)
+    ? "Name the rows and columns the result must contain before writing the query."
+    : /\b(api|service|system design|endpoint|distributed)\b/.test(normalized)
+      ? "Separate the interface, state, and failure paths before choosing an implementation."
+      : "State the inputs, expected output, and important edge cases before coding.";
+  const second = language === "sql" || /\b(sql|query|table|join)\b/.test(normalized)
+    ? "Build the smallest correct query first, then check nulls, duplicates, grouping, and ordering."
+    : "Start with the simplest correct approach, then justify the data structure you use."
+  return [
+    first,
+    second,
+    "Walk through one normal case and one boundary case, then state the time and space cost.",
+  ];
+}
+
+export function cursorPosition(source: string, selectionStart: number): { line: number; column: number } {
+  const before = source.slice(0, Math.max(0, selectionStart));
+  const lines = before.split("\n");
+  return { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
 }
 
 function escapeForRegex(value: string): string {

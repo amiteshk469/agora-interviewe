@@ -19,7 +19,7 @@ flowchart TB
     end
 
     subgraph guest["Human interviewer - by invite"]
-        HOST["Join console<br/>listen-only audio, transcript, editor view"]
+        HOST["Join console<br/>optional live mic, transcript, editor view"]
     end
 
     subgraph agora["Agora - real-time voice layer"]
@@ -59,7 +59,7 @@ flowchart TB
     PACKS -->|"seats the panel at setup"| UI
     EDIT -->|"buffer snapshot, delimited as untrusted"| LLM
     HOST -->|"queued question outranks the director for one turn"| DIR
-    HOST <-->|"listen-only"| RTC
+    HOST <-->|"hear room / optional mic"| RTC
     DIR -->|"selected role prompt + voice + allowed tools"| TOOLS
     TOOLS --> GROQ
     TOOLS --> FC
@@ -100,7 +100,8 @@ Candidate browser
                                       │
                                       ▼
 Human interviewer (by signed invite, optional)
-  ├─ listen-only RTC ─────► the same Agora channel
+  ├─ RTC audio ────────► the same Agora channel; hears everyone and may
+  │                           publish microphone audio when explicitly enabled
   └─ HTTPS ───────────────► guest routes: transcript, editor view, note, or a
                             question the panel asks on the next turn
 
@@ -119,16 +120,16 @@ FastAPI on Render
 
 ## Live interview flow
 
-1. The candidate picks a hiring track. The role pack for that track seats a default panel, rubric, and tool set, and declares whether the interview has a coding round. From there they select two to five interviewers from immutable defaults, edit a fork, or create a custom profile.
-2. The candidate may upload a JD. The API stores the private original in Supabase Storage, extracts/indexes its text, then returns editable recommendations for panel roles, prompts, rubric weights, difficulty, tools, and domain context. A JD recommendation outranks the role pack; anything the candidate edited outranks both.
+1. The candidate searches and picks one of 18 hiring tracks. The role pack for that track seats a default panel, rubric, prompt set, and tools, and declares whether the interview has a coding round. From there they select two to five interviewers from immutable defaults, edit a copy, or create a custom profile.
+2. The candidate may upload a JD. The API stores the private original in Supabase Storage, extracts/indexes its text, and uses its role title, company, skills, and focus areas to refine the selected role pack. The selected track remains authoritative, JD recommendations remain editable, and explicit candidate edits outrank both.
 3. Starting an interview snapshots the configuration, creates one unguessable channel, issues a short-lived candidate token, allocates the shared publisher plus logical tile identities, and starts exactly one Agora AgentKit session. A failed start is stopped before the product session is marked failed.
 4. The browser joins the channel once and renders the logical participant roster. Agora carries candidate audio and the active interviewer output; automatic VAD and barge-in keep the agent listening without client-side speech-boundary choreography.
 5. Each candidate turn reaches the custom LLM gateway once. The silent Panel Director applies expertise, evidence-gap, repetition, coverage, and pending-speaker rules, then may select any panelist, including the current one. Sequences such as 1 → 3 → 1 are valid.
 6. The selected role's immutable invariants, editable prompt, knowledge, behavior, difficulty, and allowlisted tools are assembled into that turn's system instruction. First-packet metadata selects the role's MiniMax voice while Agora keeps one physical speaking session.
 7. Eligible roles may use JD/transcript knowledge search, deterministic calculation, or configured current-information search. Tool inputs and outputs are audited before their bounded context is added to the response.
-7b. On a coding track the candidate's editor is pushed to the session as they type and handed to the speaking panelist as delimited untrusted context, truncated to 120 lines. The panel reads the buffer; it is never executed.
-7c. A human interviewer holding a signed invite may join the same channel listen-only. A question they submit is stored on the session and consumed by the next turn, where it replaces the director's objective for exactly one turn before the panel resumes its own line.
-8. Agora RTM and signed webhooks update transcripts, interruption state, and the durable logical-participant mapping. An optional forced-dispatch endpoint uses `agent_think` for controlled drills without changing the normal automatic-VAD path.
+7b. On a coding track the editor opens automatically when the panel issues a coding task. It shows the exact task and progressive hints, restores the candidate's latest buffer, pushes snapshots to the session as they type, and hands the buffer to the speaking panelist as delimited untrusted context, truncated to 120 lines. The panel reads the buffer; it is never executed.
+7c. A human interviewer holding a signed invite may join the same channel and explicitly enable their microphone to speak to the candidate beside the AI panel. Their seat renews the same short-lived Agora UID, sends a ten-second presence heartbeat, and expires from the candidate roster after 30 seconds without one. The Agora agent remains subscribed only to the candidate's UID, preventing the guest's voice from driving AI turn detection. For transcript-linked evidence, the guest submits a question that is stored on the session and consumed by the next turn, where it replaces the director's objective for exactly one turn before the panel resumes its own line.
+8. The custom LLM boundary persists every generated interviewer turn with the exact logical panelist selected for it. Agora RTM and signed webhooks then reconcile stable turn IDs, interruption state, and timing into that row instead of guessing attribution from a later UI poll. An optional forced-dispatch endpoint uses `agent_think` for controlled drills without changing the normal automatic-VAD path.
 9. On stop, the API leaves the shared agent once, reconciles persisted turns with Agora history, calculates transcript-linked rubric scores, and generates replay drills. Unsupported criteria become `insufficient_evidence`; there is no human-review queue.
 
 ## Ownership boundaries
@@ -155,7 +156,7 @@ FastAPI on Render
 | JD, resume, reports, optional media | Private Supabase Storage | Signed URLs and owner-scoped policies only. |
 | Extracted document chunks | Postgres + pgvector | Uploaded text is untrusted content, never system instructions. |
 | Transcript turns | Postgres | Keyed by interview and Agora `turn_id`, including interrupted status. |
-| Candidate editor and co-host state | Postgres, inside the session's live state | The buffer, the human interviewer's presence, their notes, and any question queued for the panel. Bounded and replaced per turn, not an append-only log. |
+| Candidate editor and co-host state | Postgres, inside the session's live state | The buffer, heartbeat-bounded human presence and stable RTC UID, notes, and any question queued for the panel. Bounded and replaced per turn, not an append-only log. |
 | Tools and evidence | Postgres | Every scored item links to transcript and optionally tool evidence. |
 | Agora webhooks | Postgres | HMAC verified and idempotent by notice ID. |
 

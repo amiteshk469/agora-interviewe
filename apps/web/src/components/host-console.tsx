@@ -1,18 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Headphones, Loader2, MessageSquareText, Send, Volume2, VolumeX } from "lucide-react";
+import { Headphones, Loader2, MessageSquareText, Mic, MicOff, Send, Volume2, VolumeX } from "lucide-react";
 import { CodeView } from "@/components/code-pane";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import {
   joinSessionAsHost,
+  heartbeatHostSession,
+  leaveHostSession,
   readGuestView,
+  renewHostSessionToken,
   sendHostMessage,
   type CodeBuffer,
   type GuestSession,
   type GuestView,
   type HostMessage,
 } from "@/lib/api";
+import { mergeRecordsById, panelistIdForAgoraUid } from "@/lib/live-panel";
+import { joinHostRtcRoom, type HostRtcHandle } from "@/lib/host-rtc";
 import { cn } from "@/lib/utils";
 
 // Fast enough that a co-host can follow the exchange, slow enough not to hammer
@@ -21,43 +26,13 @@ const POLL_INTERVAL_MS = 2500;
 
 type Turn = GuestView["turns"][number];
 
-type RtcHandle = {
-  leave: () => Promise<void>;
-  setMuted: (muted: boolean) => void;
-};
-
-/** Listen-only: the guest hears the room but never publishes, so no mic is requested. */
-async function listenToRoom(session: GuestSession): Promise<RtcHandle> {
-  const AgoraRTC = (await import("agora-rtc-sdk-ng")).default;
-  const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-  let muted = false;
-  client.on("user-published", (user, mediaType) => {
-    if (mediaType !== "audio") return;
-    void client.subscribe(user, "audio").then(() => {
-      if (!muted) user.audioTrack?.play();
-    });
-  });
-  await client.join(
-    session.connection.app_id,
-    session.connection.channel_name,
-    session.connection.token,
-    Number(session.connection.uid),
-  );
-  return {
-    leave: () => client.leave(),
-    setMuted: (next: boolean) => {
-      muted = next;
-      for (const user of client.remoteUsers) {
-        if (next) user.audioTrack?.stop();
-        else user.audioTrack?.play();
-      }
-    },
-  };
-}
-
 function speakerLabel(turn: Turn, session: GuestSession | null) {
   if (turn.speaker_type === "candidate") return "Candidate";
-  const match = session?.panel.find((member) => member.id === turn.speaker_id);
+  if (turn.speaker_type === "system") return "System";
+  const direct = session?.panel.find((member) => member.id === turn.speaker_id);
+  if (direct) return direct.display_name;
+  const panelistId = panelistIdForAgoraUid(turn.speaker_id, session?.connection.panelists);
+  const match = session?.panel.find((member) => member.id === panelistId);
   return match?.display_name ?? "Panel";
 }
 
@@ -73,23 +48,51 @@ export function HostConsole({ token }: { token: string }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
+  const [rtcReady, setRtcReady] = useState(false);
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
+  const [microphoneBusy, setMicrophoneBusy] = useState(false);
+  const [updatesDelayed, setUpdatesDelayed] = useState(false);
   const [status, setStatus] = useState("");
-  const rtc = useRef<RtcHandle | null>(null);
+  const rtc = useRef<HostRtcHandle | null>(null);
+  const mounted = useRef(true);
+  const statusRef = useRef("");
   const lastSequence = useRef(0);
   const transcriptEnd = useRef<HTMLDivElement>(null);
 
-  useEffect(() => () => void rtc.current?.leave().catch(() => undefined), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const room = rtc.current;
+      rtc.current = null;
+      void room?.leave().catch(() => undefined);
+    };
+  }, []);
 
   const join = useCallback(async (event: FormEvent) => {
     event.preventDefault();
     setJoining(true);
+    setRtcReady(false);
     setError("");
     try {
       const joined = await joinSessionAsHost(token, name.trim() || "Guest interviewer");
+      if (!mounted.current) return;
       setSession(joined);
+      statusRef.current = joined.status;
       setStatus(joined.status);
       try {
-        rtc.current = await listenToRoom(joined);
+        const room = await joinHostRtcRoom(joined, {
+          renewConnection: () => renewHostSessionToken(token),
+          onConnectionError: (renewalError) => {
+            if (mounted.current) setError(`Live audio needs to reconnect: ${renewalError.message}`);
+          },
+        });
+        if (!mounted.current || statusRef.current !== "live") {
+          await room.leave();
+          return;
+        }
+        rtc.current = room;
+        setRtcReady(true);
       } catch (audioError) {
         // Following by transcript is still a usable seat, so this is not fatal.
         console.warn("Audio could not be joined", audioError);
@@ -105,24 +108,60 @@ export function HostConsole({ token }: { token: string }) {
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    const poll = () => void readGuestView(token, lastSequence.current)
-      .then((view) => {
+    let timer: number | null = null;
+    const poll = async () => {
+      let keepPolling = true;
+      try {
+        const view = await readGuestView(token, lastSequence.current);
         if (cancelled) return;
+        setUpdatesDelayed(false);
+        statusRef.current = view.status;
+        if (view.status !== "live") {
+          const room = rtc.current;
+          rtc.current = null;
+          setRtcReady(false);
+          setMicrophoneEnabled(false);
+          setMicrophoneBusy(false);
+          void room?.leave().catch((leaveError) => console.warn("Host audio cleanup failed", leaveError));
+        }
         setStatus(view.status);
         setCode(view.code);
-        setMessages(view.messages);
+        setMessages((current) => mergeRecordsById(current, view.messages));
         setPendingQuestion(view.pending_question);
         if (view.turns.length) {
-          lastSequence.current = view.turns[view.turns.length - 1].sequence;
-          setTurns((current) => [...current, ...view.turns]);
+          lastSequence.current = Math.max(lastSequence.current, ...view.turns.map((turn) => turn.sequence));
+          setTurns((current) => mergeRecordsById(current, view.turns).sort((left, right) => left.sequence - right.sequence));
         }
-      })
-      .catch(() => undefined);
-    poll();
-    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+        keepPolling = view.status === "live";
+      } catch {
+        if (!cancelled) setUpdatesDelayed(true);
+      } finally {
+        if (!cancelled && keepPolling) timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS);
+      }
+    };
+    void poll();
     return () => {
       cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [session, token]);
+
+  useEffect(() => {
+    if (!session) return;
+    const heartbeat = () => {
+      if (statusRef.current !== "live") return;
+      void heartbeatHostSession(token).catch(() => setUpdatesDelayed(true));
+    };
+    const timer = window.setInterval(
+      heartbeat,
+      Math.max(5, session.heartbeat_interval_seconds) * 1000,
+    );
+    const leave = () => { void leaveHostSession(token).catch(() => undefined); };
+    window.addEventListener("pagehide", leave);
+    return () => {
       window.clearInterval(timer);
+      window.removeEventListener("pagehide", leave);
+      leave();
     };
   }, [session, token]);
 
@@ -137,7 +176,7 @@ export function HostConsole({ token }: { token: string }) {
     setError("");
     try {
       const posted = await sendHostMessage(token, mode, text);
-      setMessages((current) => [...current, posted]);
+      setMessages((current) => mergeRecordsById(current, [posted]));
       if (mode === "ask") setPendingQuestion(text);
       setDraft("");
     } catch (sendError) {
@@ -154,14 +193,32 @@ export function HostConsole({ token }: { token: string }) {
     });
   }, []);
 
+  const toggleMicrophone = useCallback(async () => {
+    const room = rtc.current;
+    if (!room || microphoneBusy) return;
+    const next = !microphoneEnabled;
+    setMicrophoneBusy(true);
+    setError("");
+    try {
+      await room.setMicrophoneEnabled(next);
+      if (rtc.current === room) setMicrophoneEnabled(next);
+    } catch (microphoneError) {
+      setError(microphoneError instanceof Error
+        ? `Your microphone could not join the room: ${microphoneError.message}`
+        : "Your microphone could not join the room. Check browser permission and try again.");
+    } finally {
+      setMicrophoneBusy(false);
+    }
+  }, [microphoneBusy, microphoneEnabled]);
+
   if (!session) {
     return (
       <main className="mx-auto flex min-h-[100dvh] max-w-md flex-col justify-center gap-6 p-6">
         <div>
           <h1 className="text-xl font-semibold">Join as interviewer</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            You will hear the panel and the candidate, read the transcript, and can hand the panel a
-            question to ask next.
+            You can hear the room, speak directly to the candidate, follow the transcript, and hand
+            the AI panel a question to ask next.
           </p>
         </div>
         <form onSubmit={join} className="flex flex-col gap-3">
@@ -195,8 +252,20 @@ export function HostConsole({ token }: { token: string }) {
         </div>
         <div className="ms-auto flex items-center gap-2">
           <Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge>
-          <Button variant="ghost" size="icon" onClick={toggleAudio} aria-pressed={audioMuted} aria-label={audioMuted ? "Unmute the room" : "Mute the room"}>
+          {updatesDelayed ? <Badge variant="destructive" role="status">Updates delayed</Badge> : null}
+          <Button variant="ghost" size="icon" onClick={toggleAudio} disabled={!rtcReady} aria-pressed={audioMuted} aria-label={audioMuted ? "Unmute the room" : "Mute the room"}>
             {audioMuted ? <VolumeX className="size-4" aria-hidden /> : <Volume2 className="size-4" aria-hidden />}
+          </Button>
+          <Button
+            variant={microphoneEnabled ? "default" : "outline"}
+            size="icon"
+            onClick={() => void toggleMicrophone()}
+            disabled={!rtcReady || microphoneBusy || status !== "live"}
+            aria-pressed={microphoneEnabled}
+            aria-label={microphoneEnabled ? "Mute your microphone" : "Speak in the interview"}
+            title={microphoneEnabled ? "Mute your microphone" : "Speak directly (not added to the scored transcript)"}
+          >
+            {microphoneBusy ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden /> : microphoneEnabled ? <Mic className="size-4" aria-hidden /> : <MicOff className="size-4" aria-hidden />}
           </Button>
         </div>
       </header>
@@ -287,7 +356,8 @@ export function HostConsole({ token }: { token: string }) {
             </div>
             <p className="text-xs text-muted-foreground">
               Ask the panel puts your question next in the interviewer&apos;s mouth. A note only appears
-              in the candidate&apos;s room.
+              in the candidate&apos;s room. Direct microphone audio is live but is not added to the scored
+              transcript, so use Ask the panel for an assessed question.
             </p>
           </div>
 

@@ -13,6 +13,10 @@ export type Panelist = {
   behavior: string;
   voice: string;
   prompt: string;
+  defaultPrompt?: string;
+  promptSlug?: string;
+  allowedTools?: string[];
+  expertise?: string[];
   icon?: LucideIcon;
 };
 

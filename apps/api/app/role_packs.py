@@ -10,6 +10,7 @@ The catalogue is drawn from a campus placement board, so the tracks match what
 graduates are actually interviewed for rather than a generic role taxonomy.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,6 +77,36 @@ def _panelist(
     interruption_style: str,
     allowed_tools: list[str],
 ) -> dict[str, Any]:
+    interruption_guidance = {
+        "contextual": "Re-enter when the answer creates a material ambiguity or exposes an important decision.",
+        "clarifying": "Interrupt only to resolve an ambiguity that blocks useful follow-up.",
+        "evidence-gap": "Challenge polished claims when the candidate has not supplied verifiable evidence.",
+    }.get(interruption_style, "Use interruption sparingly and only when it improves the interview signal.")
+    tool_guidance = (
+        f"You may use {', '.join(allowed_tools)} when it materially improves factual accuracy; "
+        "explain the result naturally."
+        if allowed_tools
+        else "Do not invoke external tools."
+    )
+    default_prompt = (
+        f"You are {display_name}, the {role}. Your assessment lane is {', '.join(expertise)}. "
+        "Ask one concrete, job-realistic scenario or problem at a time from that lane, then adapt the next probe "
+        "to the candidate's actual answer instead of following a fixed script. "
+        f"Keep a {mood} tone and behave as an interviewer who is {behavior}. {interruption_guidance} "
+        "Probe assumptions, tradeoffs, failure modes, and how the candidate verified the result. "
+        "Do not reward terminology alone: require a specific example, decision, calculation, "
+        "or worked line of reasoning. "
+        f"{tool_guidance}"
+    )
+    prompt_slug = (
+        {
+            "hiring-manager": "pm-leadership",
+            "product-sense": "pm-product-sense",
+            "analytics": "pm-metrics",
+        }.get(slug, f"pm-{slug}")
+        if not pack_id
+        else f"{pack_id}-{slug}"
+    )
     return {
         # Product management keeps bare ids because its panel predates role packs
         # and is still referenced by saved configurations.
@@ -88,6 +119,8 @@ def _panelist(
         "behavior": behavior,
         "interruption_style": interruption_style,
         "allowed_tools": allowed_tools,
+        "default_prompt": default_prompt,
+        "prompt_slug": prompt_slug,
     }
 
 
@@ -140,6 +173,7 @@ _PRODUCT_MANAGEMENT = RolePack(
         ("leadership", "Leadership", 0.2, "Influences stakeholders and learns from conflict."),
         ("communication", "Communication", 0.15, "Communicates structured, concise, evidence-backed answers."),
     ),
+    enabled_tools=["knowledge_search", "calculator", "web_search"],
 )
 
 _SOFTWARE_ENGINEERING = RolePack(
@@ -646,6 +680,368 @@ _CORE_ENGINEERING = RolePack(
     enabled_tools=["knowledge_search", "calculator"],
 )
 
+
+_UI_UX_DESIGN = RolePack(
+    id="ui_ux_design",
+    label="UI/UX & Product Design",
+    family="Product & Strategy",
+    summary="User research, interaction design, visual systems, and portfolio reasoning for product-design loops.",
+    levels=("Design intern or graduate", "Product Designer", "Senior Product Designer", "Design Lead"),
+    panel=[
+        _panelist(
+            "design", "lead", "Aisha Kapoor", "Product Design Lead",
+            ["problem framing", "interaction design", "portfolio decisions"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "design", "research", "Neel Shah", "User Researcher",
+            ["research planning", "user insight", "usability testing"],
+            "indian-advisor", "curious", "probing", "clarifying", ["knowledge_search"],
+        ),
+        _panelist(
+            "design", "systems", "Mina Park", "Design Systems Engineer",
+            ["design systems", "responsive interfaces", "engineering handoff"],
+            "indian-anchor", "focused", "challenging", "evidence-gap", ["knowledge_search", "web_search"],
+        ),
+    ],
+    rubric=_rubric(
+        ("problem_framing", "Problem framing", 0.2, "Connects a clear user problem to business and product context."),
+        ("user_research", "User research", 0.2, "Chooses sound research methods and turns findings into decisions."),
+        (
+            "interaction_visual_design",
+            "Interaction and visual design",
+            0.25,
+            "Builds usable flows with strong hierarchy, states, accessibility, and responsive behaviour.",
+        ),
+        (
+            "prototyping_iteration", "Prototyping and iteration", 0.2,
+            "Tests assumptions and improves work from evidence.",
+        ),
+        ("collaboration", "Collaboration", 0.15, "Explains tradeoffs and hands work to engineering clearly."),
+    ),
+    enabled_tools=["knowledge_search", "web_search"],
+)
+
+
+_DATA_ENGINEERING = RolePack(
+    id="data_engineering",
+    label="Data Engineering",
+    family="Data & AI",
+    summary="Data modelling, pipelines, quality, and platform reliability for analytics-engineering loops.",
+    levels=("Graduate Data Engineer", "Data Engineer", "Senior Data Engineer", "Data Platform Lead"),
+    panel=[
+        _panelist(
+            "de", "manager", "Sonal Gupta", "Data Platform Manager",
+            ["requirements translation", "delivery ownership", "stakeholder impact"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "de", "engineer", "Ravi Kulkarni", "Senior Data Engineer",
+            ["data modelling", "batch and streaming", "distributed processing"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "de", "reliability", "Tara Bose", "Data Reliability Engineer",
+            ["data quality", "observability", "recovery and cost"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "problem_decomposition", "Problem decomposition", 0.2,
+            "Turns business requirements into an executable data design.",
+        ),
+        ("data_modelling", "Data modelling", 0.25, "Chooses schemas, contracts, and storage patterns deliberately."),
+        (
+            "pipeline_engineering", "Pipeline engineering", 0.25,
+            "Builds correct, scalable batch or streaming transformations.",
+        ),
+        (
+            "data_reliability", "Data reliability", 0.2,
+            "Designs quality checks, observability, recovery, and idempotency.",
+        ),
+        ("communication", "Communication", 0.1, "Explains design and operational tradeoffs precisely."),
+    ),
+    enabled_tools=["knowledge_search", "calculator"],
+    coding=CodingProfile(
+        languages=("sql", "python", "scala", "java"),
+        default_language="sql",
+        prompt="Write the schema, query, or pipeline transformation here. The panel reads it live.",
+    ),
+)
+
+
+_CYBERSECURITY = RolePack(
+    id="cybersecurity",
+    label="Cybersecurity",
+    family="Engineering",
+    summary="Threat modelling, vulnerability research, detection, and incident response for security loops.",
+    levels=("Graduate Security Analyst", "Security Engineer", "Senior Security Engineer", "Security Lead"),
+    panel=[
+        _panelist(
+            "sec", "manager", "Nandita Rao", "Security Engineering Manager",
+            ["risk prioritization", "secure delivery", "security reviews"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "sec", "research", "Kabir Sethi", "Security Researcher",
+            ["vulnerability analysis", "malware and adversaries", "threat intelligence"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "web_search"],
+        ),
+        _panelist(
+            "sec", "incident", "Lina Joseph", "Incident Responder",
+            ["detection", "containment", "forensics and remediation"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "threat_modelling", "Threat modelling", 0.2,
+            "Identifies assets, trust boundaries, adversaries, and likely abuse paths.",
+        ),
+        ("security_depth", "Security depth", 0.25, "Explains vulnerabilities and controls from first principles."),
+        ("investigation", "Investigation", 0.2, "Builds and tests hypotheses from indicators and system evidence."),
+        (
+            "mitigation_response", "Mitigation and response", 0.25,
+            "Prioritizes containment, remediation, and durable prevention.",
+        ),
+        ("communication", "Communication", 0.1, "Reports technical risk and uncertainty without exaggeration."),
+    ),
+    enabled_tools=["knowledge_search", "calculator", "web_search"],
+    coding=CodingProfile(
+        languages=("python", "bash", "c", "cpp", "javascript", "sql"),
+        default_language="python",
+        prompt="Write the detector, exploit sketch, parser, or mitigation here. The panel reads it live.",
+    ),
+)
+
+
+_ELECTRICAL_ELECTRONICS = RolePack(
+    id="electrical_electronics",
+    label="Electrical & Electronics",
+    family="Core Engineering",
+    summary="Circuits, power, controls, component tradeoffs, and validation for electrical-engineering loops.",
+    levels=("Graduate Electrical Engineer", "Electrical Engineer", "Senior Electrical Engineer", "Systems Lead"),
+    panel=[
+        _panelist(
+            "ee", "systems", "Meera Iqbal", "Electrical Systems Lead",
+            ["system requirements", "power architecture", "design trades"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "ee", "design", "Akash Reddy", "Electronics Design Engineer",
+            ["analog and digital circuits", "component selection", "control systems"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "ee", "validation", "Sara Thomas", "Validation and Safety Engineer",
+            ["test planning", "fault isolation", "harsh-environment safety"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "circuit_fundamentals", "Circuit fundamentals", 0.25,
+            "Applies circuit, signal, power, and control fundamentals correctly.",
+        ),
+        ("system_design", "System design", 0.25, "Translates requirements into a defensible electrical architecture."),
+        (
+            "component_tradeoffs", "Component tradeoffs", 0.15,
+            "Balances performance, efficiency, cost, and availability.",
+        ),
+        ("testing_safety", "Testing and safety", 0.2, "Plans validation, fault handling, and safe operation."),
+        ("communication", "Communication", 0.15, "Explains calculations and design decisions clearly."),
+    ),
+    enabled_tools=["knowledge_search", "calculator"],
+)
+
+
+_AEROSPACE_ROBOTICS = RolePack(
+    id="aerospace_robotics",
+    label="Aerospace & Robotics",
+    family="Core Engineering",
+    summary="Dynamics, controls, perception, embedded implementation, and safety for robotics and flight loops.",
+    levels=("Graduate Robotics Engineer", "Robotics or GNC Engineer", "Senior Systems Engineer", "Technical Lead"),
+    panel=[
+        _panelist(
+            "robot", "systems", "Ira Menon", "Robotics Systems Lead",
+            ["requirements", "system integration", "mission and release risk"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "robot", "controls", "Dev Arora", "Controls and GNC Engineer",
+            ["dynamics", "motion control", "navigation and sensor fusion"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "robot", "software", "Hana Lee", "Robotics Software Engineer",
+            ["path planning", "robot middleware", "embedded C and C++"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        ("dynamics_controls", "Dynamics and controls", 0.25, "Models motion and selects stable control approaches."),
+        (
+            "planning_perception", "Planning and perception", 0.2,
+            "Reasons about sensing, fusion, localization, and planning.",
+        ),
+        ("implementation", "Implementation", 0.2, "Writes resource-aware code and chooses suitable algorithms."),
+        (
+            "integration_safety", "Integration and safety", 0.25,
+            "Validates interfaces, failure modes, timing, and safe behaviour.",
+        ),
+        ("communication", "Communication", 0.1, "Makes assumptions and system tradeoffs explicit."),
+    ),
+    enabled_tools=["knowledge_search", "calculator"],
+    coding=CodingProfile(
+        languages=("cpp", "c", "python", "matlab"),
+        default_language="cpp",
+        prompt="Write the controller, planner, filter, or simulation here. The panel reads it live.",
+    ),
+)
+
+
+_OPERATIONS_MANAGEMENT = RolePack(
+    id="operations_management",
+    label="Operations Management & Supply Chain",
+    family="Product & Strategy",
+    summary="Process design, forecasting, execution, and stakeholder ownership for operations and trainee loops.",
+    levels=("Management Trainee", "Operations Analyst", "Operations Manager", "Business Operations Lead"),
+    panel=[
+        _panelist(
+            "ops", "leader", "Kavya Nair", "Business Operations Leader",
+            ["operating model", "ownership", "cross-functional execution"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "ops", "supply", "Manav Shah", "Supply Chain Manager",
+            ["demand planning", "inventory", "warehousing and logistics"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "ops", "analyst", "Rhea Kapoor", "Operations Analyst",
+            ["process metrics", "forecasting", "cost and service levels"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "process_structuring", "Process structuring", 0.2,
+            "Maps a process, diagnoses constraints, and proposes a workable operating model.",
+        ),
+        (
+            "quantitative_planning", "Quantitative planning", 0.25,
+            "Uses demand, capacity, inventory, cost, and service metrics correctly.",
+        ),
+        (
+            "execution_ownership", "Execution ownership", 0.25,
+            "Drives implementation through ambiguity, dependencies, and deadlines.",
+        ),
+        (
+            "stakeholder_management", "Stakeholder management", 0.2,
+            "Aligns teams, vendors, and leaders with clear tradeoffs.",
+        ),
+        ("communication", "Communication", 0.1, "Synthesizes decisions and operational risk clearly."),
+    ),
+    enabled_tools=["knowledge_search", "calculator"],
+)
+
+
+_FINANCE_RISK = RolePack(
+    id="finance_risk",
+    label="Finance, Banking & Risk",
+    family="Finance & Trading",
+    summary=(
+        "Financial analysis, credit and market risk, controls, and commercial judgment "
+        "for banking and finance loops."
+    ),
+    levels=("Graduate Analyst", "Finance or Risk Analyst", "Senior Analyst", "Risk or Finance Lead"),
+    panel=[
+        _panelist(
+            "fin", "manager", "Diya Malhotra", "Finance Hiring Manager",
+            ["commercial judgment", "ownership", "stakeholder decisions"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "fin", "analyst", "Owen Dsouza", "Financial Analyst",
+            ["financial statements", "valuation", "scenario analysis"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "fin", "risk", "Ishita Sen", "Risk Manager",
+            ["credit and market risk", "controls", "stress testing"],
+            "indian-deep", "challenging", "challenging", "evidence-gap",
+            ["knowledge_search", "calculator", "web_search"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "financial_fundamentals", "Financial fundamentals", 0.25,
+            "Interprets statements, cash flows, returns, and valuation correctly.",
+        ),
+        (
+            "quantitative_analysis", "Quantitative analysis", 0.2,
+            "Calculates accurately and tests assumptions with scenarios.",
+        ),
+        ("risk_judgment", "Risk judgment", 0.25, "Identifies exposure, controls, downside, and decision limits."),
+        (
+            "commercial_judgment", "Commercial judgment", 0.2,
+            "Connects analysis to a defensible business recommendation.",
+        ),
+        ("communication", "Communication", 0.1, "States assumptions, uncertainty, and recommendations clearly."),
+    ),
+    enabled_tools=["knowledge_search", "calculator", "web_search"],
+)
+
+
+_CIVIL_CHEMICAL_MATERIALS = RolePack(
+    id="civil_chemical_materials",
+    label="Civil, Chemical & Materials Engineering",
+    family="Core Engineering",
+    summary=(
+        "Design analysis, field execution, process reasoning, materials, and safety "
+        "for infrastructure and plant loops."
+    ),
+    levels=("Graduate Engineer", "Design or Process Engineer", "Senior Engineer", "Discipline Lead"),
+    panel=[
+        _panelist(
+            "ccm", "manager", "Vivek Pillai", "Engineering Project Manager",
+            ["requirements", "site execution", "contractor coordination"],
+            "indian-calm", "professional", "evidence-seeking", "contextual", ["knowledge_search"],
+        ),
+        _panelist(
+            "ccm", "design", "Nora Fernandes", "Design and Process Engineer",
+            ["loads and processes", "materials selection", "design calculations"],
+            "indian-anchor", "focused", "probing", "clarifying", ["knowledge_search", "calculator"],
+        ),
+        _panelist(
+            "ccm", "safety", "Aman Singh", "Safety and Quality Engineer",
+            ["codes and compliance", "quality control", "operational hazards"],
+            "indian-deep", "challenging", "challenging", "evidence-gap", ["knowledge_search", "calculator"],
+        ),
+    ],
+    rubric=_rubric(
+        (
+            "first_principles", "First-principles engineering", 0.25,
+            "Applies the relevant structural, process, or materials fundamentals.",
+        ),
+        (
+            "design_analysis", "Design and analysis", 0.25,
+            "Builds a checkable design from assumptions, loads, and constraints.",
+        ),
+        (
+            "field_execution", "Field execution", 0.2,
+            "Plans constructability, production, coordination, and change control.",
+        ),
+        (
+            "safety_reliability", "Safety and reliability", 0.2,
+            "Uses codes, testing, hazard controls, and quality evidence.",
+        ),
+        ("communication", "Communication", 0.1, "Explains calculations, risks, and technical positions clearly."),
+    ),
+    enabled_tools=["knowledge_search", "calculator"],
+)
+
 ROLE_PACKS: dict[str, RolePack] = {
     pack.id: pack
     for pack in (
@@ -659,6 +1055,14 @@ ROLE_PACKS: dict[str, RolePack] = {
         _EMBEDDED_SYSTEMS,
         _CLOUD_DEVOPS,
         _CORE_ENGINEERING,
+        _UI_UX_DESIGN,
+        _DATA_ENGINEERING,
+        _CYBERSECURITY,
+        _ELECTRICAL_ELECTRONICS,
+        _AEROSPACE_ROBOTICS,
+        _OPERATIONS_MANAGEMENT,
+        _FINANCE_RISK,
+        _CIVIL_CHEMICAL_MATERIALS,
     )
 }
 
@@ -670,6 +1074,86 @@ ROLE_PACK_IDS: frozenset[str] = frozenset(ROLE_PACKS)
 SUPPORTED_LANGUAGES: frozenset[str] = frozenset(
     language for pack in ROLE_PACKS.values() if pack.coding for language in pack.coding.languages
 )
+
+
+def tailor_panel(
+    pack: RolePack,
+    recommendations: dict[str, Any],
+    source_panel: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Apply JD context without allowing it to replace the selected hiring track."""
+    recommended_panel = recommendations.get("panel")
+    source = (
+        source_panel
+        if source_panel is not None
+        else (
+            recommended_panel
+            if pack.id == DEFAULT_ROLE_PACK_ID and isinstance(recommended_panel, list)
+            else pack.panel
+        )
+    )
+    pack_by_id = {str(item.get("id")): item for item in pack.panel}
+    focus = recommendations.get("skills") or recommendations.get("focus_areas") or []
+    focus = [str(item) for item in focus if str(item).strip()][:12] if isinstance(focus, list) else []
+    target_role = str(recommendations.get("role_title") or "").strip()
+    company = str(recommendations.get("company") or "").strip()
+    context = (
+        [
+            value
+            for value in (
+                f"Target role from the JD: {target_role}." if target_role else "",
+                f"Hiring company from the JD: {company}." if company else "",
+                f"JD priorities: {', '.join(focus)}." if focus else "",
+                (
+                    "Use the JD only to choose relevant scenarios and follow-ups; "
+                    "keep the selected hiring track authoritative."
+                ),
+            )
+            if value
+        ]
+        if recommendations
+        else []
+    )
+    resolved: list[dict[str, Any]] = []
+    for index, raw in enumerate(source[:5]):
+        member = dict(raw)
+        pack_member = pack_by_id.get(str(member.get("id")), {})
+        assigned_focus = focus[index :: max(len(source), 1)]
+        member["expertise"] = list(
+            dict.fromkeys(
+                [
+                    *(str(item) for item in pack_member.get("expertise", [])),
+                    *(str(item) for item in member.get("expertise", [])),
+                    *assigned_focus,
+                ]
+            )
+        )[:12]
+        if pack_member:
+            if not member.get("default_prompt"):
+                member["default_prompt"] = pack_member.get("default_prompt")
+            if not member.get("prompt_slug"):
+                member["prompt_slug"] = pack_member.get("prompt_slug")
+        member.setdefault(
+            "default_prompt",
+            (
+                f"You are the {member.get('role', 'interviewer')}. Ask one concrete, role-relevant question "
+                "at a time, probe assumptions and tradeoffs, and require verifiable evidence."
+            ),
+        )
+        member.setdefault(
+            "prompt_slug",
+            re.sub(
+                r"[^a-z0-9]+",
+                "-",
+                f"{pack.id}-{member.get('id') or index}".lower(),
+            ).strip("-"),
+        )
+        supplied_knowledge = str(member.get("knowledge_prompt") or "").strip()
+        member["knowledge_prompt"] = "\n".join(
+            value for value in (supplied_knowledge, *context) if value
+        )
+        resolved.append(member)
+    return resolved
 
 
 def get_role_pack(pack_id: str | None) -> RolePack:

@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  BriefcaseBusiness,
   Check,
   Code2,
   Copy,
@@ -41,14 +42,14 @@ import {
   type PromptTemplateRecord,
   type RolePack,
 } from "@/lib/api";
-import { interruptionStyle, interviewerCallableTools, roleScopedTools, selectBuiltInTemplate, setupDefaultsFromMetadata, type SetupDifficulty, type TargetLevel } from "@/lib/setup-preferences";
+import { bestRolePackId, interruptionStyle, interviewerCallableTools, jdFocusForRolePack, promptMatchesRolePack, roleScopedTools, scoringFocusForRolePack, selectPanelPromptTemplate, serializeSetupPanelist, setupDefaultsFromMetadata, type SetupDifficulty, type TargetLevel } from "@/lib/setup-preferences";
 import { languageLabel } from "@/lib/code-highlight";
 import { cn } from "@/lib/utils";
 
 const steps = ["Role", "Documents", "Panel", "Prompts", "Review"];
 const interviewerToolOptions = [
   { id: "knowledge_search", label: "Knowledge search", detail: "JD and uploaded context", roles: "All panelists", safe: true },
-  { id: "calculator", label: "Calculator", detail: "Allowlisted product metrics", roles: "Analytics and strategy", safe: true },
+  { id: "calculator", label: "Calculator", detail: "Allowlisted role calculations", roles: "Quantitative interviewers", safe: true },
   { id: "web_search", label: "Web search", detail: "Fresh public facts", roles: "Strategy, optional", safe: false },
 ];
 const platformCapabilities = [
@@ -61,20 +62,13 @@ const availablePanelists: Panelist[] = [
   { id: "execution", name: "Sofia Patel", role: "Execution", initials: "SP", avatarImage: "/avatars/priya-nair.png", avatarId: "sofia-patel", avatarVendor: "liveavatar", mood: "Focused", behavior: "Tests decisions", voice: "indian-anchor", prompt: "Test delivery planning, risks, prioritization, cross-functional execution, and decision quality." },
 ];
 const avatarOptions = defaultPanelists.map((person) => ({ id: person.avatarId, label: person.name, image: person.avatarImage }));
-const panelRoleOptions = ["Product strategy", "Product analytics", "Bar raiser", "Behavioral", "Execution"];
 const panelBehaviorOptions = ["Probes assumptions", "Challenges metrics", "Finds contradictions", "Probes evidence", "Tests decisions"];
 
 type DocumentState = "empty" | "processing" | "ready" | "error" | "skipped";
 type MicrophoneStatus = "idle" | "testing" | "ready" | "error";
 type PromptMode = "forked" | "custom";
 type PreUploadSnapshot = {
-  panel: Panelist[];
-  difficulty: SetupDifficulty;
-  panelDifficulty: Record<string, SetupDifficulty>;
-  promptMode: Record<string, PromptMode>;
-  promptNames: Record<string, string>;
-  promptTemplateIds: Record<string, string>;
-  activePrompt: string;
+  focus: string;
 };
 
 const TARGET_LEVELS: TargetLevel[] = ["associate", "pm", "senior", "lead"];
@@ -96,28 +90,10 @@ function promptTabId(panelistId: string, index: number) {
   return `prompt-tab-${index}-${panelistId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
-function templateForPanelist(person: Pick<Panelist, "id" | "role" | "behavior">, templates: PromptTemplateRecord[]) {
-  const descriptor = `${person.id} ${person.role} ${person.behavior}`.toLowerCase();
-  const slug = descriptor.includes("growth")
-    ? "pm-growth-monetization"
-    : descriptor.includes("metric") || descriptor.includes("analytic") || descriptor.includes("data")
-      ? "pm-metrics"
-      : descriptor.includes("platform") || descriptor.includes("api") || descriptor.includes("engineering")
-        ? "pm-platform-api"
-        : descriptor.includes("behavior") || descriptor.includes("leadership")
-          ? "pm-leadership"
-          : descriptor.includes("execution") || descriptor.includes("launch")
-            ? "pm-launch-incident"
-            : descriptor.includes("strategy") || descriptor.includes("market")
-              ? "pm-product-strategy"
-              : "pm-product-sense";
-  return selectBuiltInTemplate(templates, slug) ?? selectBuiltInTemplate(templates, "pm-product-sense");
-}
-
-function assignBuiltInTemplates(people: Panelist[], templates: PromptTemplateRecord[]) {
+function assignBuiltInTemplates(people: Panelist[], templates: PromptTemplateRecord[], rolePackId: string, promptSlugs: Record<string, string> = {}) {
   const promptTemplateIds: Record<string, string> = {};
   const panel = people.map((person) => {
-    const template = templateForPanelist(person, templates);
+    const template = selectPanelPromptTemplate(templates, rolePackId, person.role, promptSlugs[person.id]);
     if (!template) return { ...person };
     promptTemplateIds[person.id] = template.id;
     return { ...person, role: template.role, prompt: template.prompt };
@@ -125,8 +101,8 @@ function assignBuiltInTemplates(people: Panelist[], templates: PromptTemplateRec
   return { panel, promptTemplateIds };
 }
 
-function customPromptForRole(role: string, behavior: string) {
-  return `You are the ${role} in a non-round-robin Product Management interview panel. ${behavior}. Ask one focused, adaptive question at a time, test claims with transcript evidence, and never request human review or escalation.`;
+function customPromptForRole(role: string, behavior: string, targetRole: string, expertise = "the role's core hiring signals") {
+  return `You are the ${role} on a non-round-robin ${targetRole} interview panel. Test ${expertise}. ${behavior}. Ask one focused, adaptive question at a time, test claims with transcript evidence, and never request human review or escalation.`;
 }
 
 function scoringFocusForPrimaryFocus(focus: string) {
@@ -135,6 +111,56 @@ function scoringFocusForPrimaryFocus(focus: string) {
   if (focus === "Product strategy") return ["product_judgment", "execution", "communication"];
   if (focus === "Mixed product interview") return ["product_judgment", "execution", "analytics", "leadership", "communication"];
   return ["product_judgment", "analytics", "communication"];
+}
+
+type PanelRecommendation = {
+  id?: string;
+  display_name?: string;
+  role?: string;
+  expertise?: string[];
+  voice?: string;
+  mood?: string;
+  behavior?: string;
+  custom_prompt?: string;
+  default_prompt?: string;
+  prompt_slug?: string;
+  allowed_tools?: string[];
+};
+
+function resolveRecommendedPanel(recommended: readonly PanelRecommendation[] | undefined, targetPack: RolePack | null, templates: PromptTemplateRecord[], rolePackId: string, usePackDefaults = false) {
+  if (!recommended || recommended.length < 2 || recommended.length > 5) return null;
+  const targetRole = targetPack?.label ?? "target role";
+  const promptSlugs: Record<string, string> = {};
+  const people = recommended.map((person, index) => {
+    const fallback = availablePanelists[index % availablePanelists.length];
+    const role = person.role || `${targetRole} Interviewer`;
+    const name = person.display_name || `${role} specialist`;
+    const id = person.id || `recommended-${index + 1}`;
+    const expertise = person.expertise?.join(", ") || `${targetRole} hiring signals`;
+    const defaultPrompt = usePackDefaults ? person.default_prompt?.trim() : undefined;
+    const promptSlug = usePackDefaults ? person.prompt_slug?.trim() : undefined;
+    const prompt = defaultPrompt || person.custom_prompt?.trim() || customPromptForRole(role, person.behavior || "Probe evidence", targetRole, expertise);
+    if (promptSlug) promptSlugs[id] = promptSlug;
+    return {
+      id,
+      name,
+      role,
+      initials: name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
+      avatarImage: fallback.avatarImage,
+      avatarId: fallback.avatarId,
+      avatarVendor: fallback.avatarVendor,
+      mood: person.mood || "Focused",
+      behavior: person.behavior || "Probes evidence",
+      voice: person.voice || "indian-calm",
+      prompt,
+      defaultPrompt,
+      promptSlug,
+      allowedTools: person.allowed_tools ? [...person.allowed_tools] : undefined,
+      expertise: person.expertise ? [...person.expertise] : undefined,
+    } satisfies Panelist;
+  });
+  const assigned = assignBuiltInTemplates(people, templates, rolePackId, promptSlugs);
+  return { ...assigned, promptSlugs };
 }
 
 export function SetupWizard() {
@@ -170,13 +196,22 @@ export function SetupWizard() {
   const [dirty, setDirty] = useState(false);
   const [enabledTools, setEnabledTools] = useState(["knowledge_search", "calculator"]);
   const [rolePacks, setRolePacks] = useState<RolePack[]>([]);
+  const [rolePacksLoading, setRolePacksLoading] = useState(true);
+  const [rolePacksError, setRolePacksError] = useState("");
+  const [rolePacksReload, setRolePacksReload] = useState(0);
+  const [roleQuery, setRoleQuery] = useState("");
   const [rolePackId, setRolePackId] = useState("product_management");
+  const [showAllPrompts, setShowAllPrompts] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileFeedbackRef = useRef<HTMLDivElement>(null);
-  const preferencesAppliedFor = useRef<string | null>(user?.id ?? null);
+  const preferencesAppliedFor = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const preUploadSnapshotRef = useRef<PreUploadSnapshot | null>(null);
   const autoAssignmentPanelRef = useRef(panel.map((person) => ({ ...person })));
+  const rolePackIdRef = useRef(rolePackId);
+  const promptLibraryRef = useRef(promptLibrary);
+  const panelPromptSlugsRef = useRef<Record<string, string>>({});
+  const initialTargetRoleRef = useRef(initialDefaults.targetRole);
   const canAdd = panel.length < 5;
 
   const selectedPerson = panel.find((person) => person.id === activePrompt) ?? panel[0];
@@ -188,9 +223,24 @@ export function SetupWizard() {
       ? "Private draft"
       : assignedPromptTemplate?.is_builtin === false
         ? "Private"
-        : "Built-in";
+        : assignedPromptTemplate
+          ? "Built-in"
+          : selectedPerson.defaultPrompt
+            ? "Role default"
+            : "Custom";
   const panelIds = useMemo(() => new Set(panel.map((person) => person.id)), [panel]);
   const selectedRolePack = useMemo(() => rolePacks.find((pack) => pack.id === rolePackId) ?? null, [rolePackId, rolePacks]);
+  const rolePackGroups = useMemo(() => {
+    const query = roleQuery.trim().toLowerCase();
+    const visible = rolePacks.filter((pack) => !query || `${pack.label} ${pack.family} ${pack.summary}`.toLowerCase().includes(query));
+    return [...new Set(visible.map((pack) => pack.family))].map((family) => ({ family, packs: visible.filter((pack) => pack.family === family) }));
+  }, [rolePacks, roleQuery]);
+  const panelRoleOptions = useMemo(() => Array.from(new Set([
+    ...(selectedRolePack?.panel.map((person) => person.role) ?? []),
+    "Hiring Manager",
+    "Behavioral Interviewer",
+    "Domain Specialist",
+  ])), [selectedRolePack]);
   const targetLevelLabels = useMemo<Record<TargetLevel, string>>(() => {
     const levels = selectedRolePack?.levels;
     if (!levels || levels.length !== TARGET_LEVELS.length) return fallbackLevelLabels;
@@ -202,6 +252,8 @@ export function SetupWizard() {
     if (!selectedRolePack) return ["Product sense and analytics", "Product strategy", "Execution and delivery", "Behavioral leadership", "Mixed product interview"];
     return [...selectedRolePack.rubric.map((item) => item.label), `Mixed ${selectedRolePack.label.toLowerCase()} interview`];
   }, [selectedRolePack]);
+  const roleMatchedPrompts = useMemo(() => promptLibrary.filter((template) => promptMatchesRolePack(template, rolePackId, selectedPerson.role) && template.role.trim().toLowerCase() === selectedPerson.role.trim().toLowerCase()), [promptLibrary, rolePackId, selectedPerson.role]);
+  const visiblePromptLibrary = showAllPrompts ? promptLibrary : roleMatchedPrompts;
 
   function markDirty() {
     dirtyRef.current = true;
@@ -214,27 +266,48 @@ export function SetupWizard() {
   }
 
   useEffect(() => {
-    if (!user || preferencesAppliedFor.current === user.id) return;
-    if (dirty) {
+    if (user && !dirtyRef.current) initialTargetRoleRef.current = setupDefaultsFromMetadata(user.user_metadata).targetRole;
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !rolePacks.length || preferencesAppliedFor.current === user.id) return;
+    if (dirtyRef.current) {
       preferencesAppliedFor.current = user.id;
       return;
     }
     const defaults = setupDefaultsFromMetadata(user.user_metadata);
-    const assigned = assignBuiltInTemplates(defaultPanelists.slice(0, defaults.panelSize), promptLibrary);
+    const nextId = bestRolePackId(defaults.targetRole, rolePacks);
+    const pack = rolePacks.find((item) => item.id === nextId) ?? rolePacks[0];
+    const resolved = resolveRecommendedPanel(pack.panel, pack, promptLibraryRef.current, pack.id, true);
     const timer = window.setTimeout(() => {
+      if (dirtyRef.current) {
+        preferencesAppliedFor.current = user.id;
+        return;
+      }
       preferencesAppliedFor.current = user.id;
+      rolePackIdRef.current = pack.id;
+      setRolePackId(pack.id);
+      setRoleQuery("");
       setTitle(defaults.title);
       setDuration(defaults.duration);
       setDifficulty(defaults.difficulty);
       setTargetLevel(defaults.targetLevel);
       setAllowInterruption(defaults.allowInterruption);
-      autoAssignmentPanelRef.current = assigned.panel.map((person) => ({ ...person }));
-      setPanel(assigned.panel);
-      setPromptTemplateIds(assigned.promptTemplateIds);
-      setActivePrompt(assigned.panel[0].id);
+      setEnabledTools(pack.enabled_tools);
+      setFocus(pack.rubric[0]?.label ?? `Mixed ${pack.label.toLowerCase()} interview`);
+      if (resolved) {
+        panelPromptSlugsRef.current = resolved.promptSlugs;
+        autoAssignmentPanelRef.current = resolved.panel.map((person) => ({ ...person }));
+        setPanel(resolved.panel);
+        setPromptTemplateIds(resolved.promptTemplateIds);
+        setActivePrompt(resolved.panel[0].id);
+        setPanelDifficulty({});
+        setPromptMode({});
+        setPromptNames({});
+      }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [dirty, promptLibrary, user]);
+  }, [rolePacks, user]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -257,10 +330,11 @@ export function SetupWizard() {
     void listPromptTemplates()
       .then((templates) => {
         if (cancelled) return;
+        promptLibraryRef.current = templates;
         setPromptLibrary(templates);
         setPromptLibraryLoading(false);
         if (dirtyRef.current) return;
-        const assigned = assignBuiltInTemplates(autoAssignmentPanelRef.current, templates);
+        const assigned = assignBuiltInTemplates(autoAssignmentPanelRef.current, templates, rolePackIdRef.current, panelPromptSlugsRef.current);
         autoAssignmentPanelRef.current = assigned.panel.map((person) => ({ ...person }));
         setPanel(assigned.panel);
         setPromptTemplateIds(assigned.promptTemplateIds);
@@ -277,34 +351,20 @@ export function SetupWizard() {
   function capturePreUploadSnapshot() {
     if (preUploadSnapshotRef.current) return;
     preUploadSnapshotRef.current = {
-      panel: panel.map((person) => ({ ...person })),
-      difficulty,
-      panelDifficulty: { ...panelDifficulty },
-      promptMode: { ...promptMode },
-      promptNames: { ...promptNames },
-      promptTemplateIds: { ...promptTemplateIds },
-      activePrompt,
+      focus,
     };
   }
 
   function restorePreUploadSnapshot() {
     const snapshot = preUploadSnapshotRef.current;
     if (!snapshot) return;
-    const restoredPanel = snapshot.panel.map((person) => ({ ...person }));
-    autoAssignmentPanelRef.current = restoredPanel.map((person) => ({ ...person }));
-    setPanel(restoredPanel);
-    setDifficulty(snapshot.difficulty);
-    setPanelDifficulty({ ...snapshot.panelDifficulty });
-    setPromptMode({ ...snapshot.promptMode });
-    setPromptNames({ ...snapshot.promptNames });
-    setPromptTemplateIds({ ...snapshot.promptTemplateIds });
-    setActivePrompt(snapshot.activePrompt);
+    setFocus(snapshot.focus);
   }
 
   function ignoreJobDescription() {
     restorePreUploadSnapshot();
     setJdDisposition("ignore");
-    setNotice("The panel and difficulty from before the upload were restored. The job description will not configure this interview.");
+    setNotice("The focus from before the upload was restored. Your selected role and panel were never changed.");
     markDirty();
   }
 
@@ -313,6 +373,19 @@ export function SetupWizard() {
     setDocumentState("skipped");
     setJdDisposition("ignore");
     markDirty();
+  }
+
+  function hydrateRolePackPanel(targetPack: RolePack) {
+    const resolved = resolveRecommendedPanel(targetPack.panel, targetPack, promptLibraryRef.current, targetPack.id, true);
+    if (!resolved) return;
+    panelPromptSlugsRef.current = resolved.promptSlugs;
+    autoAssignmentPanelRef.current = resolved.panel.map((person) => ({ ...person }));
+    setPanel(resolved.panel);
+    setActivePrompt(resolved.panel[0].id);
+    setPanelDifficulty({});
+    setPromptMode({});
+    setPromptNames({});
+    setPromptTemplateIds(resolved.promptTemplateIds);
   }
 
   async function handleFile(file?: File) {
@@ -335,8 +408,7 @@ export function SetupWizard() {
       if (uploaded.status === "failed") {
         setDocumentState("error");
       } else {
-        hydrateRecommendedPanel(uploaded.recommendations?.panel);
-        if (["supportive", "balanced", "challenging", "executive"].includes(uploaded.recommendations?.difficulty ?? "")) setDifficulty(uploaded.recommendations?.difficulty as typeof difficulty);
+        setFocus(jdFocusForRolePack(uploaded.recommendations?.focus_areas, selectedRolePack?.rubric ?? [], focus));
         setDocumentState("ready");
       }
     } catch (cause) {
@@ -352,10 +424,43 @@ export function SetupWizard() {
   useEffect(() => {
     let cancelled = false;
     void listRolePacks()
-      .then((packs) => { if (!cancelled) setRolePacks(packs); })
-      .catch((error) => console.warn("Role packs could not be loaded", error));
+      .then((packs) => {
+        if (cancelled) return;
+        setRolePacks(packs);
+        setRolePacksLoading(false);
+        const nextId = dirtyRef.current && packs.some((pack) => pack.id === rolePackIdRef.current)
+          ? rolePackIdRef.current
+          : bestRolePackId(initialTargetRoleRef.current, packs);
+        const pack = packs.find((item) => item.id === nextId) ?? packs[0];
+        if (!pack) {
+          setRolePacksError("No interview roles are available from the API.");
+          return;
+        }
+        rolePackIdRef.current = pack.id;
+        setRolePackId(pack.id);
+        if (!dirtyRef.current) {
+          const resolved = resolveRecommendedPanel(pack.panel, pack, promptLibraryRef.current, pack.id, true);
+          if (resolved) {
+            panelPromptSlugsRef.current = resolved.promptSlugs;
+            autoAssignmentPanelRef.current = resolved.panel.map((person) => ({ ...person }));
+            setPanel(resolved.panel);
+            setActivePrompt(resolved.panel[0].id);
+            setPanelDifficulty({});
+            setPromptMode({});
+            setPromptNames({});
+            setPromptTemplateIds(resolved.promptTemplateIds);
+          }
+          setEnabledTools(pack.enabled_tools);
+          setFocus(pack.rubric[0]?.label ?? `Mixed ${pack.label.toLowerCase()} interview`);
+        }
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        setRolePacksError(cause instanceof Error ? cause.message : "Interview roles could not be loaded.");
+        setRolePacksLoading(false);
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [rolePacksReload]);
 
   function updatePanel(id: string, patch: Partial<Panelist>) {
     setPanel((current) => current.map((person) => person.id === id ? { ...person, ...patch } : person));
@@ -373,8 +478,10 @@ export function SetupWizard() {
   function addPanelist() {
     const next = availablePanelists.find((person) => !panelIds.has(person.id));
     if (next && canAdd) {
-      const template = templateForPanelist(next, promptLibrary);
-      setPanel((current) => [...current, template ? { ...next, role: template.role, prompt: template.prompt } : next]);
+      const role = panelRoleOptions[panel.length % panelRoleOptions.length] ?? "Domain Specialist";
+      const roleAware = { ...next, role, prompt: customPromptForRole(role, next.behavior, selectedRolePack?.label ?? "target role", focus) };
+      const template = selectPanelPromptTemplate(promptLibrary, rolePackId, roleAware.role);
+      setPanel((current) => [...current, template ? { ...roleAware, role: template.role, prompt: template.prompt } : roleAware]);
       if (template) setPromptTemplateIds((current) => ({ ...current, [next.id]: template.id }));
       markDirty();
       if (documentState === "ready") setJdDisposition("edit");
@@ -398,62 +505,33 @@ export function SetupWizard() {
     markDirty();
   }
 
-  function hydrateRecommendedPanel(recommended = jdRecommendations?.panel) {
-    if (recommended && recommended.length >= 2 && recommended.length <= 5) {
-      const recommendedPanel = recommended.map((person, index) => {
-        const fallback = defaultPanelists[index % defaultPanelists.length];
-        const role = person.role || "Product interviewer";
-        const name = person.display_name || `${role} specialist`;
-        return {
-          id: person.id || `recommended-${index + 1}`,
-          name,
-          role,
-          initials: name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
-          avatarImage: fallback.avatarImage,
-          avatarId: fallback.avatarId,
-          avatarVendor: fallback.avatarVendor,
-          mood: person.mood || "Focused",
-          behavior: person.behavior || "Probes evidence",
-          voice: person.voice || "indian-calm",
-          prompt: `Test ${person.expertise?.join(", ") || "product judgment"}. Ask one focused, evidence-seeking follow-up at a time.`,
-        } satisfies Panelist;
-      });
-      const assigned = assignBuiltInTemplates(recommendedPanel, promptLibrary);
-      setPanel(assigned.panel);
-      setActivePrompt(assigned.panel[0].id);
-      setPanelDifficulty({});
-      setPromptMode({});
-      setPromptNames({});
-      setPromptTemplateIds(assigned.promptTemplateIds);
-    }
-  }
-
   function chooseRolePack(id: string) {
     const pack = rolePacks.find((item) => item.id === id);
     setRolePackId(id);
+    rolePackIdRef.current = id;
+    setShowAllPrompts(false);
     setSaveError("");
     markDirty();
     if (!pack) return;
+    setTitle((current) => current === initialDefaults.title || rolePacks.some((item) => current === `${item.label} practice`) ? `${pack.label} practice` : current);
     // The pack is a starting point: it seats a panel and picks the tools that
     // track needs, and every one of those stays editable in the next steps.
-    hydrateRecommendedPanel(pack.panel);
+    hydrateRolePackPanel(pack);
     setEnabledTools(pack.enabled_tools);
     // The previous track's focus is not on this one's menu, so re-anchor it.
     setFocus(pack.rubric[0]?.label ?? `Mixed ${pack.label.toLowerCase()} interview`);
     if (documentState === "ready") setJdDisposition("edit");
   }
 
-  function applyRecommendedPanel() {
-    hydrateRecommendedPanel();
-    if (["supportive", "balanced", "challenging", "executive"].includes(jdRecommendations?.difficulty ?? "")) setDifficulty(jdRecommendations?.difficulty as typeof difficulty);
+  function applyJdRefinement() {
+    setFocus(jdFocusForRolePack(jdRecommendations?.focus_areas, selectedRolePack?.rubric ?? [], focus));
     setJdDisposition("apply");
     markDirty();
   }
 
-  function editRecommendedPanel() {
-    hydrateRecommendedPanel();
+  function editJdRefinement() {
     setJdDisposition("edit");
-    setStep(2);
+    setStep(0);
     markDirty();
   }
 
@@ -473,28 +551,23 @@ export function SetupWizard() {
     setPromptMode((current) => ({ ...current, [selectedPerson.id]: "custom" }));
     setPromptNames((current) => ({ ...current, [selectedPerson.id]: `Custom ${selectedPerson.role} interviewer` }));
     setPromptTemplateIds((current) => Object.fromEntries(Object.entries(current).filter(([panelistId]) => panelistId !== selectedPerson.id)));
-    updatePanel(selectedPerson.id, { prompt: "" });
+    updatePanel(selectedPerson.id, { prompt: "", defaultPrompt: undefined, promptSlug: undefined, allowedTools: undefined });
     setPromptSaveError("");
     setNotice("Blank custom prompt created. Add the interviewer knowledge and behavior you want.");
     if (documentState === "ready") setJdDisposition("edit");
   }
 
   function changePanelRole(person: Panelist, role: string) {
-    const hasAssignedTemplate = Boolean(promptTemplateIds[person.id]);
-    if (hasAssignedTemplate) {
-      setPromptTemplateIds((current) => Object.fromEntries(Object.entries(current).filter(([panelistId]) => panelistId !== person.id)));
-      setPromptMode((current) => ({ ...current, [person.id]: "custom" }));
-      setPromptNames((current) => ({ ...current, [person.id]: `Custom ${role} interviewer` }));
-      setPromptSaveError("");
-      setNotice(`${person.name}'s role changed. The previous template was unassigned and replaced with a role-matched custom draft.`);
-      updatePanel(person.id, { role, prompt: customPromptForRole(role, person.behavior) });
-      return;
-    }
-    updatePanel(person.id, { role });
+    setPromptTemplateIds((current) => Object.fromEntries(Object.entries(current).filter(([panelistId]) => panelistId !== person.id)));
+    setPromptMode((current) => ({ ...current, [person.id]: "custom" }));
+    setPromptNames((current) => ({ ...current, [person.id]: `Custom ${role} interviewer` }));
+    setPromptSaveError("");
+    setNotice(`${person.name}'s role changed. A role-matched custom prompt is ready to edit.`);
+    updatePanel(person.id, { role, prompt: customPromptForRole(role, person.behavior, selectedRolePack?.label ?? "target role", focus), defaultPrompt: undefined, promptSlug: undefined, allowedTools: undefined });
   }
 
   function choosePromptTemplate(template: PromptTemplateRecord) {
-    updatePanel(selectedPerson.id, { role: template.role, prompt: template.prompt });
+    updatePanel(selectedPerson.id, { role: template.role, prompt: template.prompt, defaultPrompt: undefined, promptSlug: undefined, allowedTools: undefined });
     setPromptTemplateIds((current) => ({ ...current, [selectedPerson.id]: template.id }));
     setPromptMode((current) => Object.fromEntries(Object.entries(current).filter(([panelistId]) => panelistId !== selectedPerson.id)));
     setPromptNames((current) => ({ ...current, [selectedPerson.id]: template.name }));
@@ -536,9 +609,10 @@ export function SetupWizard() {
       return;
     }
     const allowedTools = roleScopedTools(enabledTools, selectedPerson.role, selectedPerson.behavior);
-    const knowledge = {
+      const knowledge = {
+      role_pack_id: rolePackId,
       domains: [focus, selectedPerson.role],
-      scoring_focus: scoringFocusForPrimaryFocus(focus),
+      scoring_focus: selectedRolePack ? scoringFocusForRolePack(focus, selectedRolePack.rubric) : scoringFocusForPrimaryFocus(focus),
     };
     const behavior = {
       mood: selectedPerson.mood,
@@ -605,30 +679,19 @@ export function SetupWizard() {
     setSaveError("");
     const mappedPanel = panel.map((person) => {
       const interviewerDifficulty = panelDifficulty[person.id] ?? difficulty;
-      const hasCustomOverride = !promptTemplateIds[person.id] || Boolean(promptMode[person.id]);
-      const knowledgePrompt = [
-        `Interview focus: ${focus}.`,
-        `Target level: ${targetLevelLabels[targetLevel]}.`,
-        `Interviewer challenge level: ${interviewerDifficulty}.`,
-        documentState === "ready" && jdDisposition !== "ignore" ? "Use the attached job description as untrusted role context." : "Use the configured product interview defaults.",
-      ].join(" ");
-      return {
-        id: person.id,
-        display_name: person.name,
-        role: person.role,
-        expertise: [focus, targetLevelLabels[targetLevel], `Difficulty: ${interviewerDifficulty}`, person.role, person.behavior],
-        prompt_template_id: promptTemplateIds[person.id],
-        custom_prompt: promptTemplateIds[person.id] && !promptMode[person.id] ? undefined : person.prompt,
-        allowed_tools: hasCustomOverride ? roleScopedTools(enabledTools, person.role, person.behavior) : undefined,
-        knowledge_prompt: knowledgePrompt,
-        voice: person.voice,
-        mood: person.mood,
-        behavior: person.behavior,
-        interruption_style: interruptionStyle(allowInterruption),
-        avatar_id: person.avatarId,
-        avatar_vendor: person.avatarVendor,
-        avatar_image: person.avatarImage,
-      };
+      const roleDefault = person.defaultPrompt;
+      const hasCustomOverride = Boolean(promptMode[person.id]) || (!promptTemplateIds[person.id] && (!roleDefault || roleDefault !== person.prompt));
+      return serializeSetupPanelist(person, {
+        focus,
+        targetLevelLabel: targetLevelLabels[targetLevel],
+        difficulty: interviewerDifficulty,
+        rolePackLabel: selectedRolePack?.label ?? rolePackId,
+        promptTemplateId: promptTemplateIds[person.id],
+        hasCustomOverride,
+        enabledTools,
+        allowInterruption,
+        useJobDescription: documentState === "ready" && jdDisposition !== "ignore",
+      });
     });
     try {
       const config = await createInterviewConfig({
@@ -666,41 +729,28 @@ export function SetupWizard() {
         <section className="min-w-0" aria-labelledby="wizard-step-title">
           {step === 0 ? (
             <Card className="enter">
-              <CardHeader><CardTitle id="wizard-step-title" className="text-xl">What are you preparing for?</CardTitle><CardDescription>These settings shape the starting difficulty and default rubric. You can still change every interviewer later.</CardDescription></CardHeader>
+              <CardHeader><CardTitle id="wizard-step-title" className="text-xl">Choose your target role</CardTitle><CardDescription>Your role sets the panel, rubric, tools, and coding workspace. You can edit the details after choosing.</CardDescription></CardHeader>
               <CardContent className="space-y-5">
-                <Field label="Interview name" required><Input name="interview_name" value={title} onChange={(event) => { setTitle(event.target.value); setSaveError(""); markDirty(); }} placeholder="Name this interview…" /></Field>
-                {rolePacks.length ? (
-                  <Field label="Hiring track" hint="Seats a panel and rubric built for this role. Everything stays editable.">
-                    <Select name="role_pack" value={rolePackId} onChange={(event) => chooseRolePack(event.target.value)}>
-                      {[...new Set(rolePacks.map((pack) => pack.family))].map((family) => (
-                        <optgroup key={family} label={family}>
-                          {rolePacks.filter((pack) => pack.family === family).map((pack) => (
-                            <option key={pack.id} value={pack.id}>{pack.label}</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </Select>
+                {rolePacksLoading ? <div className="grid min-h-48 place-items-center rounded-lg border border-dashed bg-background" aria-busy="true"><div className="text-center"><LoaderCircle className="mx-auto size-5 animate-spin text-primary" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Loading interview roles</p></div></div> : null}
+                {rolePacksError ? <div className="space-y-3"><Alert title="Interview roles could not be loaded" variant="destructive"><span>{rolePacksError}</span></Alert><Button variant="secondary" onClick={() => { setRolePacksLoading(true); setRolePacksError(""); setRolePacksReload((value) => value + 1); }}>Try again</Button></div> : null}
+                {!rolePacksLoading && !rolePacksError && rolePacks.length ? <>
+                  <Field label="Find a target role" hint="Search or browse by job family. This remains editable until you enter the lobby.">
+                    <Input name="role_search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Search software, data, product, cloud…" />
                   </Field>
-                ) : null}
+                  <fieldset className="max-h-[34rem] space-y-5 overflow-y-auto overscroll-contain pe-1">
+                    <legend className="sr-only">Choose target role</legend>
+                    {rolePackGroups.map((group) => <section key={group.family} aria-labelledby={`role-family-${group.family.replace(/[^a-z0-9]+/gi, "-")}`}><h3 id={`role-family-${group.family.replace(/[^a-z0-9]+/gi, "-")}`} className="mb-2 text-xs font-medium text-muted-foreground">{group.family}</h3><div className="grid gap-2 md:grid-cols-2">{group.packs.map((pack) => { const selected = pack.id === rolePackId; return <label key={pack.id} className="cursor-pointer"><input type="radio" name="role_pack" value={pack.id} checked={selected} onChange={() => chooseRolePack(pack.id)} className="peer sr-only" /><span className={cn("group flex min-h-28 items-start gap-3 rounded-lg border bg-background p-4 text-start outline-none transition-colors hover:border-primary/50 peer-focus-visible:ring-2 peer-focus-visible:ring-ring motion-reduce:transition-none", selected && "border-primary bg-primary/5 ring-1 ring-primary/20")}><span className={cn("mt-0.5 grid size-8 shrink-0 place-items-center rounded-md border bg-card text-muted-foreground", selected && "border-primary/30 text-primary")}>{selected ? <Check className="size-4" aria-hidden="true" /> : <BriefcaseBusiness className="size-4" aria-hidden="true" />}</span><span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{pack.label}</span>{pack.supports_coding ? <Badge variant="outline"><Code2 className="size-3" aria-hidden="true" />Coding</Badge> : null}</span><span className="mt-1.5 block text-xs leading-5 text-muted-foreground">{pack.summary}</span></span></span></label>; })}</div></section>)}
+                    {!rolePackGroups.length ? <div className="grid min-h-32 place-items-center rounded-lg border border-dashed px-4 text-center"><div><p className="text-sm font-medium">No roles match “{roleQuery}”</p><Button size="sm" variant="ghost" className="mt-2" onClick={() => setRoleQuery("")}>Clear search</Button></div></div> : null}
+                  </fieldset>
+                </> : null}
                 {selectedRolePack ? (
-                  <div className="rounded-lg border bg-background p-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium">{selectedRolePack.label}</p>
-                      {selectedRolePack.supports_coding ? (
-                        <Badge variant="outline"><Code2 className="size-3" aria-hidden="true" />Coding round</Badge>
-                      ) : null}
-                    </div>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{selectedRolePack.summary}</p>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Panel: {selectedRolePack.panel.map((person) => person.role).join(", ")}
-                    </p>
-                    {selectedRolePack.coding ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Editor languages: {selectedRolePack.coding.languages.map((value) => languageLabel(value)).join(", ")}
-                      </p>
-                    ) : null}
+                  <div className="rounded-lg border bg-muted/20 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Interview design for {selectedRolePack.label}</p><Badge variant="default">Selected role</Badge></div>
+                    <div className="mt-3 grid gap-3 text-xs text-muted-foreground sm:grid-cols-2"><div><p className="font-medium text-foreground">Default panel</p><p className="mt-1 leading-5">{selectedRolePack.panel.map((person) => person.role).join(", ")}</p></div><div><p className="font-medium text-foreground">Assessment</p><p className="mt-1 leading-5">{selectedRolePack.rubric.map((item) => item.label).join(", ")}</p></div>{selectedRolePack.coding ? <div className="sm:col-span-2"><p className="font-medium text-foreground">Coding workspace</p><p className="mt-1 leading-5">Opens during relevant questions with {selectedRolePack.coding.languages.map((value) => languageLabel(value)).join(", ")}.</p></div> : null}</div>
                   </div>
                 ) : null}
+                <Separator />
+                <Field label="Interview name" required><Input name="interview_name" value={title} onChange={(event) => { setTitle(event.target.value); setSaveError(""); markDirty(); }} placeholder="Name this interview…" /></Field>
                 <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{focusOptions.map((option) => <option key={option} value={option}>{option}</option>)}</Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
                 <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{TARGET_LEVELS.map((level) => <option key={level} value={level}>{targetLevelLabels[level]}</option>)}</Select></Field></div>
                 <label className="flex items-start gap-3 rounded-lg border bg-background p-4"><input name="allow_interruption" type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={allowInterruption} onChange={(event) => { setAllowInterruption(event.target.checked); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }} /><span><span className="block text-sm font-medium">Allow natural candidate interruption</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">The candidate can speak over a panelist, and the active interviewer will stop cleanly.</span></span></label>
@@ -710,7 +760,7 @@ export function SetupWizard() {
 
           {step === 1 ? (
             <Card className="enter">
-              <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle id="wizard-step-title" className="text-xl">Add role context</CardTitle><CardDescription className="mt-1">The job description is optional. Without it, RoundCraft uses proven product interview defaults.</CardDescription></div><Badge variant="outline">Optional</Badge></div></CardHeader>
+              <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle id="wizard-step-title" className="text-xl">Refine {selectedRolePack?.label ?? "your role"} with a JD</CardTitle><CardDescription className="mt-1">Optional. A job description adds company context and skill emphasis. It never replaces your selected target role.</CardDescription></div><Badge variant="outline">Optional</Badge></div></CardHeader>
               <CardContent className="space-y-5">
                 <input ref={inputRef} id="jd-upload" name="job_description" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="peer sr-only" aria-describedby="jd-upload-help" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void handleFile(file); }} />
                 <span id="jd-upload-help" className="sr-only">Accepts PDF, DOCX, TXT, or MD files up to 10 MB.</span>
@@ -718,22 +768,22 @@ export function SetupWizard() {
                   <div className="rounded-lg peer-focus-visible:ring-2 peer-focus-visible:ring-ring">
                     <label htmlFor="jd-upload" className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed bg-background p-6 text-center">
                       <span className="grid size-11 place-items-center rounded-lg border bg-card"><UploadCloud className="size-5 text-primary" aria-hidden="true" /></span>
-                      <span className="mt-4 text-sm font-medium">Upload a job description</span><span className="mt-1 text-xs text-muted-foreground">PDF, DOCX, TXT, or MD up to 10 MB</span>
+                      <span className="mt-4 text-sm font-medium">Upload a job description</span><span className="mt-1 text-xs text-muted-foreground">Refines {selectedRolePack?.label ?? "the selected role"}. PDF, DOCX, TXT, or MD up to 10 MB.</span>
                     </label>
                     <div className="mt-4 flex justify-center"><Button variant="ghost" onClick={continueWithDefaults}>Continue with defaults</Button></div>
                   </div>
                 ) : null}
-                {documentState === "processing" ? <div className="grid min-h-48 place-items-center rounded-lg border bg-background text-center" aria-live="polite"><div><LoaderCircle className="mx-auto size-6 animate-spin text-primary" aria-hidden="true" /><p className="mt-4 text-sm font-medium">Reading {fileName}</p><p className="mt-1 text-xs text-muted-foreground">Extracting role signals and panel recommendations…</p></div></div> : null}
+                {documentState === "processing" ? <div className="grid min-h-48 place-items-center rounded-lg border bg-background text-center" aria-live="polite"><div><LoaderCircle className="mx-auto size-6 animate-spin text-primary" aria-hidden="true" /><p className="mt-4 text-sm font-medium">Reading {fileName}</p><p className="mt-1 text-xs text-muted-foreground">Extracting company context and focus signals…</p></div></div> : null}
                 {documentState === "error" ? <div ref={fileFeedbackRef} tabIndex={-1} className="space-y-4 outline-none"><Alert title="This file could not be used" variant="destructive">Choose a PDF, DOCX, TXT, or MD file smaller than 10 MB. The interview can still use defaults.</Alert><div className="flex gap-2"><Button variant="secondary" onClick={() => inputRef.current?.click()}>Choose another file</Button><Button variant="ghost" onClick={continueWithDefaults}>Use defaults</Button></div></div> : null}
                 {documentState === "ready" ? (
                   <div ref={fileFeedbackRef} tabIndex={-1} className="space-y-5 outline-none">
-                    <div className="flex items-center gap-3 rounded-lg border bg-background p-4"><FileText className="size-5 text-primary" aria-hidden="true" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{fileName}</p><p className="text-xs text-muted-foreground">Role context ready</p></div><Badge variant="default"><Check className="size-3" aria-hidden="true" />Processed</Badge></div>
-                    <div><div className="mb-3 flex items-center justify-between"><div><h3 className="font-medium">Recommended configuration</h3><p className="mt-1 text-xs text-muted-foreground">Review now. Everything remains editable.</p></div><WandSparkles className="size-5 text-primary" aria-hidden="true" /></div><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Panel roles</p><p className="mt-2 text-sm font-medium">{jdRecommendations?.panel?.map((person) => person.role || person.display_name).filter(Boolean).join(", ") || "Growth Strategy, Analytics, Bar Raiser"}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">{jdRecommendations?.role_title ? `Configured for ${jdRecommendations.role_title}.` : "Role stresses experiments, cross-functional execution, and growth loops."}</p></div><div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Rubric focus</p><p className="mt-2 text-sm font-medium">{jdRecommendations?.focus_areas?.map((area) => area.replaceAll("_", " ")).join(", ") || "Analytics, execution"}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">Suggested difficulty: {jdRecommendations?.difficulty || "challenging"}.</p></div></div></div>
-                    <div className="flex flex-wrap gap-2"><Button size="sm" variant={jdDisposition === "apply" ? "default" : "secondary"} onClick={applyRecommendedPanel}><Sparkles aria-hidden="true" />Apply recommendations</Button><Button size="sm" variant={jdDisposition === "edit" ? "default" : "secondary"} onClick={editRecommendedPanel}><SlidersHorizontal aria-hidden="true" />Edit recommendations</Button><Button size="sm" variant="ghost" onClick={ignoreJobDescription}>Ignore for configuration</Button><Button size="sm" variant="ghost" onClick={() => inputRef.current?.click()}>Replace file</Button></div>
-                    {jdDisposition === "ignore" ? <Alert title="Recommendations ignored"><span>The panel, prompts, and difficulty from before this upload were restored. This job description will not be attached.</span></Alert> : null}
+                    <div className="flex items-center gap-3 rounded-lg border bg-background p-4"><FileText className="size-5 text-primary" aria-hidden="true" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{fileName}</p><p className="text-xs text-muted-foreground">Refining {selectedRolePack?.label ?? "the selected role"}</p></div><Badge variant="default"><Check className="size-3" aria-hidden="true" />Processed</Badge></div>
+                    <div><div className="mb-3 flex items-center justify-between"><div><h3 className="font-medium">Recommended refinements</h3><p className="mt-1 text-xs text-muted-foreground">Your target remains {selectedRolePack?.label ?? "the selected role"}. The JD only refines context and focus.</p></div><WandSparkles className="size-5 text-primary" aria-hidden="true" /></div><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Selected panel stays</p><p className="mt-2 text-sm font-medium">{selectedRolePack?.panel.map((person) => person.role).join(", ") || "Role specialists"}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">{jdRecommendations?.role_title ? `The JD title is ${jdRecommendations.role_title}; it is context, not a new target role.` : "The JD adds company-specific skills and responsibilities."}</p></div><div className="rounded-lg border p-4"><p className="text-xs text-muted-foreground">Suggested focus</p><p className="mt-2 text-sm font-medium">{jdRecommendations?.focus_areas?.map((area) => area.replaceAll("_", " ")).join(", ") || selectedRolePack?.rubric.slice(0, 2).map((item) => item.label).join(", ") || "Core role signals"}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">Your configured difficulty remains {difficulty}.</p></div></div></div>
+                    <div className="flex flex-wrap gap-2"><Button size="sm" variant={jdDisposition === "apply" ? "default" : "secondary"} onClick={applyJdRefinement}><Sparkles aria-hidden="true" />Apply focus refinement</Button><Button size="sm" variant={jdDisposition === "edit" ? "default" : "secondary"} onClick={editJdRefinement}><SlidersHorizontal aria-hidden="true" />Edit role settings</Button><Button size="sm" variant="ghost" onClick={ignoreJobDescription}>Ignore for configuration</Button><Button size="sm" variant="ghost" onClick={() => inputRef.current?.click()}>Replace file</Button></div>
+                    {jdDisposition === "ignore" ? <Alert title="JD ignored"><span>Your prior focus was restored. The selected role, panel, prompts, and difficulty were never replaced.</span></Alert> : null}
                   </div>
                 ) : null}
-                {documentState === "skipped" ? <Alert title="Using RoundCraft defaults"><span>No job description will be attached. The standard {focus.toLowerCase()} panel and rubric will be used.</span></Alert> : null}
+                {documentState === "skipped" ? <Alert title={`Using ${selectedRolePack?.label ?? "role"} defaults`}><span>No job description will be attached. The selected role pack continues to control the panel and rubric.</span></Alert> : null}
               </CardContent>
             </Card>
           ) : null}
@@ -741,7 +791,7 @@ export function SetupWizard() {
           {step === 2 ? (
             <div className="space-y-5 enter">
               <Alert title="The panel is non-linear"><span>After every candidate answer, a silent director selects the most useful next speaker. A panelist can return later, so the sequence may be 1, 3, 1, 2.</span></Alert>
-              <div className="flex items-center justify-between"><div><h2 id="wizard-step-title" className="text-xl font-semibold">Build your panel</h2><p className="mt-1 text-sm text-muted-foreground">Choose 2 to 5 interviewers.</p></div><Badge variant="outline">{panel.length} of 5</Badge></div>
+              <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="wizard-step-title" className="text-xl font-semibold">Build your {selectedRolePack?.label ?? "interview"} panel</h2><p className="mt-1 text-sm text-muted-foreground">Choose 2 to 5 interviewers. Every role starts from the selected hiring track.</p></div><div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setStep(0)}>Change target role</Button><Badge variant="outline">{panel.length} of 5</Badge></div></div>
               <div className="space-y-3">
                 {panel.map((person, index) => (
                   <Card key={person.id}>
@@ -775,16 +825,17 @@ export function SetupWizard() {
 
           {step === 3 ? (
             <div className="space-y-5 enter">
-              <div><h2 id="wizard-step-title" className="text-xl font-semibold">Shape interviewer knowledge</h2><p className="mt-1 text-sm text-muted-foreground">Use a built-in prompt unchanged, edit a private copy, or write a new one.</p></div>
+              <div><h2 id="wizard-step-title" className="text-xl font-semibold">Shape {selectedRolePack?.label ?? "interviewer"} knowledge</h2><p className="mt-1 text-sm text-muted-foreground">Start with the role-pack default, choose a matching library prompt, edit a copy, or start blank.</p></div>
               <div className="grid gap-5 lg:grid-cols-[13rem_1fr]">
                 <div className="space-y-1" role="tablist" aria-label="Panelist prompts" aria-orientation="vertical">{panel.map((person, index) => <button key={person.id} id={promptTabId(person.id, index)} type="button" role="tab" aria-controls="panelist-prompt-editor" aria-selected={activePrompt === person.id} tabIndex={activePrompt === person.id ? 0 : -1} onClick={() => { setActivePrompt(person.id); setPromptSaveError(""); }} onKeyDown={(event) => handlePromptTabKeyDown(event, index)} className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-start text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring ${activePrompt === person.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60"}`}><Avatar initials={person.initials} src={person.avatarImage} className="size-7" /><span className="truncate">{person.name}</span></button>)}</div>
                 <Card id="panelist-prompt-editor" role="tabpanel" aria-labelledby={promptTabId(selectedPerson.id, selectedPromptIndex)} tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{selectedPerson.name}</CardTitle><CardDescription>{selectedPerson.role}</CardDescription></div><Badge variant={promptMode[selectedPerson.id] ? "default" : "secondary"}>{selectedPromptLabel}</Badge></div></CardHeader>
                   <CardContent className="space-y-5">
-                    {!promptMode[selectedPerson.id] && assignedPromptTemplate?.is_builtin !== false ? <Alert title="Built-in prompts are protected"><span>Use this default unchanged, or create an editable copy. The RoundCraft original remains available.</span></Alert> : null}
+                    {!promptMode[selectedPerson.id] && assignedPromptTemplate?.is_builtin ? <Alert title="Built-in prompts are protected"><span>Use this role-matched default unchanged, or create an editable copy. The RoundCraft original remains available.</span></Alert> : null}
+                    {!promptMode[selectedPerson.id] && !assignedPromptTemplate && selectedPerson.defaultPrompt ? <Alert title="Role-pack default"><span>This prompt was designed for {selectedRolePack?.label ?? "the selected role"}. Edit a copy to customize it without changing the default.</span></Alert> : null}
                     {promptMode[selectedPerson.id] ? <Field label="Prompt name" required><Input name={`prompt_${selectedPerson.id}_name`} value={promptNames[selectedPerson.id] || ""} onChange={(event) => { setPromptNames((current) => ({ ...current, [selectedPerson.id]: event.target.value })); setPromptSaveError(""); markDirty(); }} placeholder="Name this interviewer prompt…" /></Field> : null}
                     <Field label="System prompt" hint={`${selectedPerson.prompt.length} characters`}><Textarea name={`prompt_${selectedPerson.id}_system`} value={selectedPerson.prompt} readOnly={!promptMode[selectedPerson.id]} onChange={(event) => { updatePanel(selectedPerson.id, { prompt: event.target.value }); setPromptSaveError(""); }} className="min-h-44" placeholder="Describe expertise, behavior, interview knowledge, and boundaries…" /></Field>
-                    <div className="grid gap-3 sm:grid-cols-2"><Field label="Voice"><Select name={`prompt_${selectedPerson.id}_voice`} value={selectedPerson.voice} onChange={(event) => updatePanel(selectedPerson.id, { voice: event.target.value })}><option value="indian-calm">Indian Calm — woman, composed</option><option value="indian-advisor">Indian Advisor — man, measured</option><option value="indian-anchor">Indian Anchor — woman, precise</option><option value="indian-deep">Indian Deep — man, low and deliberate</option><option value="indian-bright">Indian Bright — woman, energetic</option></Select></Field><Field label="Difficulty"><Select name={`prompt_${selectedPerson.id}_difficulty`} value={panelDifficulty[selectedPerson.id] ?? difficulty} onChange={(event) => updateInterviewerDifficulty(selectedPerson.id, event.target.value as SetupDifficulty)}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field></div>
+                    <div className="grid gap-3 sm:grid-cols-2"><Field label="Voice"><Select name={`prompt_${selectedPerson.id}_voice`} value={selectedPerson.voice} onChange={(event) => updatePanel(selectedPerson.id, { voice: event.target.value })}><option value="indian-calm">Indian Calm, woman, composed</option><option value="indian-advisor">Indian Advisor, man, measured</option><option value="indian-anchor">Indian Anchor, woman, precise</option><option value="indian-deep">Indian Deep, man, low and deliberate</option><option value="indian-bright">Indian Bright, woman, energetic</option></Select></Field><Field label="Difficulty"><Select name={`prompt_${selectedPerson.id}_difficulty`} value={panelDifficulty[selectedPerson.id] ?? difficulty} onChange={(event) => updateInterviewerDifficulty(selectedPerson.id, event.target.value as SetupDifficulty)}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field></div>
                     {promptSaveError ? <Alert title="Prompt could not be saved" variant="destructive"><span>{promptSaveError}</span></Alert> : null}
                     <div className="flex flex-wrap gap-2">{!promptMode[selectedPerson.id] ? <Button size="sm" variant="secondary" onClick={forkPrompt}><Copy aria-hidden="true" />Edit a copy</Button> : null}<Button size="sm" variant="ghost" onClick={customPrompt}><Plus aria-hidden="true" />Write new prompt</Button>{promptMode[selectedPerson.id] ? <Button size="sm" loading={promptSaving} onClick={() => void savePromptTemplate()}><Check aria-hidden="true" />Save to library</Button> : null}</div>
                   </CardContent>
@@ -794,13 +845,14 @@ export function SetupWizard() {
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-medium">Prompt library</h3>
-                    <p className="mt-1 text-xs text-muted-foreground">Choose any active RoundCraft or private prompt.</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Showing prompts matched to {selectedPerson.role} and {selectedRolePack?.label ?? "the target role"}.</p>
                   </div>
-                  <Button asChild size="sm" variant="ghost"><Link href="/prompts" onClick={guardPromptLibraryNavigation}>Open full library</Link></Button>
+                  <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="ghost" onClick={() => setShowAllPrompts((value) => !value)}>{showAllPrompts ? "Show role matches" : "Show all prompts"}</Button><Button asChild size="sm" variant="ghost"><Link href="/prompts" onClick={guardPromptLibraryNavigation}>Open full library</Link></Button></div>
                 </div>
                 {promptLibraryError ? <Alert title="Prompt library unavailable" variant="destructive"><span>{promptLibraryError}</span></Alert> : null}
+                {showAllPrompts ? <div className="mb-3"><Alert title="All prompts shown"><span>Prompts outside this role may need editing before they match the selected interview.</span></Alert></div> : null}
                 <div className="grid max-h-[28rem] gap-3 overflow-y-auto overscroll-contain pe-1 sm:grid-cols-2">
-                  {promptLibrary.map((template) => (
+                  {visiblePromptLibrary.map((template) => (
                     <button key={template.id} type="button" className={cn("rounded-lg border bg-card p-4 text-start outline-none hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-ring", promptTemplateIds[selectedPerson.id] === template.id && !promptMode[selectedPerson.id] && "border-primary/60 bg-primary/5")} onClick={() => choosePromptTemplate(template)}>
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-sm font-medium">{template.name}</span>
@@ -810,11 +862,12 @@ export function SetupWizard() {
                         </span>
                       </div>
                       <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{template.description}</p>
+                      <p className="mt-2 text-[11px] font-medium text-foreground">{template.role}</p>
                     </button>
                   ))}
                 </div>
                 {promptLibraryLoading ? <div className="grid min-h-28 place-items-center rounded-lg border border-dashed text-xs text-muted-foreground" aria-busy="true">Loading prompt library…</div> : null}
-                {!promptLibraryLoading && !promptLibrary.length && !promptLibraryError ? <div className="grid min-h-28 place-items-center rounded-lg border border-dashed px-4 text-center text-xs text-muted-foreground">No active prompts are available yet. Write a custom prompt above and save it to your library.</div> : null}
+                {!promptLibraryLoading && !visiblePromptLibrary.length && !promptLibraryError ? <div className="grid min-h-28 place-items-center rounded-lg border border-dashed px-4 text-center"><div><p className="text-sm font-medium">No matching library prompts yet</p><p className="mt-1 text-xs leading-5 text-muted-foreground">The role-pack default above is ready to use. You can edit a copy, start blank, or browse every prompt.</p>{promptLibrary.length ? <Button size="sm" variant="ghost" className="mt-2" onClick={() => setShowAllPrompts(true)}>Show all prompts</Button> : null}</div></div> : null}
               </div>
             </div>
           ) : null}
@@ -824,7 +877,7 @@ export function SetupWizard() {
               <Card>
                 <CardHeader><div className="flex items-start justify-between gap-4"><div><CardTitle id="wizard-step-title" className="text-xl">Ready for the lobby</CardTitle><CardDescription className="mt-1">Review the configuration snapshot that will stay attached to this interview.</CardDescription></div><Badge variant="default"><Check aria-hidden="true" />Ready</Badge></div></CardHeader>
                 <CardContent className="space-y-5">
-                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · ${jdDisposition}` : "Defaults only"}</p></div></div>
+                  <div className="grid gap-4 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Target role</p><p className="mt-1 text-sm font-medium">{selectedRolePack?.label ?? rolePackId}</p></div><div><p className="text-xs text-muted-foreground">Interview</p><p className="mt-1 text-sm font-medium">{title}</p></div><div><p className="text-xs text-muted-foreground">Primary focus</p><p className="mt-1 text-sm font-medium">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1 text-sm font-medium">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Duration</p><p className="mt-1 text-sm font-medium">{duration} minutes</p></div><div><p className="text-xs text-muted-foreground">Difficulty</p><p className="mt-1 capitalize text-sm font-medium">{difficulty}</p></div><div><p className="text-xs text-muted-foreground">Job description</p><p className="mt-1 truncate text-sm font-medium">{documentState === "ready" && jdDisposition !== "ignore" ? `${fileName} · refining role` : "Role defaults only"}</p></div></div>
                   <Separator />
                   <div><p className="mb-3 text-xs text-muted-foreground">Panel sequence is decided live</p><div className="flex flex-wrap gap-2">{panel.map((person) => <div key={person.id} className="flex items-center gap-2 rounded-md border bg-background p-2 pe-3"><Avatar initials={person.initials} src={person.avatarImage} className="size-7" /><span><span className="block text-xs font-medium">{person.name}</span><span className="block text-[10px] capitalize text-muted-foreground">{person.role} · {panelDifficulty[person.id] ?? difficulty}</span></span></div>)}</div></div>
                   <Separator />
@@ -842,12 +895,12 @@ export function SetupWizard() {
         <aside className="hidden xl:block">
           <Card className="sticky top-20">
             <CardHeader><CardTitle className="text-sm">Configuration snapshot</CardTitle></CardHeader>
-            <CardContent className="space-y-4 text-sm"><div><p className="text-xs text-muted-foreground">Focus</p><p className="mt-1">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Panel</p><p className="mt-1">{panel.length} interviewers</p></div><div><p className="text-xs text-muted-foreground">Role context</p><p className="mt-1">{documentState === "ready" && jdDisposition !== "ignore" ? "JD configured" : "RoundCraft defaults"}</p></div><Separator /><div className="space-y-2"><CheckRow muted>One audible speaker</CheckRow><CheckRow muted>Adaptive follow-ups</CheckRow><CheckRow muted>Evidence-linked report</CheckRow></div></CardContent>
+            <CardContent className="space-y-4 text-sm"><div><div className="flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">Target role</p>{step === 0 ? null : <Button size="sm" variant="ghost" onClick={() => setStep(0)}>Change</Button>}</div><p className="mt-1 font-medium">{selectedRolePack?.label ?? "Select a role"}</p></div><div><p className="text-xs text-muted-foreground">Focus</p><p className="mt-1">{focus}</p></div><div><p className="text-xs text-muted-foreground">Target level</p><p className="mt-1">{targetLevelLabels[targetLevel]}</p></div><div><p className="text-xs text-muted-foreground">Panel</p><p className="mt-1">{panel.length} interviewers</p></div><div><p className="text-xs text-muted-foreground">JD refinement</p><p className="mt-1">{documentState === "ready" && jdDisposition !== "ignore" ? "Applied to selected role" : "Not applied"}</p></div><Separator /><div className="space-y-2"><CheckRow muted>One audible speaker</CheckRow><CheckRow muted>Adaptive follow-ups</CheckRow><CheckRow muted>Evidence-linked report</CheckRow></div></CardContent>
           </Card>
         </aside>
       </div>
 
-      {step < 4 ? <div className="mt-8 flex items-center justify-between border-t pt-5"><Button variant="ghost" disabled={step === 0} onClick={() => setStep((current) => Math.max(0, current - 1))}><ArrowLeft aria-hidden="true" />Back</Button><Button onClick={() => setStep((current) => Math.min(4, current + 1))} disabled={step === 0 && !title.trim()}>Continue<ArrowRight aria-hidden="true" /></Button></div> : <div className="mt-8"><Button variant="ghost" onClick={() => setStep(3)}><ArrowLeft aria-hidden="true" />Back to prompts</Button></div>}
+      {step < 4 ? <div className="mt-8 flex items-center justify-between border-t pt-5"><Button variant="ghost" disabled={step === 0} onClick={() => setStep((current) => Math.max(0, current - 1))}><ArrowLeft aria-hidden="true" />Back</Button><Button onClick={() => setStep((current) => Math.min(4, current + 1))} disabled={step === 0 && (!title.trim() || !selectedRolePack)}>Continue<ArrowRight aria-hidden="true" /></Button></div> : <div className="mt-8"><Button variant="ghost" onClick={() => setStep(3)}><ArrowLeft aria-hidden="true" />Back to prompts</Button></div>}
     </AppShell>
   );
 }
