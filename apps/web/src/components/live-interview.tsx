@@ -87,8 +87,10 @@ function trapFocus(event: ReactKeyboardEvent, container: HTMLElement | null) {
 
 const initialMedia: LiveMediaState = {
   microphoneEnabled: false,
+  cameraEnabled: true,
   candidateSpeaking: false,
   hostSpeaking: false,
+  localVideo: null,
   remoteVideos: [],
   connectionState: "DISCONNECTED",
 };
@@ -590,7 +592,9 @@ export function LiveInterviewScreen() {
                   : person.id === activePanelist.id
                     ? selectedPresence(agentState, sessionIsDemo)
                     : sessionIsDemo ? presenceForPanelist(Math.max(0, configuredIndex), idlePhase, false) : "listening";
-                const avatarUid = avatarUidForPanelist(person, storedSession?.connection?.panelists);
+                const avatarUid = isHumanHost
+                  ? hostPresence?.rtc_uid
+                  : avatarUidForPanelist(person, storedSession?.connection?.panelists);
                 return (
                   <ParticipantTile
                     key={person.id}
@@ -599,7 +603,7 @@ export function LiveInterviewScreen() {
                     isSelf={isSelf}
                     microphoneEnabled={isSelf ? mediaState.microphoneEnabled : undefined}
                     toneIndex={isSelf ? configuredPanel.length + 1 : isHumanHost ? configuredPanel.length : configuredIndex}
-                    track={isSelf ? undefined : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
+                    track={isSelf ? mediaState.localVideo : mediaState.remoteVideos.find((video) => video.uid === String(avatarUid))?.track}
                     compact={codeOpen}
                     className="size-full"
                   />

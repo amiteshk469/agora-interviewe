@@ -82,3 +82,49 @@ The logo crop was reviewed separately because the user explicitly rejected the p
 ## Final result
 
 final result: passed
+---
+
+# Interviewer shared-room regression QA
+
+- Source/problem state: `/var/folders/p5/nvyp_bj90zj55gn4shw_w0gr0000gn/T/codex-clipboard-b5e0bc24-458a-4bd5-b6d0-2e5fa8de32fa.png`
+- Browser-rendered meeting grid: `/private/tmp/roundcraft-host-room.png`
+- Browser-rendered drawer state: `/private/tmp/roundcraft-host-drawer.png`
+- Viewport: 1280 × 720 CSS px, dark theme
+- Pixels: source 3008 × 1532 (Retina capture); implementation 1280 × 720 at 1×
+- State: five-person interviewer-led room; interviewer tools closed and open
+
+The supplied screenshot is the problem state rather than a literal clone target. The requested transformation was to make participants the primary Meet-style grid and move the existing interviewer controls into an optional drawer while preserving RoundCraft's design system.
+
+## Findings
+
+No actionable P0, P1, or P2 visual differences remain for the requested transformation.
+
+- Fonts and typography: existing product font, weights, hierarchy, truncation, and compact room labels remain consistent.
+- Spacing and layout rhythm: the participant grid owns the primary stage; the question and call controls remain persistent; the drawer reduces the stage without hiding controls.
+- Colors and visual tokens: established dark-theme background, tile, border, primary, muted, and destructive tokens are preserved.
+- Image and asset fidelity: existing RoundCraft identity and participant-avatar treatment are reused. Agora camera tracks replace avatars in-place when available.
+- Copy and content: room labels, focus disclosure, question, transcript, messaging, and coding controls are concise and role-appropriate.
+
+## Primary interactions tested
+
+- Entered the guest-interviewer lobby and joined the room.
+- Opened and closed the interviewer drawer.
+- Switched among Lead, Transcript, and Code tabs.
+- Verified transcript turns and the candidate code buffer render in their respective tabs.
+- Verified the accessibility tree exposes the drawer as a controlled region and its sections as tabs.
+
+The local visual fixture intentionally used invalid Agora credentials, so its live-media warning belongs to the fixture. The production RTC lifecycle is covered by automated tests; a real two-browser webcam check remains a post-merge smoke test.
+
+Focused region comparison was not needed because the principal change is the full-view information hierarchy; drawer text and controls were separately checked through the browser accessibility tree.
+
+## Comparison history
+
+- Earlier P1: transcript and controls dominated the interviewer screen, while participants were reduced to a narrow identity strip.
+- Fix: promoted every AI and human participant to an equal meeting tile and placed lead, transcript, and code tools in a collapsible side drawer.
+- Post-fix evidence: the meeting-grid and drawer captures listed above show the revised hierarchy.
+
+## Follow-up polish
+
+- P3: run a real joined-camera smoke test after deployment to evaluate actual webcam crop and network-state transitions.
+
+final result: passed

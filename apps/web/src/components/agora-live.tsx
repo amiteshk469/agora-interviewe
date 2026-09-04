@@ -1,5 +1,6 @@
 "use client";
 
+import type { PlayableVideoTrack } from "agora-agent-uikit";
 import type { IRemoteVideoTrack } from "agora-rtc-react";
 import type { RTMClient } from "agora-rtm";
 import dynamic from "next/dynamic";
@@ -12,8 +13,10 @@ export type LiveTranscriptTurn = { id: string; uid: string; isLocal: boolean; te
 export type LiveAgentState = "idle" | "listening" | "thinking" | "speaking" | "silent" | null;
 export type LiveMediaState = {
   microphoneEnabled: boolean;
+  cameraEnabled: boolean;
   candidateSpeaking: boolean;
   hostSpeaking: boolean;
+  localVideo: PlayableVideoTrack | null;
   remoteVideos: Array<{ uid: string; track: IRemoteVideoTrack }>;
   connectionState: string;
 };

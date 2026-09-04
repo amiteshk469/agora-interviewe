@@ -443,6 +443,7 @@ export type HostPresence = {
   display_name: string;
   joined_at: string;
   last_seen_at: string;
+  rtc_uid?: number | null;
   messages: HostMessage[];
 };
 
@@ -450,6 +451,22 @@ export type CandidatePresence = {
   display_name: string;
   joined_at: string;
   last_seen_at: string;
+  rtc_uid?: number | null;
+};
+
+export type FocusGuardEventType = "tab_hidden" | "window_blur" | "fullscreen_exit" | "camera_disabled";
+
+export type FocusGuardEvent = {
+  id: string;
+  event: FocusGuardEventType;
+  detail: string;
+  occurred_at: string;
+};
+
+export type FocusGuardSummary = {
+  violation_count: number;
+  flagged: boolean;
+  events: FocusGuardEvent[];
 };
 
 export function createSessionInvite(sessionId: string) {
@@ -484,6 +501,7 @@ export type GuestSession = {
   supports_coding: boolean;
   coding: RolePackCoding | null;
   heartbeat_interval_seconds: number;
+  candidate_rtc_uid?: number | null;
 };
 
 export type GuestInvitePreview = {
@@ -512,7 +530,9 @@ export type GuestView = {
   messages: HostMessage[];
   pending_question: string | null;
   candidate?: CandidatePresence | null;
+  host?: HostPresence | null;
   coding_task?: CodingTask | null;
+  focus_guard?: FocusGuardSummary;
 };
 
 async function guestRequest<T>(path: string, init?: RequestInit) {
@@ -587,6 +607,17 @@ export function heartbeatCandidateSession(token: string) {
   return guestRequest<{ connected: true; last_seen_at: string }>(
     `/guest/candidates/${encodeURIComponent(token)}/heartbeat`,
     { method: "POST" },
+  );
+}
+
+export function recordCandidateFocusEvent(token: string, event: FocusGuardEventType, detail = "") {
+  return guestRequest<FocusGuardSummary>(
+    `/guest/candidates/${encodeURIComponent(token)}/focus-events`,
+    {
+      method: "POST",
+      keepalive: true,
+      body: JSON.stringify({ event, detail }),
+    },
   );
 }
 

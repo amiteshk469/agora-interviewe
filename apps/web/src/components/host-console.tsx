@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Code2, Copy, Headphones, Loader2, MessageSquareText, Mic, MicOff, PhoneOff, Send, UserRound, Volume2, VolumeX } from "lucide-react";
+import { Camera, CameraOff, Check, Code2, Copy, FileText, Headphones, Loader2, MessageSquareText, Mic, MicOff, PanelRightClose, PanelRightOpen, PhoneOff, Send, ShieldAlert, ShieldCheck, Volume2, VolumeX } from "lucide-react";
+import { Brand } from "@/components/app-shell";
 import { CodeView } from "@/components/code-pane";
-import { PanelIdentity } from "@/components/panel-video";
+import { PanelIdentity, ParticipantTile, participantGridClass } from "@/components/panel-video";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Alert, Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui";
+import type { Panelist } from "@/data/demo";
 import {
   joinSessionAsHost,
   heartbeatHostSession,
@@ -22,16 +25,19 @@ import {
   type GuestSession,
   type GuestView,
   type GuestInvitePreview,
+  type FocusGuardSummary,
   type HostMessage,
   type SessionInvite,
 } from "@/lib/api";
-import { mergeRecordsById, panelistIdForAgoraUid } from "@/lib/live-panel";
-import { joinHostRtcRoom, type HostRtcHandle } from "@/lib/host-rtc";
+import { mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
+import { joinHostRtcRoom, type HostRtcHandle, type HostRtcMediaState } from "@/lib/host-rtc";
 import { cn } from "@/lib/utils";
 
 // Fast enough that a co-host can follow the exchange, slow enough not to hammer
 // an API that is already carrying a live interview.
 const POLL_INTERVAL_MS = 2500;
+const EMPTY_HOST_MEDIA: HostRtcMediaState = { cameraEnabled: false, localVideo: null, remoteVideos: [] };
+const EMPTY_FOCUS_GUARD: FocusGuardSummary = { violation_count: 0, flagged: false, events: [] };
 
 type Turn = GuestView["turns"][number];
 
@@ -43,6 +49,22 @@ function speakerLabel(turn: Turn, session: GuestSession | null) {
   const panelistId = panelistIdForAgoraUid(turn.speaker_id, session?.connection.panelists);
   const match = session?.panel.find((member) => member.id === panelistId);
   return match?.display_name ?? "Panel";
+}
+
+function asPanelist(member: GuestSession["panel"][number], index: number): Panelist {
+  return {
+    id: member.id,
+    name: member.display_name,
+    role: member.role,
+    initials: member.display_name.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
+    avatarImage: member.avatar_image || ["/avatars/leah-kim.png", "/avatars/marcus-chen.png", "/avatars/priya-nair.png"][index % 3],
+    avatarId: member.id,
+    avatarVendor: "generic",
+    mood: "Focused",
+    behavior: "Adaptive",
+    voice: "",
+    prompt: "",
+  };
 }
 
 export function HostConsole({ token, preview, autoJoinName, ownerSessionId, candidateInvite }: { token: string; preview?: GuestInvitePreview; autoJoinName?: string; ownerSessionId?: string; candidateInvite?: SessionInvite }) {
@@ -71,13 +93,19 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
   const [rtcReady, setRtcReady] = useState(false);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [microphoneBusy, setMicrophoneBusy] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [cameraBusy, setCameraBusy] = useState(false);
+  const [media, setMedia] = useState<HostRtcMediaState>(EMPTY_HOST_MEDIA);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<"lead" | "transcript" | "code">("lead");
+  const [focusGuard, setFocusGuard] = useState<FocusGuardSummary>(EMPTY_FOCUS_GUARD);
   const [updatesDelayed, setUpdatesDelayed] = useState(false);
   const [status, setStatus] = useState("");
   const rtc = useRef<HostRtcHandle | null>(null);
   const mounted = useRef(true);
   const statusRef = useRef("");
   const lastSequence = useRef(0);
-  const transcriptEnd = useRef<HTMLDivElement>(null);
+  const transcriptEnd = useRef<HTMLLIElement>(null);
   const autoJoinStarted = useRef(false);
 
   useEffect(() => {
@@ -106,6 +134,9 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
           renewConnection: () => renewHostSessionToken(token),
           onConnectionError: (renewalError) => {
             if (mounted.current) setError(`Live audio needs to reconnect: ${renewalError.message}`);
+          },
+          onMediaState: (nextMedia) => {
+            if (mounted.current) setMedia(nextMedia);
           },
         });
         if (!mounted.current || statusRef.current !== "live") {
@@ -136,12 +167,14 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
     setError("");
     let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      if (!stream.getAudioTracks().length) throw new Error("No microphone was found");
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      if (!stream.getAudioTracks().length || !stream.getVideoTracks().length) {
+        throw new Error("A camera and microphone are required for the live room");
+      }
       setPrejoinMicrophoneReady(true);
     } catch (cause) {
       setPrejoinMicrophoneReady(false);
-      setError(cause instanceof Error ? cause.message : "Microphone permission could not be verified.");
+      setError(cause instanceof Error ? cause.message : "Camera and microphone permissions could not be verified.");
     } finally {
       stream?.getTracks().forEach((track) => track.stop());
       setTestingPrejoinMicrophone(false);
@@ -172,12 +205,16 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
           setRtcReady(false);
           setMicrophoneEnabled(false);
           setMicrophoneBusy(false);
+          setCameraEnabled(false);
+          setCameraBusy(false);
+          setMedia(EMPTY_HOST_MEDIA);
           void room?.leave().catch((leaveError) => console.warn("Host audio cleanup failed", leaveError));
         }
         setStatus(view.status);
         setCode(view.code);
         setCandidate(view.candidate ?? null);
         setCodingTask(view.coding_task ?? null);
+        setFocusGuard(view.focus_guard ?? EMPTY_FOCUS_GUARD);
         setMessages((current) => mergeRecordsById(current, view.messages));
         setPendingQuestion(view.pending_question);
         if (view.turns.length) {
@@ -311,6 +348,24 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
     }
   }, [microphoneBusy, microphoneEnabled]);
 
+  const toggleCamera = useCallback(async () => {
+    const room = rtc.current;
+    if (!room || cameraBusy) return;
+    const next = !cameraEnabled;
+    setCameraBusy(true);
+    setError("");
+    try {
+      await room.setCameraEnabled(next);
+      if (rtc.current === room) setCameraEnabled(next);
+    } catch (cameraError) {
+      setError(cameraError instanceof Error
+        ? `Your camera could not join the room: ${cameraError.message}`
+        : "Your camera could not join the room. Check browser permission and try again.");
+    } finally {
+      setCameraBusy(false);
+    }
+  }, [cameraBusy, cameraEnabled]);
+
   if (!session) {
     if (autoJoinName) {
       return <main className="grid min-h-[100dvh] place-items-center bg-background p-6"><div className="text-center"><Loader2 className="mx-auto size-6 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" /><h1 className="mt-4 text-lg font-semibold">Opening interviewer control room</h1><p className="mt-1 text-sm text-muted-foreground">Connecting your private seat to Agora.</p>{error ? <div className="mt-4 max-w-md"><Alert variant="destructive" title="Could not join">{error}</Alert><Button className="mt-3" onClick={() => { autoJoinStarted.current = false; void joinRoom(autoJoinName); }}>Try again</Button></div> : null}</div></main>;
@@ -325,12 +380,12 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
             {preview?.panel?.length ? <div className="mt-7 grid gap-2 sm:grid-cols-2">{preview.panel.map((member, index) => <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-3"><PanelIdentity seed={member.id} toneIndex={index} initials={member.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2)} className="size-9 text-[10px]" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{member.display_name}</span><span className="block truncate text-xs text-muted-foreground">{member.role}</span></span></div>)}</div> : null}
           </section>
           <Card>
-            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Your microphone stays off until you explicitly enable it inside the room.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Your camera and microphone stay off until you explicitly enable them inside the room.</CardDescription></CardHeader>
             <CardContent>
               <form onSubmit={join} className="flex flex-col gap-3">
                 <label className="text-sm font-medium" htmlFor="host-name">Your name</label>
                 <input id="host-name" name="host_name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Interviewer name…" autoComplete="name" className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-                <Button type="button" variant={prejoinMicrophoneReady ? "secondary" : "outline"} onClick={() => void testPrejoinMicrophone()} disabled={testingPrejoinMicrophone}>{testingPrejoinMicrophone ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : prejoinMicrophoneReady ? <Check className="size-4" aria-hidden="true" /> : <Mic className="size-4" aria-hidden="true" />}{testingPrejoinMicrophone ? "Testing microphone" : prejoinMicrophoneReady ? "Microphone ready" : "Test microphone"}</Button>
+                <Button type="button" variant={prejoinMicrophoneReady ? "secondary" : "outline"} onClick={() => void testPrejoinMicrophone()} disabled={testingPrejoinMicrophone}>{testingPrejoinMicrophone ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : prejoinMicrophoneReady ? <Check className="size-4" aria-hidden="true" /> : <Camera className="size-4" aria-hidden="true" />}{testingPrejoinMicrophone ? "Testing devices" : prejoinMicrophoneReady ? "Camera and microphone ready" : "Test camera and microphone"}</Button>
                 <Button type="submit" size="lg" disabled={joining}>{joining ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Headphones className="size-4" aria-hidden="true" />}{joining ? "Joining interview" : "Join interview"}</Button>
               </form>
               {error ? <div className="mt-4"><Alert variant="destructive" title="Could not join">{error}</Alert></div> : null}
@@ -341,157 +396,111 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
     );
   }
 
+  const panelists = session.panel.map(asPanelist);
+  const hostPerson: Panelist = {
+    id: "human-host",
+    name: session.display_name,
+    role: "Human interviewer",
+    initials: session.display_name.split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
+    avatarImage: "/avatars/candidate.png",
+    avatarId: "human-host",
+    avatarVendor: "generic",
+    mood: "Focused",
+    behavior: "Leading",
+    voice: "",
+    prompt: "",
+  };
+  const candidateRtcUid = candidate?.rtc_uid ?? session.candidate_rtc_uid;
+  const candidateVideo = candidateRtcUid
+    ? media.remoteVideos.find((video) => video.uid === String(candidateRtcUid))?.track
+    : undefined;
+  const candidateConnected = Boolean(candidate || candidateVideo);
+  const candidatePerson: Panelist = {
+    id: "candidate",
+    name: candidate?.display_name || "Candidate",
+    role: candidateConnected ? "Candidate" : "Candidate · Waiting to join",
+    initials: (candidate?.display_name || "Candidate").split(/\s+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase(),
+    avatarImage: "/avatars/candidate.png",
+    avatarId: "candidate",
+    avatarVendor: "generic",
+    mood: "Focused",
+    behavior: "Answering",
+    voice: "",
+    prompt: "",
+  };
+  const currentQuestion = codingTask?.question
+    || [...turns].reverse().find((turn) => turn.speaker_type === "interviewer")?.content;
+  const latestFocusEvent = focusGuard.events.at(-1);
+  const participantCount = panelists.length + 2;
+
   return (
     <main className="flex h-[100dvh] flex-col overflow-hidden bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium leading-5">{session.title}</p>
-          <p className="text-xs text-muted-foreground">{session.role_pack}</p>
-        </div>
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b px-3 sm:px-4">
+        <Brand href="/" />
+        <span className="hidden h-5 w-px bg-border sm:block" />
+        <div className="min-w-0"><p className="truncate text-sm font-medium leading-5">{session.title}</p><p className="truncate text-[10px] text-muted-foreground">{session.role_pack}</p></div>
         <div className="ms-auto flex items-center gap-2">
-          {candidate ? <Badge variant="outline"><span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />{candidate.display_name} joined</Badge> : ownerSessionId ? <Badge variant="secondary">Waiting for candidate</Badge> : null}
-          <Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge>
           {updatesDelayed ? <Badge variant="destructive" role="status">Updates delayed</Badge> : null}
-          <Button variant="ghost" size="icon" onClick={toggleAudio} disabled={!rtcReady} aria-pressed={audioMuted} aria-label={audioMuted ? "Unmute the room" : "Mute the room"}>
-            {audioMuted ? <VolumeX className="size-4" aria-hidden /> : <Volume2 className="size-4" aria-hidden />}
-          </Button>
-          <Button
-            variant={microphoneEnabled ? "default" : "outline"}
-            size="icon"
-            onClick={() => void toggleMicrophone()}
-            disabled={!rtcReady || microphoneBusy || status !== "live"}
-            aria-pressed={microphoneEnabled}
-            aria-label={microphoneEnabled ? "Mute your microphone" : "Speak in the interview"}
-            title={microphoneEnabled ? "Mute your microphone" : "Speak directly (not added to the scored transcript)"}
-          >
-            {microphoneBusy ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden /> : microphoneEnabled ? <Mic className="size-4" aria-hidden /> : <MicOff className="size-4" aria-hidden />}
-          </Button>
-          {candidateInvite ? <Button variant="ghost" size="icon" onClick={() => void copyCandidateInvite()} aria-label="Copy candidate invitation" title="Copy candidate invitation">{copiedInvite ? <Check className="size-4" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}</Button> : null}
-          {ownerSessionId ? <Button variant="destructive" size="sm" onClick={() => void finishInterview()} disabled={ending}>{ending ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <PhoneOff className="size-4" aria-hidden="true" />}End</Button> : null}
+          {focusGuard.violation_count ? <Button size="sm" variant={focusGuard.flagged ? "destructive" : "outline"} onClick={() => { setDrawerTab("lead"); setDrawerOpen(true); }}><ShieldAlert aria-hidden="true" /><span className="hidden sm:inline">Focus</span> {focusGuard.violation_count}</Button> : <Badge variant="outline" className="hidden sm:inline-flex"><ShieldCheck className="size-3" aria-hidden="true" />Focus 0</Badge>}
+          <Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge>
+          <Button variant={drawerOpen ? "secondary" : "outline"} size="icon" onClick={() => setDrawerOpen((open) => !open)} aria-expanded={drawerOpen} aria-controls="host-controls" aria-label={drawerOpen ? "Close interviewer controls" : "Open interviewer controls"}>{drawerOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}</Button>
+          <ThemeToggle />
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden lg:p-4">
-        <section className="flex min-h-0 flex-1 flex-col gap-3" aria-label="Interview transcript">
-          <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4" aria-label="People in the interview">
-            {session.panel.map((member, index) => <div key={member.id} className="flex min-w-0 items-center gap-2 rounded-xl border bg-card p-3"><PanelIdentity seed={member.id} toneIndex={index} initials={member.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2)} className="size-9 text-[10px]" /><span className="min-w-0"><span className="block truncate text-xs font-medium">{member.display_name}</span><span className="block truncate text-[10px] text-muted-foreground">AI · {member.role}</span></span></div>)}
-            <div className={cn("flex min-w-0 items-center gap-2 rounded-xl border p-3", candidate ? "border-primary/40 bg-primary/5" : "border-dashed bg-card")}><span className="grid size-9 shrink-0 place-items-center rounded-full bg-secondary"><UserRound className="size-4" aria-hidden="true" /></span><span className="min-w-0"><span className="block truncate text-xs font-medium">{candidate?.display_name || "Candidate"}</span><span className="block truncate text-[10px] text-muted-foreground">{candidate ? "In the room" : "Waiting to join"}</span></span></div>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 bg-[var(--stage)] p-3 sm:p-4" aria-label="Live interview room">
+          {error ? <Alert variant="destructive" title="Room needs attention">{error}</Alert> : null}
+          <div className={cn("grid min-h-0 flex-1 auto-rows-fr gap-2", participantGridClass(participantCount))} aria-label="People in the interview">
+            {panelists.map((person, index) => {
+              const participant = session.connection.panelists?.find((item) => item.panelist_id === person.id);
+              const videoUid = participant?.avatar_uid || participant?.agent_uid;
+              const track = videoUid ? media.remoteVideos.find((video) => video.uid === String(videoUid))?.track : undefined;
+              return <ParticipantTile key={person.id} person={person} state={presenceForPanelist(index, turns.length, false)} track={track} toneIndex={index} className="min-h-32" />;
+            })}
+            <ParticipantTile person={candidatePerson} state="listening" track={candidateVideo} toneIndex={panelists.length} className={cn("min-h-32", !candidateConnected && "opacity-65")} />
+            <ParticipantTile person={hostPerson} state="listening" track={media.localVideo} toneIndex={panelists.length + 1} isSelf microphoneEnabled={microphoneEnabled} className="min-h-32" />
           </div>
-          <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
-            <h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Transcript</h2>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {turns.length ? (
-                <ol className="flex flex-col gap-3">
-                  {turns.map((turn) => (
-                    <li key={turn.id} className="text-sm">
-                      <p className={cn("text-xs font-medium", turn.speaker_type === "candidate" ? "text-primary" : "text-muted-foreground")}>
-                        {speakerLabel(turn, session)}
-                      </p>
-                      <p className="mt-0.5 leading-6 text-pretty">{turn.content}</p>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="text-xs text-muted-foreground">Nothing has been said yet.</p>
-              )}
-              <div ref={transcriptEnd} />
-            </div>
-          </Card>
 
-          {session.supports_coding ? (
-            <CodeView
-              source={code?.content ?? ""}
-              language={code?.language || "python"}
-              // The transcript is the thread to follow; the editor is reference.
-              className="h-[40%] min-h-[10rem] shrink-0"
-            />
-          ) : null}
+          {currentQuestion ? <div className="shrink-0 rounded-xl border bg-card px-4 py-3"><p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Current question</p><p className="mt-1 line-clamp-2 text-sm leading-5">{currentQuestion}</p></div> : null}
+
+          <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 rounded-2xl border bg-card p-2 shadow-sm" role="group" aria-label="Interviewer room controls">
+            <Button variant="outline" size="icon" onClick={toggleAudio} disabled={!rtcReady} aria-pressed={audioMuted} aria-label={audioMuted ? "Unmute the room" : "Mute the room"}>{audioMuted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}</Button>
+            <Button variant={microphoneEnabled ? "secondary" : "outline"} size="icon" onClick={() => void toggleMicrophone()} disabled={!rtcReady || microphoneBusy || status !== "live"} aria-pressed={microphoneEnabled} aria-label={microphoneEnabled ? "Mute your microphone" : "Turn on your microphone"}>{microphoneBusy ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : microphoneEnabled ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}</Button>
+            <Button variant={cameraEnabled ? "secondary" : "outline"} size="icon" onClick={() => void toggleCamera()} disabled={!rtcReady || cameraBusy || status !== "live"} aria-pressed={cameraEnabled} aria-label={cameraEnabled ? "Turn off your camera" : "Turn on your camera"}>{cameraBusy ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : cameraEnabled ? <Camera aria-hidden="true" /> : <CameraOff aria-hidden="true" />}</Button>
+            <Button variant={drawerOpen ? "secondary" : "outline"} onClick={() => setDrawerOpen((open) => !open)} aria-expanded={drawerOpen} aria-controls="host-controls"><PanelRightOpen aria-hidden="true" />Interviewer tools</Button>
+            {candidateInvite ? <Button variant="outline" size="icon" onClick={() => void copyCandidateInvite()} aria-label="Copy candidate invitation" title="Copy candidate invitation">{copiedInvite ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</Button> : null}
+            {ownerSessionId ? <Button variant="destructive" onClick={() => void finishInterview()} disabled={ending}>{ending ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <PhoneOff aria-hidden="true" />}End</Button> : null}
+          </div>
         </section>
 
-        <aside className="flex min-h-0 w-full shrink-0 flex-col gap-3 lg:w-[24rem]" aria-label="Your notes and questions">
-          {pendingQuestion ? (
-            <Alert title="Queued for the panel">
-              <span className="text-xs">{pendingQuestion}</span>
-            </Alert>
-          ) : null}
-
-          {session.supports_coding ? (
-            <Card className="shrink-0 p-0">
-              <div className="border-b px-3 py-2"><h2 className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><Code2 className="size-3.5" aria-hidden="true" />Coding task</h2></div>
-              <div className="space-y-2 p-3">
-                {codingTask ? <div className="rounded-lg border bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline">Open · {codingTask.language}</Badge><span className="text-[10px] text-muted-foreground">Candidate sees this now</span></div><p className="mt-2 text-xs leading-5">{codingTask.question}</p></div> : null}
-                <label className="sr-only" htmlFor="coding-question">Coding question</label>
-                <textarea id="coding-question" name="coding_question" autoComplete="off" value={codingQuestion} onChange={(event) => setCodingQuestion(event.target.value)} rows={3} placeholder="Write the coding problem the candidate should solve…" className="w-full resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-                <div className="grid grid-cols-[8rem_1fr] gap-2">
-                  <label className="sr-only" htmlFor="coding-language">Language</label>
-                  <select id="coding-language" name="coding_language" autoComplete="off" value={codingLanguage} onChange={(event) => setCodingLanguage(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">{(session.coding?.languages ?? ["python"]).map((language) => <option key={language} value={language}>{language}</option>)}</select>
-                  <label className="sr-only" htmlFor="coding-hints">Optional hints</label>
-                  <input id="coding-hints" name="coding_hints" autoComplete="off" value={codingHints} onChange={(event) => setCodingHints(event.target.value)} placeholder="Optional hint…" className="h-9 min-w-0 rounded-md border bg-background px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-                </div>
-                <Button className="w-full" size="sm" onClick={() => void openCodingTask()} disabled={!codingQuestion.trim() || sendingTask}>{sendingTask ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Code2 aria-hidden="true" />}Open candidate editor</Button>
-              </div>
-            </Card>
-          ) : null}
-
-          <Card className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
-            <h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Your messages</h2>
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {messages.length ? (
-                <ol className="flex flex-col gap-2">
-                  {messages.map((message) => (
-                    <li key={message.id} className="rounded-lg border px-3 py-2 text-sm">
-                      <span className="me-2 align-middle">
-                        <Badge variant={message.mode === "ask" ? "default" : "secondary"}>
-                          {message.mode === "ask" ? "Asked the panel" : "Note"}
-                        </Badge>
-                      </span>
-                      <span className="leading-6">{message.text}</span>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Send a note the candidate can read, or hand the panel a question to ask next.
-                </p>
-              )}
-            </div>
-          </Card>
-
-          <div className="flex flex-col gap-2">
-            <label className="sr-only" htmlFor="host-draft">
-              Message
-            </label>
-            <textarea
-              id="host-draft"
-              name="host_message"
-              autoComplete="off"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              rows={3}
-              placeholder="Why did you pick a hash map over a tree here?"
-              className="resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <div className="flex gap-2">
-              <Button className="flex-1" onClick={() => void send("ask")} disabled={sending || !draft.trim()}>
-                <Send className="size-4" aria-hidden /> Ask the panel
-              </Button>
-              <Button variant="outline" onClick={() => void send("chat")} disabled={sending || !draft.trim()}>
-                <MessageSquareText className="size-4" aria-hidden /> Note
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Ask the panel puts your question next in the interviewer&apos;s mouth. A note only appears
-              in the candidate&apos;s room. Direct microphone audio is live but is not added to the scored
-              transcript, so use Ask the panel for an assessed question.
-            </p>
+        {drawerOpen ? <aside id="host-controls" className="fixed inset-y-0 end-0 z-40 flex w-full max-w-[26rem] flex-col overscroll-contain border-s bg-background shadow-2xl lg:static lg:z-auto lg:shadow-none" aria-label="Interviewer tools">
+          <div className="flex h-14 shrink-0 items-center gap-2 border-b px-3"><p className="text-sm font-semibold">Interviewer tools</p><Button className="ms-auto" variant="ghost" size="icon" onClick={() => setDrawerOpen(false)} aria-label="Close interviewer controls"><PanelRightClose aria-hidden="true" /></Button></div>
+          <div className="grid shrink-0 grid-cols-3 gap-1 border-b p-2" role="tablist" aria-label="Interviewer tool sections">
+            <button id="host-tab-lead" type="button" role="tab" aria-selected={drawerTab === "lead"} aria-controls="host-panel-lead" onClick={() => setDrawerTab("lead")} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", drawerTab === "lead" && "bg-secondary text-foreground")}><Send className="size-3.5" aria-hidden="true" />Lead</button>
+            <button id="host-tab-transcript" type="button" role="tab" aria-selected={drawerTab === "transcript"} aria-controls="host-panel-transcript" onClick={() => setDrawerTab("transcript")} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", drawerTab === "transcript" && "bg-secondary text-foreground")}><FileText className="size-3.5" aria-hidden="true" />Transcript</button>
+            <button id="host-tab-code" type="button" role="tab" aria-selected={drawerTab === "code"} aria-controls="host-panel-code" onClick={() => setDrawerTab("code")} disabled={!session.supports_coding} className={cn("flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40", drawerTab === "code" && "bg-secondary text-foreground")}><Code2 className="size-3.5" aria-hidden="true" />Code</button>
           </div>
 
-          {error ? (
-            <Alert variant="destructive" title="Something went wrong">
-              {error}
-            </Alert>
-          ) : null}
-        </aside>
+          {drawerTab === "lead" ? <div id="host-panel-lead" role="tabpanel" aria-labelledby="host-tab-lead" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            {focusGuard.violation_count ? <Alert variant={focusGuard.flagged ? "destructive" : "default"} title={focusGuard.flagged ? "Focus review recommended" : "Focus guard event"}><span>{focusGuard.violation_count} event{focusGuard.violation_count === 1 ? "" : "s"} recorded{latestFocusEvent ? ` · ${latestFocusEvent.event.replaceAll("_", " ")}` : ""}. This records browser focus signals only; it does not inspect other windows.</span></Alert> : <Alert title="No focus events recorded"><span>No tab, window-focus, fullscreen or camera changes have been recorded.</span></Alert>}
+            {pendingQuestion ? <Alert title="Queued for the panel"><span>{pendingQuestion}</span></Alert> : null}
+            <Card className="p-0"><h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Your messages</h2><div className="max-h-52 overflow-y-auto p-3">{messages.length ? <ol className="space-y-2">{messages.map((message) => <li key={message.id} className="rounded-lg border p-3 text-sm"><Badge variant={message.mode === "ask" ? "default" : "secondary"}>{message.mode === "ask" ? "Asked the panel" : "Note"}</Badge><p className="mt-2 leading-5">{message.text}</p></li>)}</ol> : <p className="text-xs leading-5 text-muted-foreground">Send a private note to the candidate or queue the panel&apos;s next spoken question.</p>}</div></Card>
+            <label className="sr-only" htmlFor="host-draft">Message or panel question</label><textarea id="host-draft" name="host_message" autoComplete="off" value={draft} onChange={(event) => setDraft(event.target.value)} rows={4} placeholder="Ask the panel a follow-up, or send the candidate a note…" className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            <div className="flex gap-2"><Button className="flex-1" onClick={() => void send("ask")} disabled={sending || !draft.trim()}><Send aria-hidden="true" />Ask the panel</Button><Button variant="outline" onClick={() => void send("chat")} disabled={sending || !draft.trim()}><MessageSquareText aria-hidden="true" />Note</Button></div>
+            <p className="text-xs leading-5 text-muted-foreground">Your live microphone is heard immediately. Use Ask the panel when the question should enter the scored transcript.</p>
+          </div> : null}
+
+          {drawerTab === "transcript" ? <div id="host-panel-transcript" role="tabpanel" aria-labelledby="host-tab-transcript" className="min-h-0 flex-1 overflow-y-auto p-3">{turns.length ? <ol className="space-y-3">{turns.map((turn) => <li key={turn.id}><p className={cn("text-xs font-medium", turn.speaker_type === "candidate" ? "text-primary" : "text-muted-foreground")}>{speakerLabel(turn, session)}</p><p className="mt-0.5 text-sm leading-6">{turn.content}</p></li>)}<li ref={transcriptEnd} /></ol> : <div className="grid min-h-48 place-items-center text-center"><div><FileText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Nothing has been said yet</p><p className="mt-1 text-xs text-muted-foreground">Final transcript turns will appear here.</p></div></div>}</div> : null}
+
+          {drawerTab === "code" && session.supports_coding ? <div id="host-panel-code" role="tabpanel" aria-labelledby="host-tab-code" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+            {codingTask ? <div className="rounded-lg border bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline">Open · {codingTask.language}</Badge><span className="text-[10px] text-muted-foreground">Candidate sees this now</span></div><p className="mt-2 text-xs leading-5">{codingTask.question}</p></div> : null}
+            <label className="sr-only" htmlFor="coding-question">Coding question</label><textarea id="coding-question" name="coding_question" autoComplete="off" value={codingQuestion} onChange={(event) => setCodingQuestion(event.target.value)} rows={4} placeholder="Write the coding problem the candidate should solve…" className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            <div className="grid grid-cols-[8rem_1fr] gap-2"><label className="sr-only" htmlFor="coding-language">Language</label><select id="coding-language" name="coding_language" autoComplete="off" value={codingLanguage} onChange={(event) => setCodingLanguage(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">{(session.coding?.languages ?? ["python"]).map((language) => <option key={language} value={language}>{language}</option>)}</select><label className="sr-only" htmlFor="coding-hints">Optional hints</label><input id="coding-hints" name="coding_hints" autoComplete="off" value={codingHints} onChange={(event) => setCodingHints(event.target.value)} placeholder="Optional hint…" className="h-9 min-w-0 rounded-md border bg-background px-3 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring" /></div>
+            <Button onClick={() => void openCodingTask()} disabled={!codingQuestion.trim() || sendingTask}>{sendingTask ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Code2 aria-hidden="true" />}Open candidate editor</Button>
+            <CodeView source={code?.content ?? ""} language={code?.language || codingLanguage} className="min-h-64 flex-1" />
+          </div> : null}
+        </aside> : null}
       </div>
     </main>
   );

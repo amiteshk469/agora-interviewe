@@ -8,6 +8,11 @@ const agora = vi.hoisted(() => {
     stop: vi.fn(),
     close: vi.fn(),
   };
+  const camera = {
+    setEnabled: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn(),
+    close: vi.fn(),
+  };
   const client = {
     on: vi.fn(),
     join: vi.fn().mockResolvedValue(7001),
@@ -17,13 +22,19 @@ const agora = vi.hoisted(() => {
     renewToken: vi.fn().mockResolvedValue(undefined),
     unpublish: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn().mockResolvedValue(undefined),
-    remoteUsers: [] as Array<{ audioTrack?: { play: () => void; stop: () => void } }>,
+    remoteUsers: [] as Array<{
+      uid: string | number;
+      audioTrack?: { play: () => void; stop: () => void };
+      videoTrack?: { play: () => void; stop: () => void };
+    }>,
   };
   return {
     client,
     microphone,
+    camera,
     createClient: vi.fn(() => client),
     createMicrophoneAudioTrack: vi.fn().mockResolvedValue(microphone),
+    createCameraVideoTrack: vi.fn().mockResolvedValue(camera),
   };
 });
 
@@ -31,6 +42,7 @@ vi.mock("agora-rtc-sdk-ng", () => ({
   default: {
     createClient: agora.createClient,
     createMicrophoneAudioTrack: agora.createMicrophoneAudioTrack,
+    createCameraVideoTrack: agora.createCameraVideoTrack,
   },
 }));
 
@@ -63,7 +75,9 @@ beforeEach(() => {
   agora.client.renewToken.mockResolvedValue(undefined);
   agora.client.subscribe.mockResolvedValue(undefined);
   agora.microphone.setEnabled.mockResolvedValue(undefined);
+  agora.camera.setEnabled.mockResolvedValue(undefined);
   agora.createMicrophoneAudioTrack.mockResolvedValue(agora.microphone);
+  agora.createCameraVideoTrack.mockResolvedValue(agora.camera);
   agora.client.remoteUsers.length = 0;
 });
 
@@ -105,6 +119,53 @@ describe("human interviewer Agora room", () => {
     expect(agora.client.leave).toHaveBeenCalledOnce();
     expect(agora.microphone.stop.mock.invocationCallOrder[0]).toBeLessThan(agora.microphone.close.mock.invocationCallOrder[0]);
     expect(agora.microphone.close.mock.invocationCallOrder[0]).toBeLessThan(agora.client.leave.mock.invocationCallOrder[0]);
+  });
+
+  it("publishes the host camera on demand and releases it on leave", async () => {
+    const onMediaState = vi.fn();
+    const room = await joinHostRtcRoom(session, { onMediaState });
+    expect(agora.createCameraVideoTrack).not.toHaveBeenCalled();
+
+    await room.setCameraEnabled(true);
+    expect(agora.createCameraVideoTrack).toHaveBeenCalledWith({ encoderConfig: "480p_1" });
+    expect(agora.client.publish).toHaveBeenCalledWith(agora.camera);
+    expect(agora.camera.setEnabled).toHaveBeenCalledWith(true);
+    expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({
+      cameraEnabled: true,
+      localVideo: agora.camera,
+    }));
+
+    await room.setCameraEnabled(false);
+    expect(agora.camera.setEnabled).toHaveBeenLastCalledWith(false);
+    expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({
+      cameraEnabled: false,
+      localVideo: null,
+    }));
+
+    await room.leave();
+    expect(agora.client.unpublish).toHaveBeenCalledWith(agora.camera);
+    expect(agora.camera.stop).toHaveBeenCalledOnce();
+    expect(agora.camera.close).toHaveBeenCalledOnce();
+  });
+
+  it("subscribes to remote video and exposes it to the room grid", async () => {
+    const onMediaState = vi.fn();
+    const room = await joinHostRtcRoom(session, { onMediaState });
+    const published = agora.client.on.mock.calls.find(([event]) => event === "user-published")?.[1] as (
+      user: (typeof agora.client.remoteUsers)[number],
+      mediaType: "audio" | "video",
+    ) => void;
+    const videoTrack = { play: vi.fn(), stop: vi.fn() };
+    const remoteUser = { uid: 4102, videoTrack };
+    agora.client.remoteUsers.push(remoteUser);
+
+    published(remoteUser, "video");
+
+    await vi.waitFor(() => expect(agora.client.subscribe).toHaveBeenCalledWith(remoteUser, "video"));
+    expect(onMediaState).toHaveBeenLastCalledWith(expect.objectContaining({
+      remoteVideos: [{ uid: "4102", track: videoTrack }],
+    }));
+    await room.leave();
   });
 
   it("releases microphone capture when Agora rejects publishing", async () => {
@@ -152,7 +213,7 @@ describe("human interviewer Agora room", () => {
     await room.leave();
     published({ audioTrack }, "audio");
 
-    await vi.waitFor(() => expect(agora.client.subscribe).toHaveBeenCalled());
+    expect(agora.client.subscribe).not.toHaveBeenCalled();
     expect(audioTrack.play).not.toHaveBeenCalled();
     await expect(room.setMicrophoneEnabled(true)).rejects.toThrow("already closed");
     expect(agora.createMicrophoneAudioTrack).not.toHaveBeenCalled();
@@ -202,6 +263,27 @@ describe("human interviewer Agora room", () => {
 
     await room.leave();
     expect(agora.client.off).toHaveBeenCalledWith("token-privilege-did-expire", expired);
+  });
+
+  it("republishes an enabled camera after token-expiry rejoin", async () => {
+    const renewConnection = vi.fn().mockResolvedValue({
+      ...session.connection,
+      token: "fresh-guest-token",
+    });
+    const room = await joinHostRtcRoom(session, { renewConnection });
+    await room.setCameraEnabled(true);
+    agora.client.publish.mockClear();
+    const expired = agora.client.on.mock.calls.find(
+      ([event]) => event === "token-privilege-did-expire",
+    )?.[1] as () => void;
+
+    expired();
+
+    await vi.waitFor(() => expect(agora.client.join).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(agora.client.publish).toHaveBeenCalledWith(agora.camera));
+    expect(agora.createCameraVideoTrack).toHaveBeenCalledOnce();
+
+    await room.leave();
   });
 
   it("keeps a disabled microphone off after rejoin and republishes it when enabled again", async () => {

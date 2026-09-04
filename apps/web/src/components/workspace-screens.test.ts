@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAvailableEvidenceLinks, getReportEvidenceLinks } from "@/components/workspace-screens";
+import { filterAvailableEvidenceLinks, getReportEvidenceLinks, getReportFocusGuard } from "@/components/workspace-screens";
 
 describe("report evidence links", () => {
   it("does not invent a linked turn for an empty report", () => {
@@ -45,5 +45,26 @@ describe("report evidence links", () => {
     ];
 
     expect(filterAvailableEvidenceLinks(links, ["candidate-turn-2"])).toEqual([links[0]]);
+  });
+});
+
+describe("report focus guard", () => {
+  it("reads the browser-integrity record without treating it as a competency", () => {
+    expect(getReportFocusGuard({
+      interviewer_assessments: [{
+        interviewer_id: "focus_guard",
+        violation_count: 3,
+        flagged: true,
+        summary: "Three browser focus changes were observed.",
+      }],
+    })).toEqual({
+      violationCount: 3,
+      flagged: true,
+      summary: "Three browser focus changes were observed.",
+    });
+  });
+
+  it("returns null for reports created before focus-guard support", () => {
+    expect(getReportFocusGuard({ interviewer_assessments: [] })).toBeNull();
   });
 });

@@ -52,6 +52,9 @@ from app.schemas import (
     ConnectionConfig,
     EvidenceCreate,
     EvidenceOut,
+    FocusGuardEventCreate,
+    FocusGuardEventRecord,
+    FocusGuardSummaryOut,
     GuestHeartbeatOut,
     GuestInvitePreviewOut,
     GuestPanelist,
@@ -126,6 +129,7 @@ router = APIRouter(prefix="/v1")
 
 HOST_HEARTBEAT_INTERVAL_SECONDS = 10
 HOST_PRESENCE_TIMEOUT_SECONDS = 30
+FOCUS_GUARD_FLAG_THRESHOLD = 3
 
 
 async def _owned(db: Db, model: Any, object_id: UUID, user_id: UUID) -> Any:
@@ -1335,6 +1339,7 @@ async def generate_report(
         ).scalars()
     ]
     snapshot = session.config_snapshot
+    focus_guard = _focus_guard_out(_read_panel_state(session)).model_dump(mode="json")
     # Do not hold a database transaction or connection while awaiting the model.
     await db.commit()
     try:
@@ -1345,6 +1350,26 @@ async def generate_report(
             "Interview assessment is temporarily unavailable. Retry report generation.",
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
+    if str((snapshot or {}).get("interview_mode") or "") == "interviewer_led":
+        violation_count = int(focus_guard["violation_count"])
+        result["interviewer_assessments"] = [
+            *result.get("interviewer_assessments", []),
+            {
+                "interviewer_id": "focus_guard",
+                "display_name": "Focus guard",
+                "role": "Session integrity",
+                "summary": (
+                    "No browser-level integrity events were recorded during the interview."
+                    if violation_count == 0
+                    else (
+                        f"{violation_count} browser-level integrity "
+                        f"event{'s' if violation_count != 1 else ''} "
+                        f"{'were' if violation_count != 1 else 'was'} recorded."
+                    )
+                ),
+                **focus_guard,
+            },
+        ]
     existing = cast(
         AssessmentReport | None,
         await db.scalar(select(AssessmentReport).where(AssessmentReport.session_id == session_id).with_for_update()),
@@ -1554,6 +1579,27 @@ def _coding_profile(session: InterviewSession) -> RolePackCoding | None:
     return RolePackCoding.model_validate(pack.coding.as_dict()) if pack.coding else None
 
 
+async def _connection_panelists(db: Db, session: InterviewSession) -> list[dict[str, str]]:
+    participants = list(
+        (
+            await db.execute(
+                select(PanelParticipant)
+                .where(PanelParticipant.session_id == session.id)
+                .order_by(PanelParticipant.created_at)
+            )
+        ).scalars()
+    )
+    return [
+        {
+            "panelist_id": item.panelist_id,
+            "agent_uid": str(item.agent_uid),
+            "avatar_uid": str(item.avatar_uid),
+            "video_mode": item.video_mode,
+        }
+        for item in participants
+    ]
+
+
 async def _candidate_connection(
     db: Db,
     session: InterviewSession,
@@ -1566,24 +1612,7 @@ async def _candidate_connection(
         uid=session.user_uid,
         agent_uid=session.agent_uid,
     )
-    participants = list(
-        (
-            await db.execute(
-                select(PanelParticipant)
-                .where(PanelParticipant.session_id == session.id)
-                .order_by(PanelParticipant.created_at)
-            )
-        ).scalars()
-    )
-    connection["panelists"] = [
-        {
-            "panelist_id": item.panelist_id,
-            "agent_uid": str(item.agent_uid),
-            "avatar_uid": str(item.avatar_uid),
-            "video_mode": item.video_mode,
-        }
-        for item in participants
-    ]
+    connection["panelists"] = await _connection_panelists(db, session)
     return ConnectionConfig.model_validate(connection)
 
 
@@ -1618,6 +1647,7 @@ def _host_presence_out(state: PanelState, *, now: datetime | None = None) -> Hos
         display_name=host.display_name,
         joined_at=host.joined_at,
         last_seen_at=host.last_seen_at or host.joined_at,
+        rtc_uid=host.rtc_uid,
         messages=_host_messages_out(state),
     )
 
@@ -1767,6 +1797,7 @@ async def join_session_as_host(
         uid=host.rtc_uid,
         agent_uid=session.agent_uid,
     )
+    connection["panelists"] = await _connection_panelists(db, session)
     if not _host_is_active(host, now=now):
         host.joined_at = now
     host.display_name = name
@@ -1790,6 +1821,7 @@ async def join_session_as_host(
         supports_coding=pack.supports_coding,
         coding=_coding_profile(session),
         heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
+        candidate_rtc_uid=session.user_uid,
     )
 
 
@@ -1968,6 +2000,7 @@ async def read_host_view(
         "pending_question": state.host.pending_question if state.host else None,
         "candidate": candidate_presence.model_dump(mode="json") if candidate_presence else None,
         "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
+        "focus_guard": _focus_guard_out(state).model_dump(mode="json"),
     }
 
 
@@ -2035,6 +2068,16 @@ def _candidate_presence_out(
         display_name=candidate.display_name,
         joined_at=candidate.joined_at,
         last_seen_at=candidate.last_seen_at or candidate.joined_at,
+        rtc_uid=candidate.rtc_uid,
+    )
+
+
+def _focus_guard_out(state: PanelState) -> FocusGuardSummaryOut:
+    events = state.candidate.focus_events if state.candidate else []
+    return FocusGuardSummaryOut(
+        violation_count=len(events),
+        flagged=len(events) >= FOCUS_GUARD_FLAG_THRESHOLD,
+        events=events,
     )
 
 
@@ -2097,6 +2140,7 @@ async def join_session_as_candidate(
         supports_coding=pack.supports_coding,
         coding=_coding_profile(session),
         heartbeat_interval_seconds=HOST_HEARTBEAT_INTERVAL_SECONDS,
+        candidate_rtc_uid=session.user_uid,
     )
 
 
@@ -2148,6 +2192,42 @@ async def heartbeat_candidate(
     session.memory_state = state.model_dump(mode="json")
     await db.commit()
     return GuestHeartbeatOut(last_seen_at=now)
+
+
+@router.post(
+    "/guest/candidates/{token}/focus-events",
+    response_model=FocusGuardSummaryOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Candidate guest"],
+)
+async def record_candidate_focus_event(
+    token: str,
+    payload: FocusGuardEventCreate,
+    db: Db,
+    settings: SettingsDep,
+) -> FocusGuardSummaryOut:
+    """Persist browser-observable focus signals without claiming full-device proctoring."""
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    session = await lock_transcript_session(db, session.id)
+    if session.status != "live":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This interview is not live right now")
+    state = _read_panel_state(session)
+    if not _candidate_is_active(state.candidate) or state.candidate is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Join the interview before sending focus events")
+    now = datetime.now(UTC)
+    state.candidate.last_seen_at = now
+    state.candidate.focus_events = [
+        *state.candidate.focus_events,
+        FocusGuardEventRecord(
+            id=f"focus-{uuid4().hex[:10]}",
+            event=payload.event,
+            detail=payload.detail,
+            occurred_at=now,
+        ),
+    ][-100:]
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return _focus_guard_out(state)
 
 
 @router.post(
@@ -2210,6 +2290,12 @@ async def read_candidate_view(
         "messages": [item.model_dump(mode="json") for item in _host_messages_out(state)],
         "pending_question": state.host.pending_question if state.host else None,
         "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
+        "host": (
+            host.model_dump(mode="json")
+            if (host := _host_presence_out(state)) is not None
+            else None
+        ),
+        "focus_guard": _focus_guard_out(state).model_dump(mode="json"),
     }
 
 

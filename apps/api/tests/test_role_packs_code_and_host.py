@@ -481,6 +481,7 @@ async def test_an_invite_admits_a_guest_who_can_then_lead_the_panel(
     # The guest shares the candidate's channel on a uid of their own.
     assert body["connection"]["channel_name"]
     assert body["connection"]["uid"] != str(session.get("user_uid"))
+    assert body["candidate_rtc_uid"] == started.json()["session"]["user_uid"]
     guest_uid = body["connection"]["uid"]
 
     renewed = await client.post(f"/v1/guest/sessions/{token}/token")
@@ -559,6 +560,7 @@ async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_
     presence = await client.get(f"/v1/sessions/{session['id']}/candidate", headers=auth_headers)
     assert presence.status_code == 200
     assert presence.json()["display_name"] == "Riya"
+    assert str(presence.json()["rtc_uid"]) == candidate_uid
 
     host_invite = await client.post(
         f"/v1/sessions/{session['id']}/invites",
@@ -566,7 +568,12 @@ async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_
         json={"seat": "interviewer"},
     )
     host_token = host_invite.json()["token"]
-    assert (await client.get(f"/v1/guest/sessions/{host_token}", params={"display_name": "Amitesh"})).status_code == 200
+    host_joined = await client.get(
+        f"/v1/guest/sessions/{host_token}", params={"display_name": "Amitesh"}
+    )
+    assert host_joined.status_code == 200
+    assert host_joined.json()["candidate_rtc_uid"] == int(candidate_uid)
+    assert len(host_joined.json()["connection"]["panelists"]) == 3
     assert (await client.get(f"/v1/guest/sessions/{candidate_token}")).status_code == 403
     assert (await client.get(f"/v1/guest/candidates/{host_token}")).status_code == 403
 
@@ -582,6 +589,8 @@ async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_
     candidate_view = await client.get(f"/v1/guest/candidates/{candidate_token}/state")
     assert candidate_view.status_code == 200
     assert candidate_view.json()["coding_task"]["id"] == task.json()["id"]
+    assert candidate_view.json()["host"]["display_name"] == "Amitesh"
+    assert candidate_view.json()["host"]["rtc_uid"] == int(host_joined.json()["connection"]["uid"])
 
     code = await client.post(
         f"/v1/guest/candidates/{candidate_token}/code",
@@ -610,6 +619,23 @@ async def test_interviewer_led_room_invites_a_candidate_with_the_reserved_agora_
     assert duplicate.status_code == 201
     assert duplicate.json()["id"] == turn.json()["id"]
 
+    for event in ("tab_hidden", "fullscreen_exit", "camera_disabled"):
+        focus = await client.post(
+            f"/v1/guest/candidates/{candidate_token}/focus-events",
+            json={"event": event, "detail": f"Observed {event}"},
+        )
+        assert focus.status_code == 201, focus.text
+    assert focus.json()["violation_count"] == 3
+    assert focus.json()["flagged"] is True
+    assert (
+        await client.post(
+            f"/v1/guest/candidates/{host_token}/focus-events",
+            json={"event": "tab_hidden"},
+        )
+    ).status_code == 403
+    host_view = await client.get(f"/v1/guest/sessions/{host_token}/state")
+    assert host_view.json()["focus_guard"]["violation_count"] == 3
+
     assert (await client.post(f"/v1/guest/candidates/{candidate_token}/leave")).status_code == 204
     assert (await client.get(f"/v1/sessions/{session['id']}/candidate", headers=auth_headers)).json() is None
 
@@ -627,6 +653,49 @@ async def test_candidate_invite_is_rejected_for_candidate_owned_practice(
     )
 
     assert response.status_code == 409
+
+
+async def test_interviewer_led_report_includes_browser_focus_guard(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+) -> None:
+    session = await _session_for(
+        client,
+        auth_headers,
+        "software_engineering",
+        interview_mode="interviewer_led",
+    )
+    invite = await client.post(
+        f"/v1/sessions/{session['id']}/invites",
+        headers=auth_headers,
+        json={"seat": "candidate"},
+    )
+    token = invite.json()["token"]
+    assert (
+        await client.post(f"/v1/sessions/{session['id']}/start", headers=auth_headers, json={})
+    ).status_code == 200
+    assert (
+        await client.get(f"/v1/guest/candidates/{token}", params={"display_name": "Riya"})
+    ).status_code == 200
+    recorded = await client.post(
+        f"/v1/guest/candidates/{token}/focus-events",
+        json={"event": "window_blur", "detail": "Interview window lost focus."},
+    )
+    assert recorded.status_code == 201
+    assert (
+        await client.post(f"/v1/sessions/{session['id']}/end", headers=auth_headers)
+    ).status_code == 200
+
+    report = await client.post(f"/v1/sessions/{session['id']}/report", headers=auth_headers)
+
+    assert report.status_code == 201, report.text
+    focus_guard = next(
+        item
+        for item in report.json()["interviewer_assessments"]
+        if item.get("interviewer_id") == "focus_guard"
+    )
+    assert focus_guard["violation_count"] == 1
+    assert focus_guard["flagged"] is False
 
 
 async def test_a_forged_invite_admits_nobody(client: AsyncClient) -> None:
