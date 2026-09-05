@@ -2343,6 +2343,40 @@ async def read_candidate_presence(
     return _candidate_presence_out(_read_panel_state(session))
 
 
+@router.post(
+    "/sessions/{session_id}/candidate/heartbeat",
+    response_model=GuestHeartbeatOut,
+    tags=["Interview sessions"],
+)
+async def heartbeat_owner_candidate(session_id: UUID, db: Db, user: CurrentUser) -> GuestHeartbeatOut:
+    """Register the authenticated student while their own RTC room is connected."""
+    await _owned(db, InterviewSession, session_id, user.id)
+    session = await lock_transcript_session(db, session_id)
+    if session.config_snapshot.get("interview_mode", "candidate_practice") != "candidate_practice":
+        raise HTTPException(409, "The owner is not the candidate in this interview")
+    if session.status != "live" or not session.user_uid:
+        raise HTTPException(409, "The candidate room is not live")
+    metadata = user.claims.get("user_metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    name = str(metadata.get("display_name") or metadata.get("full_name") or "").strip()
+    if not name:
+        name = (user.email or "Candidate").split("@")[0].replace(".", " ").replace("_", " ").title()
+    now = datetime.now(UTC)
+    state = _read_panel_state(session)
+    candidate = state.candidate or CandidateState()
+    if not _candidate_is_active(candidate, now=now):
+        candidate.joined_at = now
+    candidate.display_name = name[:60]
+    candidate.rtc_uid = session.user_uid
+    candidate.last_seen_at = now
+    candidate.left_at = None
+    state.candidate = candidate
+    session.memory_state = state.model_dump(mode="json")
+    await db.commit()
+    return GuestHeartbeatOut(last_seen_at=now)
+
+
 @router.get(
     "/guest/candidates/{token}",
     response_model=GuestSessionOut,

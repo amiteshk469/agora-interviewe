@@ -33,6 +33,7 @@ import {
   listRolePacks,
   listSessionToolRuns,
   listHumanInterviewerTurns,
+  heartbeatOwnerCandidate,
   persistSessionTurn,
   readHostPresence,
   readSessionCodingTask,
@@ -234,6 +235,27 @@ export function LiveInterviewScreen() {
       .catch((error) => console.warn("Role pack lookup failed", error));
     return () => { cancelled = true; };
   }, [storedSession]);
+
+  // The session owner does not go through the invited candidate's join endpoint.
+  useEffect(() => {
+    if (!storedSession || storedSession.demo || mediaState.connectionState !== "CONNECTED") return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const heartbeat = async () => {
+      try {
+        await heartbeatOwnerCandidate(storedSession.sessionId);
+      } catch (error) {
+        console.warn("Candidate presence refresh failed", error);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void heartbeat(), 10000);
+      }
+    };
+    void heartbeat();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [storedSession, mediaState.connectionState]);
 
   // A human interviewer can arrive part-way through, so the room keeps watching.
   useEffect(() => {

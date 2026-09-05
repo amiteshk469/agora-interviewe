@@ -361,6 +361,10 @@ export function listSessionTurns(sessionId: string) {
   return productRequest<SessionTurn[]>(`/sessions/${sessionId}/turns`);
 }
 
+export function heartbeatOwnerCandidate(sessionId: string) {
+  return productRequest<{ last_seen_at: string }>(`/sessions/${sessionId}/candidate/heartbeat`, { method: "POST" });
+}
+
 export function listHumanInterviewerTurns(sessionId: string, afterSequence = 0) {
   return productRequest<SessionTurn[]>(
     `/sessions/${sessionId}/turns?human_interviewers_only=true&after_sequence=${Math.max(0, afterSequence)}`,

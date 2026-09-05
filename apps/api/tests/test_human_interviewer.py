@@ -32,6 +32,37 @@ def callback_headers(sid: str, key: str | None = None) -> dict[str, str]:
     }
 
 
+async def test_student_owner_presence_reaches_invited_interviewer(
+    client: AsyncClient, auth_headers: dict[str, str],
+) -> None:
+    sid, token, _ = await room(client, auth_headers)
+    before = (await client.get(f"/v1/guest/sessions/{token}/state")).json()
+    assert before["candidate"] is None
+    heartbeat = await client.post(f"/v1/sessions/{sid}/candidate/heartbeat", headers=auth_headers)
+    assert heartbeat.status_code == 200
+    view = (await client.get(f"/v1/guest/sessions/{token}/state")).json()
+    assert view["candidate"]["display_name"] == "Dev"
+    assert view["candidate"]["rtc_uid"] is not None
+    first_join = view["candidate"]["joined_at"]
+    await client.post(f"/v1/sessions/{sid}/candidate/heartbeat", headers=auth_headers)
+    view = (await client.get(f"/v1/guest/sessions/{token}/state")).json()
+    assert view["candidate"]["joined_at"] == first_join
+    assert (await client.post(f"/v1/sessions/{sid}/candidate/heartbeat")).status_code == 401
+
+
+async def test_recruiter_owner_cannot_occupy_candidate_seat(
+    client: AsyncClient, auth_headers: dict[str, str],
+) -> None:
+    config = (await client.post("/v1/interview-configs", headers=auth_headers, json={
+        "title": "Recruiter interview", "interview_mode": "interviewer_led",
+    })).json()
+    session = (await client.post("/v1/sessions", headers=auth_headers, json={
+        "interview_config_id": config["id"],
+    })).json()
+    result = await client.post(f"/v1/sessions/{session['id']}/candidate/heartbeat", headers=auth_headers)
+    assert result.status_code == 409
+
+
 async def test_failed_dispatch_keeps_transcript_and_surfaces_error_then_recovers(
     client: AsyncClient, auth_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
