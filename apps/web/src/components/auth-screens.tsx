@@ -37,7 +37,7 @@ function AuthShell({ title, description, children }: { title: string; descriptio
 
 export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { mode: "sign-in" | "sign-up"; nextPath?: string; initialAudience?: AccountType }) {
   const router = useRouter();
-  const { status, signIn, signUp } = useAuth();
+  const { status, resendConfirmation, signIn, signUp } = useAuth();
   const signup = mode === "sign-up";
   const [audience, setAudience] = useState<AccountType>(initialAudience);
   const destination = nextPath
@@ -46,8 +46,10 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
       ? audience === "recruiter" ? "/recruiter" : "/candidate"
       : "/dashboard";
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [pendingSignup, setPendingSignup] = useState<{ email: string; destination: string; audience: AccountType } | null>(null);
 
   useEffect(() => {
     if (status === "authenticated") router.replace(destination);
@@ -58,6 +60,7 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
     setLoading(true);
     setError("");
     setMessage("");
+    setPendingSignup(null);
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "").trim();
     const password = String(form.get("password") || "");
@@ -65,7 +68,8 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
       if (signup) {
         const result = await signUp(String(form.get("name") || "").trim(), email, password, audience, destination);
         if (result.confirmationRequired) {
-          setMessage("Check your inbox to confirm your email. This page can stay open while you finish.");
+          setPendingSignup({ email, destination, audience });
+          setMessage(`Check ${email} to confirm your ${audience === "recruiter" ? "organizer" : "candidate"} account.`);
         } else {
           router.replace(destination);
         }
@@ -77,6 +81,20 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
       setError(cause instanceof Error ? cause.message : "Authentication failed. Please try again.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function resend() {
+    if (!pendingSignup) return;
+    setResending(true);
+    setError("");
+    try {
+      await resendConfirmation(pendingSignup.email, pendingSignup.destination);
+      setMessage(`A new confirmation email was requested for ${pendingSignup.email}.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The confirmation email could not be resent.");
+    } finally {
+      setResending(false);
     }
   }
 
@@ -95,7 +113,7 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
           </Field>
           {!signup ? <div className="flex justify-end"><Link href="/auth/forgot-password" className="text-xs font-medium text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">Forgot password?</Link></div> : null}
           {error ? <Alert title="Could not continue" variant="destructive"><span>{error}</span></Alert> : null}
-          {message ? <Alert title="Confirm your email"><span>{message}</span></Alert> : null}
+          {message ? <Alert title="Confirm your email"><span>{message}</span>{pendingSignup ? <Button type="button" size="sm" variant="secondary" loading={resending} className="mt-3" onClick={() => void resend()}><MailCheck aria-hidden="true" />Resend email</Button> : null}</Alert> : null}
           <Button type="submit" size="lg" loading={loading} className="mt-2 w-full">{signup ? "Create workspace" : "Sign in"}<ArrowRight aria-hidden="true" /></Button>
         </form>
       )}
