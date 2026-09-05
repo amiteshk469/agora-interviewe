@@ -35,7 +35,10 @@ additional_redirect_urls = ["http://localhost:3000/**"]
 jwt_expiry = 3600
 enable_signup = true
 
+[auth.email.template.confirmation]
+subject = "Confirm your RoundCraft account"
+content_path = "./supabase/templates/confirmation.html"
+
 [storage]
 enabled = true
 file_size_limit = "50MiB"
-
