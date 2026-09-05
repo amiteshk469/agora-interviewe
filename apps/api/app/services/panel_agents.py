@@ -113,6 +113,7 @@ async def coordinate(
                     "Do not rotate mechanically. Respect requests to named panelists; avoid repeated questions. "
                     "A human interviewer is a colleague, NEVER the candidate. If they question the candidate, "
                     "speak=false: let the candidate answer. If they address the AI, route to an expert. "
+                    "Audio checks from either human require speak=true and a short acknowledgment. "
                     "Candidate turns normally need a response. Never assign scores here.\n"
                     + PLATFORM_INVARIANTS
                     + "\n"

@@ -137,8 +137,8 @@ export function ParticipantTile({
         </div>
       )}
 
-      <div className={cn("absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-[var(--tile)] via-[var(--tile)]/85 to-transparent", compact ? "p-2 pt-4" : "p-2.5 pt-6 sm:p-3 sm:pt-8")}>
-        <div className="min-w-0">
+      <div className={cn("absolute inset-x-0 bottom-0 flex items-end justify-between gap-2", compact ? "p-2" : "p-2.5 sm:p-3")}>
+        <div className={cn("min-w-0", track && "rounded-lg bg-black/55 px-2 py-1 text-white")}>
           <p className={cn("truncate font-semibold", compact ? "text-[11px] leading-4" : "text-[13px] leading-5")}>{person.name}</p>
           {compact ? null : <p className="truncate text-[11px] leading-4 text-[var(--tile-muted)]">{person.role}</p>}
         </div>

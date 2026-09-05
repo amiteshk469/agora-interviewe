@@ -35,6 +35,7 @@ import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/
 import { VoiceActivityDetector } from "@/lib/voice-activity";
 import { renewAgoraSeatTokens } from "@/lib/agora-seat";
 import { BackchannelGate } from "@/lib/backchannel";
+import { checkMicrophonePermission } from "@/lib/microphone-permission";
 
 type Props = {
   config: AgoraConfig;
@@ -104,7 +105,9 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [enabled, setEnabled] = useState(true);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [captureMicrophone, setCaptureMicrophone] = useState(true);
+  const [microphoneBusy, setMicrophoneBusy] = useState(false);
   const [connectionState, setConnectionState] = useState("CONNECTING");
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [voiceError, setVoiceError] = useState("");
@@ -131,7 +134,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   }, [agentState, candidateSpeaking, connectionState, enabled, hostSpeaking, onLongAnswer]);
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
-  const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
+  const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(captureMicrophone, { AEC: true, ANS: true, AGC: true });
   const { localCameraTrack, error: cameraError } = useLocalCameraTrack(cameraEnabled, { encoderConfig: "480p_1" });
   const { videoTracks, error: remoteVideoError } = useRemoteVideoTracks(remoteUsers);
   const { audioTracks, error: remoteAudioError } = useRemoteAudioTracks(remoteUsers);
@@ -146,7 +149,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
       remoteUsers.filter((user) => user.hasVideo).map((user) => String(user.uid)),
     );
     onMediaState?.({
-      microphoneEnabled: enabled,
+      microphoneEnabled: enabled && Boolean(localMicrophoneTrack),
       cameraEnabled: cameraEnabled && Boolean(localCameraTrack),
       candidateSpeaking: enabled && candidateSpeaking,
       hostSpeaking,
@@ -156,7 +159,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
         .map((track) => ({ uid: String(track.getUserId()), track })),
       connectionState,
     });
-  }, [cameraEnabled, candidateSpeaking, connectionState, enabled, hostSpeaking, localCameraTrack, onMediaState, remoteUsers, videoTracks]);
+  }, [cameraEnabled, candidateSpeaking, connectionState, enabled, hostSpeaking, localCameraTrack, localMicrophoneTrack, onMediaState, remoteUsers, videoTracks]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -294,14 +297,27 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
           : "Joining Agora…";
 
   const toggleMic = useCallback(async () => {
+    if (microphoneBusy) return;
+    setMicrophoneBusy(true);
     const next = !enabled;
     try {
-      if (localMicrophoneTrack) await localMicrophoneTrack.setEnabled(next);
-      setEnabled(next);
+      if (!localMicrophoneTrack) {
+        await checkMicrophonePermission();
+        setCaptureMicrophone(false);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        setCaptureMicrophone(true);
+        setEnabled(true);
+      } else {
+        await localMicrophoneTrack.setEnabled(next);
+        setEnabled(next);
+      }
+      setVoiceError("");
     } catch (error) {
       setVoiceError(`${errorMessage(error, "The microphone could not be updated")}. Check browser permissions and retry.`);
+    } finally {
+      setMicrophoneBusy(false);
     }
-  }, [enabled, localMicrophoneTrack]);
+  }, [enabled, localMicrophoneTrack, microphoneBusy]);
 
   const toggleCamera = useCallback(async () => {
     if (cameraEnabled && cameraError && !localCameraTrack) {
@@ -357,9 +373,10 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
         <button
           type="button"
           onClick={toggleMic}
+          disabled={microphoneBusy}
           aria-pressed={!enabled}
-          aria-label={enabled ? "Mute microphone" : "Unmute microphone"}
-          title={enabled ? "Mute microphone" : "Unmute microphone"}
+          aria-label={!localMicrophoneTrack ? "Retry microphone" : enabled ? "Mute microphone" : "Unmute microphone"}
+          title={!localMicrophoneTrack ? "Retry microphone" : enabled ? "Mute microphone" : "Unmute microphone"}
           className={cn(
             "relative grid h-11 w-14 place-items-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
             enabled ? "bg-secondary text-secondary-foreground hover:bg-accent" : "bg-destructive text-white hover:bg-destructive/90",

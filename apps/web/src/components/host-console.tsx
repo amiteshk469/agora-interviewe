@@ -33,6 +33,7 @@ import {
 import { humanVideoTrack, mergeRecordsById, panelistIdForAgoraUid, presenceForPanelist } from "@/lib/live-panel";
 import { joinHostRtcRoom, type HostRtcHandle, type HostRtcMediaState } from "@/lib/host-rtc";
 import { cn } from "@/lib/utils";
+import { checkMicrophonePermission } from "@/lib/microphone-permission";
 
 // Fast enough that a co-host can follow the exchange, slow enough not to hammer
 // an API that is already carrying a live interview.
@@ -151,6 +152,12 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
         }
         rtc.current = room;
         setRtcReady(true);
+        try {
+          await room.setMicrophoneEnabled(true);
+          if (mounted.current && rtc.current === room) setMicrophoneEnabled(true);
+        } catch {
+          if (mounted.current) setError("Your microphone is off. Select the microphone button to allow access and speak to the candidate and AI interviewers.");
+        }
       } catch (audioError) {
         // Following by transcript is still a usable seat, so this is not fatal.
         console.warn("Audio could not be joined", audioError);
@@ -171,18 +178,13 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
   const testPrejoinMicrophone = useCallback(async () => {
     setTestingPrejoinMicrophone(true);
     setError("");
-    let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      if (!stream.getAudioTracks().length || !stream.getVideoTracks().length) {
-        throw new Error("A camera and microphone are required for the live room");
-      }
+      await checkMicrophonePermission();
       setPrejoinMicrophoneReady(true);
     } catch (cause) {
       setPrejoinMicrophoneReady(false);
       setError(cause instanceof Error ? cause.message : "Camera and microphone permissions could not be verified.");
     } finally {
-      stream?.getTracks().forEach((track) => track.stop());
       setTestingPrejoinMicrophone(false);
     }
   }, []);
@@ -389,12 +391,12 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
             {preview?.panel?.length ? <div className="mt-7 grid gap-2 sm:grid-cols-2">{preview.panel.map((member, index) => <div key={member.id} className="flex min-w-0 items-center gap-3 rounded-xl border bg-card/90 p-3"><PanelIdentity seed={member.id} toneIndex={index} initials={member.display_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2)} className="size-9 text-[10px]" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{member.display_name}</span><span className="block truncate text-xs text-muted-foreground">{member.role}</span></span></div>)}</div> : null}
           </section>
           <Card>
-            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Your camera and microphone stay off until you explicitly enable them inside the room.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Ready to join?</CardTitle><CardDescription>Joining enables your microphone so the candidate and AI interviewers can hear you. Your camera is optional.</CardDescription></CardHeader>
             <CardContent>
               <form onSubmit={join} className="flex flex-col gap-3">
                 <label className="text-sm font-medium" htmlFor="host-name">Your name</label>
                 <input id="host-name" name="host_name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Interviewer name…" autoComplete="name" className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-                <Button type="button" variant={prejoinMicrophoneReady ? "secondary" : "outline"} onClick={() => void testPrejoinMicrophone()} disabled={testingPrejoinMicrophone}>{testingPrejoinMicrophone ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : prejoinMicrophoneReady ? <Check className="size-4" aria-hidden="true" /> : <Camera className="size-4" aria-hidden="true" />}{testingPrejoinMicrophone ? "Testing devices" : prejoinMicrophoneReady ? "Camera and microphone ready" : "Test camera and microphone"}</Button>
+                <Button type="button" variant={prejoinMicrophoneReady ? "secondary" : "outline"} onClick={() => void testPrejoinMicrophone()} disabled={testingPrejoinMicrophone}>{testingPrejoinMicrophone ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : prejoinMicrophoneReady ? <Check className="size-4" aria-hidden="true" /> : <Camera className="size-4" aria-hidden="true" />}{testingPrejoinMicrophone ? "Testing microphone" : prejoinMicrophoneReady ? "Microphone ready" : "Test microphone"}</Button>
                 <Button type="submit" size="lg" disabled={joining}>{joining ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Headphones className="size-4" aria-hidden="true" />}{joining ? "Joining interview" : "Join interview"}</Button>
               </form>
               {error ? <div className="mt-4"><Alert variant="destructive" title="Could not join">{error}</Alert></div> : null}
@@ -494,10 +496,10 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
           {drawerTab === "lead" ? <div id="host-panel-lead" role="tabpanel" aria-labelledby="host-tab-lead" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
             {focusGuard.violation_count ? <Alert variant={focusGuard.flagged ? "destructive" : "default"} title={focusGuard.flagged ? "Focus review recommended" : "Focus guard event"}><span>{focusGuard.violation_count} event{focusGuard.violation_count === 1 ? "" : "s"} recorded{latestFocusEvent ? ` · ${latestFocusEvent.event.replaceAll("_", " ")}` : ""}. This records browser focus signals only; it does not inspect other windows.</span></Alert> : <Alert title="No focus events recorded"><span>No tab, window-focus, fullscreen or camera changes have been recorded.</span></Alert>}
             {pendingQuestion ? <Alert title="Queued for the panel"><span>{pendingQuestion}</span></Alert> : null}
-            <Card className="p-0"><h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Your messages</h2><div className="max-h-52 overflow-y-auto p-3">{messages.length ? <ol className="space-y-2">{messages.map((message) => <li key={message.id} className="rounded-lg border p-3 text-sm"><Badge variant={message.mode === "ask" ? "default" : "secondary"}>{message.mode === "ask" ? "Asked the panel" : "Note"}</Badge><p className="mt-2 leading-5">{message.text}</p></li>)}</ol> : <p className="text-xs leading-5 text-muted-foreground">Send a private note to the candidate or queue the panel&apos;s next spoken question.</p>}</div></Card>
-            <label className="sr-only" htmlFor="host-draft">Message or panel question</label><textarea id="host-draft" name="host_message" autoComplete="off" value={draft} onChange={(event) => setDraft(event.target.value)} rows={4} placeholder="Ask the panel a follow-up, or send the candidate a note…" className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
-            <div className="flex gap-2"><Button className="flex-1" onClick={() => void send("ask")} disabled={sending || !draft.trim()}><Send aria-hidden="true" />Ask the panel</Button><Button variant="outline" onClick={() => void send("chat")} disabled={sending || !draft.trim()}><MessageSquareText aria-hidden="true" />Note</Button></div>
-            <p className="text-xs leading-5 text-muted-foreground">Your live microphone is heard immediately. Use Ask the panel when the question should enter the scored transcript.</p>
+            <Card className="p-0"><h2 className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">Your messages</h2><div className="max-h-52 overflow-y-auto p-3">{messages.length ? <ol className="space-y-2">{messages.map((message) => <li key={message.id} className="rounded-lg border p-3 text-sm"><Badge variant={message.mode === "ask" ? "default" : "secondary"}>{message.mode === "ask" ? "Asked AI interviewers" : "Note"}</Badge><p className="mt-2 leading-5">{message.text}</p></li>)}</ol> : <p className="text-xs leading-5 text-muted-foreground">Send a private note to the candidate or queue the panel&apos;s next spoken question.</p>}</div></Card>
+            <label className="sr-only" htmlFor="host-draft">Message or panel question</label><textarea id="host-draft" name="host_message" autoComplete="off" value={draft} onChange={(event) => setDraft(event.target.value)} rows={4} placeholder="Ask AI interviewers a follow-up, or send the candidate a note…" className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+            <div className="flex gap-2"><Button className="flex-1" onClick={() => void send("ask")} disabled={sending || !draft.trim()}><Send aria-hidden="true" />Ask AI interviewers</Button><Button variant="outline" onClick={() => void send("chat")} disabled={sending || !draft.trim()}><MessageSquareText aria-hidden="true" />Note</Button></div>
+            <p className="text-xs leading-5 text-muted-foreground">Speak to the AI interviewers with your microphone, or send them a written instruction here. Only candidate answers are assessed.</p>
           </div> : null}
 
           {drawerTab === "transcript" ? <div id="host-panel-transcript" role="tabpanel" aria-labelledby="host-tab-transcript" className="min-h-0 flex-1 overflow-y-auto p-3">{turns.length ? <ol className="space-y-3">{turns.map((turn) => <li key={turn.id}><p className={cn("text-xs font-medium", turn.speaker_type === "candidate" ? "text-primary" : "text-muted-foreground")}>{speakerLabel(turn, session)}</p><p className="mt-0.5 text-sm leading-6">{turn.content}</p></li>)}<li ref={transcriptEnd} /></ol> : <div className="grid min-h-48 place-items-center text-center"><div><FileText className="mx-auto size-6 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Nothing has been said yet</p><p className="mt-1 text-xs text-muted-foreground">Final transcript turns will appear here.</p></div></div>}</div> : null}

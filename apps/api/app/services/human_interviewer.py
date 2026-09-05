@@ -81,7 +81,7 @@ async def ensure_host_listener(db: AsyncSession, session_id: UUID, agora: AgoraA
     accepted = bool(host and host.listener_key == key and not host.left_at and session.status == "live")
     if accepted and host:
         host.listener_agent_id = started_id
-        host.listener_error = None if started_id else "AI microphone listening is unavailable. Use Ask the panel."
+        host.listener_error = None if started_id else "AI microphone listening is unavailable. Use Ask AI interviewers."
         # Keep the lease on failure to avoid retrying on every heartbeat.
         session.memory_state = state.model_dump(mode="json")
     await db.commit()
@@ -113,12 +113,9 @@ async def record_host_speech(
     if not content:
         await db.commit()
         return
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            [message.model_dump(mode="json") for message in payload.messages],
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+    # The silent listener can retry the same speech with different assistant
+    # history. Deduplicate the actual utterance, not its changing envelope.
+    fingerprint = hashlib.sha256(json.dumps([listener_key, content]).encode()).hexdigest()
     recent = list(
         (
             await db.scalars(
