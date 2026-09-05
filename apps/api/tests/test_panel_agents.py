@@ -41,6 +41,8 @@ async def test_ai_only_agent_opens_coding_pane_and_preserves_the_candidate_buffe
         calls += 1
         if kwargs.get("forced"):
             assert "capabilities-and-peer-notes" in messages[0]["content"]
+            assert "[CANDIDATE" in messages[0]["content"]
+            assert "Let's do a coding question." in messages[0]["content"]
             return {
                 "tool_calls": [
                     {
@@ -95,6 +97,13 @@ async def test_ai_only_agent_opens_coding_pane_and_preserves_the_candidate_buffe
     assert task["hints"] == ["Start with capacity."]
     code = (await client.get(f"/v1/sessions/{sid}/code", headers=auth_headers)).json()
     assert code["content"] == "# My existing draft"
+    from app.models import InterviewSession
+    async with session_factory() as db:
+        saved = await db.get(InterviewSession, UUID(sid))
+        assert saved is not None
+        # This response does not contain a question mark, so private routing
+        # instructions must never be saved as if spoken to the candidate.
+        assert saved.memory_state.get("last_question") != "Ask for a coding implementation"
     # Repeating the same tool action returns the same task id rather than reopening it.
     async with session_factory() as db:
         again = await open_coding_task(
@@ -136,6 +145,39 @@ async def test_agent_cannot_invoke_an_ungranted_tool(monkeypatch: pytest.MonkeyP
         "Interview the candidate.", [], tools, denied, [actor]
     )
     assert response == "What assumptions did you use?"
+
+
+async def test_actor_failure_does_not_start_a_second_model_pipeline(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "panel_reasoning_enabled", True)
+    config = (await client.post(
+        "/v1/interview-configs", headers=auth_headers, json={"title": "Recovery"},
+    )).json()
+    session = (await client.post(
+        "/v1/sessions", headers=auth_headers, json={"interview_config_id": config["id"]},
+    )).json()
+    sid = session["id"]
+    await client.post(f"/v1/sessions/{sid}/start", headers=auth_headers, json={})
+
+    async def unavailable(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise TimeoutError("Provider unavailable")
+
+    async def must_not_retry(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Must not start the legacy model pipeline after an actor failure")
+
+    monkeypatch.setattr("app.services.panel_agents.complete", unavailable)
+    monkeypatch.setattr("app.custom_llm._send_upstream_with_retry", must_not_retry)
+    response = await client.post(
+        "/llm/chat/completions",
+        headers={"Authorization": "Bearer test-llm-secret", "X-RoundCraft-Session-Id": sid},
+        json={"model": "roundcraft-panel", "messages": [{"role": "user", "content": "I am ready."}]},
+    )
+    assert response.status_code == 200
+    text = response.json()["choices"][0]["message"]["content"]
+    assert "couldn't complete my response" in text
+    assert "tradeoff" not in text
+    assert "verify that claim" not in text
 
 
 async def test_non_coding_track_cannot_publish_agent_task(client: AsyncClient, auth_headers: dict[str, str]) -> None:

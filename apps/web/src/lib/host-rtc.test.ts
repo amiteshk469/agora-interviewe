@@ -82,6 +82,17 @@ beforeEach(() => {
   agora.client.remoteUsers.length = 0;
 });
 
+it("surfaces a failed audio subscription instead of silently losing the panel", async () => {
+  const onConnectionError = vi.fn();
+  const room = await joinHostRtcRoom(session, { onConnectionError });
+  agora.client.subscribe.mockRejectedValueOnce(new Error("Network disconnected"));
+  const published = agora.client.on.mock.calls.find(([name]) => name === "user-published")?.[1];
+  published?.({ uid: 9001 }, "audio");
+  await vi.waitFor(() => expect(onConnectionError).toHaveBeenCalledWith(expect.any(Error)));
+  expect(onConnectionError.mock.calls[0][0].message).toContain("Could not subscribe to room audio");
+  await room.leave();
+});
+
 describe("human interviewer Agora room", () => {
   it("registers subscription before join and plays subscribed room audio", async () => {
     const room = await joinHostRtcRoom(session);

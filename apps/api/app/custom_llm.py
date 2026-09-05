@@ -217,7 +217,7 @@ def _director_continuation(suggested_question: str) -> str:
     value = suggested_question.strip()
     if value.endswith("?"):
         return value
-    return "Could you expand on that with a specific example, tradeoff, and measurable result?"
+    return "I couldn't complete that response. Could you repeat your last question or answer?"
 
 
 def _local_stream_events(content: str, model: str) -> tuple[bytes, bytes, bytes]:
@@ -493,6 +493,10 @@ async def _persist_interviewer_response(
             "panel_bid_id": str(panel_bid_id) if panel_bid_id is not None else None,
         },
     )
+    state = PanelState.model_validate(session.memory_state)
+    if "?" in content:
+        state.last_question = content
+        session.memory_state = state.model_dump(mode="json")
     await db.commit()
 
 
@@ -652,6 +656,7 @@ async def panel_chat_completions(
         if replayed_bid is None:
             decision = PanelDirector.choose_next(panel, state, candidate_text)
             if settings.panel_reasoning_enabled:
+                recent_conversation = await labelled_conversation(db, session.id)
                 # Never hold the transcript/session row lock while a model thinks.
                 await db.commit()
                 try:
@@ -662,6 +667,7 @@ async def panel_chat_completions(
                             state,
                             candidate_text,
                             human_interviewer=host_turn is not None,
+                            conversation=recent_conversation,
                         )
                     if host_turn is not None and not should_speak:
                         return _local_completion_response("", stream=payload.stream, model=payload.model)
@@ -679,7 +685,7 @@ async def panel_chat_completions(
     if selected is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Selected logical panelist is unavailable")
     state.current_speaker_id = selected.id
-    state.last_question = decision.suggested_question
+    # Keep the actual spoken question, not the coordinator's private objective.
 
     # Check the ledger before this turn joins it, then record the turn's own claim so a
     # later restatement is compared against it.
@@ -939,7 +945,7 @@ async def panel_chat_completions(
             if not agent_answer and host_turn is None:
                 raise ValueError("Candidate requires a response")
             metadata["tool_audits"] = tool_audits
-            metadata["agent_runtime"] = "capability_coordinator"
+            metadata["agent_runtime"] = "langgraph_interviewer"
             if panel_bid is not None:
                 panel_bid.result = dict(metadata)
             await _persist_interviewer_response(
@@ -961,11 +967,21 @@ async def panel_chat_completions(
             if panel_bid is not None:
                 await db.refresh(panel_bid)
             await db.commit()
-            logger.warning("Interviewer reasoning failed; returning to streaming fallback for %s", session_id)
-            # Retain executed tool results so the fallback never falsely repeats a side effect.
-            upstream_body["messages"][0]["content"] += "\n" + delimit_untrusted(
-                "executed-tools",
-                json.dumps(tool_audits),
+            logger.exception("Interviewer reasoning failed for %s", session_id)
+            # Do not run a second full model pipeline after the bounded graph
+            # has timed out. That doubled latency and hid failures as generic probes.
+            recovery = (
+                "I received your message, but couldn't complete my response. "
+                "Please give me a moment, then repeat it."
+            )
+            await _persist_interviewer_response(
+                db, session, content=recovery, panelist_id=selected.id,
+                candidate_turn_id=candidate_turn.id, panel_bid_id=panel_bid.id if panel_bid else None,
+            )
+            return _local_completion_response(
+                recovery, stream=payload.stream, model=payload.model,
+                metadata={**metadata, "agent_runtime": "langgraph_recovery", "tool_audits": tool_audits},
+                first_chunk=first_chunk,
             )
 
     if not payload.stream:
