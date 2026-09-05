@@ -413,6 +413,86 @@ input[type="file"]:not(:disabled) {
   .landing-evidence-trail::before { inset-inline-start: -0.65rem; }
 }
 
+.landing-audience-art {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 10rem;
+  margin-bottom: 2rem;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: linear-gradient(130deg, color-mix(in oklab, var(--primary) 9%, var(--background)), var(--background));
+}
+.landing-audience-art > span:first-child {
+  z-index: 1;
+  padding: 1.5rem;
+  font-size: clamp(2.5rem, 5vw, 4.5rem);
+  font-weight: 600;
+  letter-spacing: -0.065em;
+  color: color-mix(in oklab, var(--foreground) 72%, var(--background));
+}
+.landing-seat-ring {
+  position: absolute;
+  right: -2rem;
+  width: 12rem;
+  aspect-ratio: 1;
+  border: 1.5rem solid color-mix(in oklab, var(--primary) 22%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--primary) 20%, transparent), inset 0 0 0 1px color-mix(in oklab, var(--primary) 30%, transparent);
+  transform: rotate(-25deg) scaleY(.65);
+}
+.landing-audience:nth-child(2) .landing-seat-ring {
+  right: -1rem;
+  transform: rotate(25deg) scaleY(.65);
+  border-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.landing-listening-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+  min-height: 18rem;
+  margin-top: 2rem;
+}
+.landing-listening-ring {
+  position: absolute;
+  width: 15rem;
+  aspect-ratio: 1;
+  border: 1px solid color-mix(in oklab, var(--primary) 35%, transparent);
+  border-radius: 50%;
+  transform: rotate(-30deg) scaleY(.7);
+}
+.landing-listening-ring:nth-child(2) { transform: rotate(30deg) scaleY(.7); }
+.landing-listening-ring:nth-child(3) { transform: rotate(90deg) scaleY(.7); }
+.landing-listening-art figcaption {
+  z-index: 1;
+  display: grid;
+  gap: .3rem;
+  text-align: center;
+  font-size: 1.35rem;
+  font-weight: 500;
+  letter-spacing: -.04em;
+}
+.landing-listening-art figcaption span:last-child { color: var(--primary); }
+.landing-answer-example {
+  position: relative;
+  padding: 2rem;
+  margin-bottom: 1rem;
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
+  border-radius: 1rem;
+  background: var(--card);
+  box-shadow: 8px 8px 0 color-mix(in oklab, var(--primary) 7%, var(--background));
+}
+.landing-answer-example figcaption { font-size: .75rem; color: var(--muted-foreground); }
+.landing-answer-example blockquote { margin-top: 1.5rem; font-size: clamp(1.35rem, 2.1vw, 1.8rem); line-height: 1.5; letter-spacing: -.025em; }
+.landing-answer-example mark { background: color-mix(in oklab, var(--primary) 16%, transparent); color: inherit; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.landing-answer-example p { margin-top: 1.5rem; font-size: .75rem; line-height: 1.7; color: var(--muted-foreground); }
+.landing-closing-statement { padding-block: clamp(5rem, 10vw, 9rem); }
+@media (prefers-reduced-motion: no-preference) {
+  .landing-seat-ring { transition: transform .6s ease; }
+  .landing-audience:hover .landing-seat-ring { transform: rotate(0) scaleY(.8); }
+}
+
 .landing-link {
   border-radius: 0.125rem;
   outline: none;
