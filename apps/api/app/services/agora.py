@@ -522,7 +522,7 @@ class AgoraAgentService:
         client = self._require_client()
         agent_management = getattr(client, "agent_management", None)
         if agent_management is None:
-            return "client_manual_required"
+            raise HTTPException(503, "Agora text turn injection is unavailable; reconnect the panel")
         token = generate_convo_ai_token(
             app_id=self.settings.agora_app_id,
             app_certificate=self.settings.agora_app_certificate,

@@ -94,7 +94,12 @@ function disposeRoomTone(graph: RoomToneGraph | null) {
 
 export default function AgoraVoiceClient(props: Props) {
   const clientRef = useRef<ReturnType<typeof AgoraRTC.createClient> | null>(null);
-  if (clientRef.current === null) clientRef.current = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+  if (clientRef.current === null) {
+    // Documented by the ConvoAI toolkit, but omitted from RTC's public TS surface.
+    (AgoraRTC as typeof AgoraRTC & { setParameter: (key: string, value: boolean) => void })
+      .setParameter("ENABLE_AUDIO_PTS_METADATA", true);
+    clientRef.current = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+  }
   // Official Agora quickstart pattern keeps one RTC client through Strict Mode renders.
   // eslint-disable-next-line react-hooks/refs
   const client = clientRef.current;
@@ -166,7 +171,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
     let cancelled = false;
     void (async () => {
       try {
-        const ai = await AgoraVoiceAI.init({ rtcEngine: client, rtmConfig: { rtmEngine: panelRtmEngine(rtmClient, String(config.agent_uid)) }, renderMode: TranscriptHelperMode.TEXT, enableLog: true });
+        const ai = await AgoraVoiceAI.init({ rtcEngine: client, rtmConfig: { rtmEngine: panelRtmEngine(rtmClient, String(config.agent_uid)) }, renderMode: TranscriptHelperMode.WORD, enableLog: true });
         if (cancelled) {
           ai.unsubscribe();
           ai.destroy();

@@ -32,6 +32,7 @@ import {
   generateSessionReport,
   listRolePacks,
   listSessionToolRuns,
+  listHumanInterviewerTurns,
   persistSessionTurn,
   readHostPresence,
   readSessionCodingTask,
@@ -39,6 +40,7 @@ import {
   type HostPresence,
   type RolePack,
   type SessionToolRun,
+  type SessionTurn,
   type StoredLiveSession,
 } from "@/lib/api";
 
@@ -123,6 +125,7 @@ export function LiveInterviewScreen() {
   const [hostPresence, setHostPresence] = useState<HostPresence | null>(null);
   const [sharedCodingTask, setSharedCodingTask] = useState<HostPresence["coding_task"]>(null);
   const [hostMessages, setHostMessages] = useState<HostPresence["messages"]>([]);
+  const [humanTurns, setHumanTurns] = useState<SessionTurn[]>([]);
   const [inviteState, setInviteState] = useState<"idle" | "copying" | "copied" | "ready" | "error">("idle");
   const [inviteLink, setInviteLink] = useState("");
   const [dismissedHostMessageId, setDismissedHostMessageId] = useState("");
@@ -237,14 +240,20 @@ export function LiveInterviewScreen() {
     if (!storedSession || storedSession.demo) return;
     let cancelled = false;
     let timer: number | null = null;
+    let lastHumanSequence = 0;
     const poll = async () => {
       try {
-        const [presence, task] = await Promise.all([
+        const [presence, task, speech] = await Promise.all([
           readHostPresence(storedSession.sessionId),
           readSessionCodingTask(storedSession.sessionId).catch(() => undefined),
+          listHumanInterviewerTurns(storedSession.sessionId, lastHumanSequence).catch(() => []),
         ]);
         if (!cancelled) {
           setHostPresence(presence);
+          if (speech.length) {
+            lastHumanSequence = Math.max(lastHumanSequence, ...speech.map((turn) => turn.sequence));
+            setHumanTurns((current) => mergeRecordsById(current, speech).sort((a, b) => a.sequence - b.sequence));
+          }
           if (task !== undefined) setSharedCodingTask(task);
           if (presence?.messages.length) {
             setHostMessages((current) => mergeRecordsById(current, presence.messages));
@@ -753,6 +762,13 @@ export function LiveInterviewScreen() {
 
         {activeTab === "transcript" ? (
           <div id="evidence-panel-transcript" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4" role="tabpanel" aria-labelledby="evidence-tab-transcript" tabIndex={0}>
+            {humanTurns.length ? <section aria-label="Human interviewer speech" className="mb-5 space-y-3 border-b pb-4">
+              <h3 className="text-xs font-semibold">Human interviewer speech</h3>
+              {humanTurns.map((turn) => <article key={turn.id} className="text-sm">
+                <div className="flex justify-between gap-3 text-xs text-muted-foreground"><span>{hostPresence?.display_name || "Human interviewer"}</span><span>Transcript turn {turn.sequence}</span></div>
+                <p className="mt-1 break-words leading-6">{turn.content}</p>
+              </article>)}
+            </section> : null}
             <div className="space-y-5">
               {displayedTranscript.map((turn) => (
                 <article key={turn.id} className={cn("break-words text-sm [contain-intrinsic-size:auto_7rem] [content-visibility:auto]", turn.kind === "candidate" && "ps-5")}>

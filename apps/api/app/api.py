@@ -1175,11 +1175,20 @@ async def append_transcript_turn(
     response_model=list[TranscriptTurnOut],
     tags=["Transcript and evidence"],
 )
-async def list_transcript_turns(session_id: UUID, db: Db, user: CurrentUser) -> list[TranscriptTurn]:
+async def list_transcript_turns(
+    session_id: UUID, db: Db, user: CurrentUser,
+    after_sequence: int = 0, human_interviewers_only: bool = False,
+) -> list[TranscriptTurn]:
     await _owned(db, InterviewSession, session_id, user.id)
-    result = await db.execute(
-        select(TranscriptTurn).where(TranscriptTurn.session_id == session_id).order_by(TranscriptTurn.sequence)
+    query = select(TranscriptTurn).where(
+        TranscriptTurn.session_id == session_id,
+        TranscriptTurn.sequence > max(0, after_sequence),
     )
+    if human_interviewers_only:
+        query = query.where(
+            TranscriptTurn.speaker_type == "interviewer", TranscriptTurn.speaker_id.like("human:%")
+        )
+    result = await db.execute(query.order_by(TranscriptTurn.sequence))
     return list(result.scalars())
 
 

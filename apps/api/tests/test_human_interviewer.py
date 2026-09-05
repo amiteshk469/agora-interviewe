@@ -32,6 +32,49 @@ def callback_headers(sid: str, key: str | None = None) -> dict[str, str]:
     }
 
 
+async def test_failed_dispatch_keeps_transcript_and_surfaces_error_then_recovers(
+    client: AsyncClient, auth_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    sid, token, key = await room(client, auth_headers)
+    fake = client.fake_agora  # type: ignore[attr-defined]
+    dispatch = fake.dispatch_turn
+
+    async def failed(*args: Any, **kwargs: Any) -> str:
+        raise HTTPException(503, "Unavailable")
+
+    monkeypatch.setattr(fake, "dispatch_turn", failed)
+    payload = {"model": "roundcraft-panel", "messages": [{"role": "user", "content": "AI, can you hear me?"}]}
+    result = await client.post("/llm/chat/completions", headers=callback_headers(sid, key), json=payload)
+    assert result.status_code == 503
+    view = (await client.get(f"/v1/guest/sessions/{token}/state")).json()
+    assert "speech was saved" in view["ai_listening_error"]
+    async with session_factory() as db:
+        turns = list((await db.scalars(select(TranscriptTurn))).all())
+        assert len(turns) == 1
+        assert not turns[0].turn_metadata.get("panel_dispatched")
+
+    monkeypatch.setattr(fake, "dispatch_turn", dispatch)
+    retry = await client.post("/llm/chat/completions", headers=callback_headers(sid, key), json=payload)
+    assert retry.status_code == 200
+    human_transcript = (await client.get(
+        f"/v1/sessions/{sid}/turns?human_interviewers_only=true", headers=auth_headers,
+    )).json()
+    assert len(human_transcript) == 1
+    assert human_transcript[0]["speaker_id"].startswith("human:")
+    after = human_transcript[0]["sequence"]
+    assert (await client.get(
+        f"/v1/sessions/{sid}/turns?human_interviewers_only=true&after_sequence={after}", headers=auth_headers,
+    )).json() == []
+    view = (await client.get(f"/v1/guest/sessions/{token}/state")).json()
+    assert view["ai_listening_error"] is None
+    async with session_factory() as db:
+        turns = list((await db.scalars(select(TranscriptTurn))).all())
+        assert len(turns) == 1
+        assert turns[0].turn_metadata["panel_dispatched"] is True
+
+
 def test_control_references_are_not_candidate_conversation_history() -> None:
     from app.custom_llm import _spoken_messages
 

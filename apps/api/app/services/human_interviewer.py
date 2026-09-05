@@ -170,12 +170,23 @@ async def record_host_speech(
                 agent_id, f"{HOST_EVENT_PREFIX}{turn_id}", "", channel_name=channel, agent_uid=uid
             )
         except Exception:
-            await lock_transcript_session(db, session.id)
+            locked_session = await lock_transcript_session(db, session.id)
+            current_state = PanelState.model_validate(locked_session.memory_state)
+            if current_state.host and current_state.host.listener_key == listener_key:
+                current_state.host.listener_error = (
+                    "Your speech was saved, but the AI panel could not receive it. "
+                    "Try Ask AI interviewers or rejoin the room."
+                )
+                locked_session.memory_state = current_state.model_dump(mode="json")
             await db.refresh(turn)
             turn.turn_metadata = {**turn.turn_metadata, "dispatch_started_at": 0}
             await db.commit()
             raise
-        await lock_transcript_session(db, session.id)
+        locked_session = await lock_transcript_session(db, session.id)
+        current_state = PanelState.model_validate(locked_session.memory_state)
+        if current_state.host and current_state.host.listener_key == listener_key:
+            current_state.host.listener_error = None
+            locked_session.memory_state = current_state.model_dump(mode="json")
         await db.refresh(turn)
         turn.turn_metadata = {**turn.turn_metadata, "panel_dispatched": True}
         await db.commit()

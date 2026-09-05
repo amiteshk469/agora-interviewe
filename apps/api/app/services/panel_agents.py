@@ -8,9 +8,10 @@ is private and non-recursive; only the actor holding the floor produces audio.
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings
@@ -18,6 +19,13 @@ from app.domain import PLATFORM_INVARIANTS, delimit_untrusted
 from app.schemas import PanelDecision, PanelistInput, PanelState
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class AgentRunState(TypedDict):
+    messages: list[dict[str, Any]]
+    attempts: int
+    calls: list[dict[str, Any]]
+    answer: str
 
 
 def function(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -78,7 +86,13 @@ class RoutingChoice(BaseModel):
 
 
 async def coordinate(
-    settings: Settings, panel: list[PanelistInput], state: PanelState, text: str, *, human_interviewer: bool
+    settings: Settings,
+    panel: list[PanelistInput],
+    state: PanelState,
+    text: str,
+    *,
+    human_interviewer: bool,
+    conversation: str = "",
 ) -> tuple[PanelDecision, bool]:
     capabilities = [
         {
@@ -115,11 +129,17 @@ async def coordinate(
                     "speak=false: let the candidate answer. If they address the AI, route to an expert. "
                     "Audio checks from either human require speak=true and a short acknowledgment. "
                     "Candidate turns normally need a response. Never assign scores here.\n"
+                    "Read the conversation stage: readiness is not an answer to a technical question. "
+                    "Start with introductions, then a role-specific question. If confused, rephrase the actual "
+                    "last question simply; if unable to answer or requesting a change, move to another question. "
+                    "Do not demand tradeoffs or proof for greetings, readiness, or audio checks.\n"
                     + PLATFORM_INVARIANTS
                     + "\n"
                     + delimit_untrusted("capabilities-and-peer-notes", json.dumps(capabilities))
                     + "\n"
                     + delimit_untrusted("last-question", str(state.last_question or "None"))
+                    + "\n"
+                    + delimit_untrusted("conversation", conversation)
                 ),
             },
             {
@@ -222,18 +242,30 @@ class InterviewerAgent:
             *messages,
         ]
         allowed = {tool["function"]["name"] for tool in tools}
-        for attempt in range(3):
-            result = await complete(self.settings, history, tools if attempt < 2 else [])
+
+        async def reason(state: AgentRunState) -> dict[str, Any]:
+            attempt = state["attempts"]
+            result = await complete(self.settings, state["messages"], tools if attempt < 2 else [])
             calls = result.get("tool_calls") or []
             if not calls:
                 content = result.get("content")
                 if not isinstance(content, str):
                     raise ValueError("Interviewer returned no text")
-                return content.strip()
+                return {"answer": content.strip(), "calls": [], "attempts": attempt + 1}
             if attempt == 2 or len(calls) > 3:
                 raise ValueError("Interviewer exceeded the tool budget")
-            history.append({"role": "assistant", "content": result.get("content"), "tool_calls": calls})
-            for call in calls:
+            return {
+                "messages": [
+                    *state["messages"],
+                    {"role": "assistant", "content": result.get("content"), "tool_calls": calls},
+                ],
+                "calls": calls,
+                "attempts": attempt + 1,
+            }
+
+        async def act(state: AgentRunState) -> dict[str, Any]:
+            messages = list(state["messages"])
+            for call in state["calls"]:
                 name = call["function"]["name"]
                 try:
                     if name not in allowed:
@@ -244,5 +276,18 @@ class InterviewerAgent:
                     output = await execute(name, arguments)
                 except (ValueError, KeyError, TypeError) as exc:
                     output = {"error": str(exc)}
-                history.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output)[:8000]})
-        raise ValueError("Interviewer did not complete within its budget")
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output)[:8000]})
+            return {"messages": messages, "calls": []}
+
+        # LangGraph owns execution and bounded tool-cycle transitions. Durable room
+        # memory remains in the existing SQL transcript, never a process-local cache.
+        graph = StateGraph(AgentRunState)
+        graph.add_node("interviewer", reason)
+        graph.add_node("authorized_tools", act)
+        graph.add_edge(START, "interviewer")
+        graph.add_conditional_edges("interviewer", lambda state: "authorized_tools" if state["calls"] else END)
+        graph.add_edge("authorized_tools", "interviewer")
+        result = await graph.compile().ainvoke(
+            {"messages": history, "attempts": 0, "calls": [], "answer": ""}, {"recursion_limit": 8}
+        )
+        return str(result["answer"])

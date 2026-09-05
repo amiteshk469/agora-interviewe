@@ -135,7 +135,10 @@ export async function joinHostRtcRoom(
         if (mediaType === "audio" && !muted) user.audioTrack?.play();
         if (mediaType === "video") emitMediaState();
       })
-      .catch((error) => console.warn(`Host ${mediaType} subscription failed`, error));
+      .catch((error) => {
+        console.warn(`Host ${mediaType} subscription failed`, error);
+        reportConnectionError(new Error(`Could not subscribe to room ${mediaType}. Rejoin to restore the connection.`));
+      });
   };
   const handleRemoteVideoChanged = () => {
     if (!closed) emitMediaState();

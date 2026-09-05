@@ -361,6 +361,12 @@ export function listSessionTurns(sessionId: string) {
   return productRequest<SessionTurn[]>(`/sessions/${sessionId}/turns`);
 }
 
+export function listHumanInterviewerTurns(sessionId: string, afterSequence = 0) {
+  return productRequest<SessionTurn[]>(
+    `/sessions/${sessionId}/turns?human_interviewers_only=true&after_sequence=${Math.max(0, afterSequence)}`,
+  );
+}
+
 export function listSessionToolRuns(sessionId: string) {
   return productRequest<SessionToolRun[]>(`/sessions/${sessionId}/tool-runs`);
 }
