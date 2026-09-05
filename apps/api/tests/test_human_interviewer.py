@@ -56,6 +56,14 @@ async def test_host_listener_is_silent_role_bound_and_stopped_on_leave(
     assert response.json()["choices"][0]["message"]["content"] == ""
     again = await client.post("/llm/chat/completions", headers=callback_headers(sid, key), json=payload)
     assert again.status_code == 200
+    retry_with_history = await client.post(
+        "/llm/chat/completions", headers=callback_headers(sid, key),
+        json={"model": "roundcraft-panel", "messages": [
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "Panel, ask about metrics."},
+        ]},
+    )
+    assert retry_with_history.status_code == 200
     async with session_factory() as db:
         turns = list((await db.scalars(select(TranscriptTurn))).all())
         assert len(turns) == 1
