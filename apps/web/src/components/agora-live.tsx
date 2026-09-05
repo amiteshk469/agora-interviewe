@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import { AlertCircle, AudioLines, Radio, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Badge, Button } from "@/components/ui";
-import { demoModeEnabled, getAgoraConfig, startAgoraAgent, stopAgoraAgent, type AgoraConfig, type StoredLiveSession } from "@/lib/api";
+import { demoModeEnabled, getAgoraConfig, requestSessionBackchannel, startAgoraAgent, stopAgoraAgent, type AgoraConfig, type StoredLiveSession } from "@/lib/api";
 
 export type LiveTranscriptTurn = { id: string; uid: string; isLocal: boolean; text: string; status: string; final: boolean; interrupted: boolean };
 export type LiveAgentState = "idle" | "listening" | "thinking" | "speaking" | "silent" | null;
@@ -53,7 +53,7 @@ function waitForRtmConnected(client: RTMClient, timeoutMs = 800) {
   });
 }
 
-export function AgoraLivePanel({ prepared, renewConnection, onTranscript, onAgentState, onMediaState }: { prepared?: StoredLiveSession | null; renewConnection?: () => Promise<AgoraConfig>; onTranscript?: (turns: LiveTranscriptTurn[]) => void; onAgentState?: (state: LiveAgentState) => void; onMediaState?: (state: LiveMediaState) => void }) {
+export function AgoraLivePanel({ prepared, renewConnection, onLongAnswer, onTranscript, onAgentState, onMediaState }: { prepared?: StoredLiveSession | null; renewConnection?: () => Promise<AgoraConfig>; onLongAnswer?: () => Promise<unknown>; onTranscript?: (turns: LiveTranscriptTurn[]) => void; onAgentState?: (state: LiveAgentState) => void; onMediaState?: (state: LiveMediaState) => void }) {
   const [config, setConfig] = useState<AgoraConfig | null>(null);
   const [rtm, setRtm] = useState<RTMClient | null>(null);
   const [phase, setPhase] = useState<"demo" | "connecting" | "live" | "error">("demo");
@@ -62,6 +62,11 @@ export function AgoraLivePanel({ prepared, renewConnection, onTranscript, onAgen
   const mounted = useRef(true);
   const rtmRef = useRef<RTMClient | null>(null);
   const demoAgentId = useRef("");
+  const acknowledge = useCallback(() => {
+    if (onLongAnswer) return onLongAnswer();
+    if (prepared?.sessionId && !prepared.demo && !renewConnection) return requestSessionBackchannel(prepared.sessionId);
+    return Promise.resolve();
+  }, [onLongAnswer, prepared, renewConnection]);
 
   useEffect(() => {
     mounted.current = true;
@@ -153,7 +158,7 @@ export function AgoraLivePanel({ prepared, renewConnection, onTranscript, onAgen
   }, []);
 
   if (phase === "live" && config && rtm) {
-    return <AgoraVoiceClient config={config} sessionId={renewConnection ? undefined : prepared?.demo ? undefined : prepared?.sessionId} renewConnection={renewConnection} rtmClient={rtm} onTranscript={onTranscript} onAgentState={onAgentState} onMediaState={onMediaState} />;
+    return <AgoraVoiceClient config={config} sessionId={renewConnection ? undefined : prepared?.demo ? undefined : prepared?.sessionId} renewConnection={renewConnection} rtmClient={rtm} onTranscript={onTranscript} onAgentState={onAgentState} onMediaState={onMediaState} onLongAnswer={prepared?.configSnapshot?.conversation_mode === "balanced" ? acknowledge : undefined} />;
   }
 
   const status = phase === "connecting"

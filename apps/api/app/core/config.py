@@ -159,6 +159,7 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
+    panel_reasoning_enabled: bool = True
 
     jd_max_upload_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     web_search_enabled: bool = False

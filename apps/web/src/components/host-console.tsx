@@ -45,6 +45,7 @@ type Turn = GuestView["turns"][number];
 function speakerLabel(turn: Turn, session: GuestSession | null) {
   if (turn.speaker_type === "candidate") return "Candidate";
   if (turn.speaker_type === "system") return "System";
+  if (turn.speaker_id?.startsWith("human:")) return `${session?.display_name || "Guest"} · Human interviewer`;
   const direct = session?.panel.find((member) => member.id === turn.speaker_id);
   if (direct) return direct.display_name;
   const panelistId = panelistIdForAgoraUid(turn.speaker_id, session?.connection.panelists);
@@ -80,6 +81,8 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
   const [code, setCode] = useState<CodeBuffer | null>(null);
   const [messages, setMessages] = useState<HostMessage[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [aiListening, setAiListening] = useState(false);
+  const [aiListeningError, setAiListeningError] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<CandidatePresence | null>(null);
   const [candidateResume, setCandidateResume] = useState<CandidateResumeResponse | null>(preview?.candidate_resume ?? null);
   const [codingTask, setCodingTask] = useState<CodingTask | null>(null);
@@ -221,6 +224,8 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
         setFocusGuard(view.focus_guard ?? EMPTY_FOCUS_GUARD);
         setMessages((current) => mergeRecordsById(current, view.messages));
         setPendingQuestion(view.pending_question);
+        setAiListening(Boolean(view.ai_listening));
+        setAiListeningError(view.ai_listening_error ?? null);
         if (view.turns.length) {
           lastSequence.current = Math.max(lastSequence.current, ...view.turns.map((turn) => turn.sequence));
           setTurns((current) => mergeRecordsById(current, view.turns).sort((left, right) => left.sequence - right.sequence));
@@ -446,6 +451,7 @@ export function HostConsole({ token, preview, autoJoinName, ownerSessionId, cand
           {focusGuard.violation_count ? <Button size="sm" variant={focusGuard.flagged ? "destructive" : "outline"} onClick={() => { setDrawerTab("lead"); setDrawerOpen(true); }}><ShieldAlert aria-hidden="true" /><span className="hidden sm:inline">Focus</span> {focusGuard.violation_count}</Button> : <Badge variant="outline" className="hidden sm:inline-flex"><ShieldCheck className="size-3" aria-hidden="true" />Focus 0</Badge>}
           <Badge variant={status === "live" ? "outline" : "secondary"}>{status === "live" ? "Live" : status}</Badge>
           <Button variant={drawerOpen ? "secondary" : "outline"} size="icon" onClick={() => setDrawerOpen((open) => !open)} aria-expanded={drawerOpen} aria-controls="host-controls" aria-label={drawerOpen ? "Close interviewer controls" : "Open interviewer controls"}>{drawerOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}</Button>
+          <span className="max-w-56 text-xs text-muted-foreground" role="status">{aiListeningError || (aiListening ? "AI can hear your unmuted microphone" : "Connecting your microphone to the AI panel…")}</span>
           <ThemeToggle />
         </div>
       </header>

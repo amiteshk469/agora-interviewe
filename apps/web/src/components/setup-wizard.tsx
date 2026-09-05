@@ -181,6 +181,7 @@ export function SetupWizard({ initialMode = "candidate_practice", modeLocked = f
   const [difficulty, setDifficulty] = useState<SetupDifficulty>(initialDefaults.difficulty);
   const [targetLevel, setTargetLevel] = useState<TargetLevel>(initialDefaults.targetLevel);
   const [allowInterruption, setAllowInterruption] = useState(initialDefaults.allowInterruption);
+  const [conversationMode, setConversationMode] = useState<"balanced" | "let_me_finish">("balanced");
   const [documentState, setDocumentState] = useState<DocumentState>("empty");
   const [fileName, setFileName] = useState("");
   const [documentId, setDocumentId] = useState("");
@@ -206,6 +207,7 @@ export function SetupWizard({ initialMode = "candidate_practice", modeLocked = f
   const [saveError, setSaveError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [enabledTools, setEnabledTools] = useState(["knowledge_search", "calculator"]);
+  const [agentCodingEnabled, setAgentCodingEnabled] = useState(true);
   const [rolePacks, setRolePacks] = useState<RolePack[]>([]);
   const [rolePacksLoading, setRolePacksLoading] = useState(true);
   const [rolePacksError, setRolePacksError] = useState("");
@@ -749,7 +751,7 @@ export function SetupWizard({ initialMode = "candidate_practice", modeLocked = f
         panel: mappedPanel,
         enabled_tools: interviewerCallableTools(enabledTools),
       });
-      const session = await createInterviewSession(config.id);
+      const session = await createInterviewSession(config.id, { conversation_mode: conversationMode, agent_coding_enabled: agentCodingEnabled });
       saveLiveSession({ sessionId: session.id, agentId: "", configSnapshot: session.config_snapshot, demo: false });
       clearDirty();
       router.push(interviewMode === "interviewer_led" ? "/interview/host-lobby" : "/interview/lobby");
@@ -812,6 +814,11 @@ export function SetupWizard({ initialMode = "candidate_practice", modeLocked = f
                 ) : null}
                 <Separator />
                 <Field label="Interview name" required><Input name="interview_name" value={title} onChange={(event) => { setTitle(event.target.value); setSaveError(""); markDirty(); }} placeholder="Name this interview…" /></Field>
+                <Field label="Conversation pace" hint={conversationMode === "balanced" ? "Occasional brief acknowledgments during long answers, responsive follow-ups, and earlier silence check-ins." : "No mid-answer acknowledgments. More time for pauses and thinking before the panel responds."}>
+                  <Select name="conversation_mode" value={conversationMode} onChange={(event) => { setConversationMode(event.target.value as "balanced" | "let_me_finish"); markDirty(); }}>
+                    <option value="balanced">Balanced</option><option value="let_me_finish">Let me finish</option>
+                  </Select>
+                </Field>
                 <div className="grid gap-5 sm:grid-cols-2"><Field label="Primary focus"><Select name="primary_focus" value={focus} onChange={(event) => { setFocus(event.target.value); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{focusOptions.map((option) => <option key={option} value={option}>{option}</option>)}</Select></Field><Field label="Duration"><Select name="duration_minutes" value={duration} onChange={(event) => { setDuration(event.target.value as typeof duration); markDirty(); }}><option value="20">20 minutes</option><option value="35">35 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></Select></Field></div>
                 <div className="grid gap-5 sm:grid-cols-2"><Field label="Difficulty"><Select name="difficulty" value={difficulty} onChange={(event) => { setDifficulty(event.target.value as SetupDifficulty); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}><option value="supportive">Supportive</option><option value="balanced">Balanced</option><option value="challenging">Challenging</option><option value="executive">Executive</option></Select></Field><Field label="Target level"><Select name="target_level" value={targetLevel} onChange={(event) => { setTargetLevel(event.target.value as TargetLevel); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }}>{TARGET_LEVELS.map((level) => <option key={level} value={level}>{targetLevelLabels[level]}</option>)}</Select></Field></div>
                 <label className="flex items-start gap-3 rounded-lg border bg-background p-4"><input name="allow_interruption" type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]" checked={allowInterruption} onChange={(event) => { setAllowInterruption(event.target.checked); markDirty(); if (documentState === "ready") setJdDisposition("edit"); }} /><span><span className="block text-sm font-medium">Allow natural candidate interruption</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">The candidate can speak over a panelist, and the active interviewer will stop cleanly.</span></span></label>
@@ -883,6 +890,7 @@ export function SetupWizard({ initialMode = "candidate_practice", modeLocked = f
                     {interviewerToolOptions.map((tool) => <label key={tool.id} className="flex items-start gap-3 rounded-lg border bg-background p-3"><input name={`tool_${tool.id}`} type="checkbox" className="mt-1 size-4 accent-[var(--primary)]" checked={enabledTools.includes(tool.id)} onChange={() => toggleTool(tool.id)} /><span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium">{tool.label}{tool.safe ? null : <Badge variant="secondary">Optional</Badge>}</span><span className="mt-1 block text-xs text-muted-foreground">{tool.detail} · {tool.roles}</span></span></label>)}
                   </div>
                   <Separator />
+                  {selectedRolePack?.supports_coding ? <label className="flex items-start gap-3 rounded-lg border p-3"><input type="checkbox" className="mt-1 size-4 accent-[var(--primary)]" checked={agentCodingEnabled} onChange={(event) => { setAgentCodingEnabled(event.target.checked); markDirty(); }} /><span><span className="block text-sm font-medium">Let AI interviewers open coding tasks</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">The panel can open your editor, write a task, and offer hints. Your existing code is preserved. Human interviewer controls remain available.</span></span></label> : null}
                   <div>
                     <p className="mb-2 text-xs font-medium text-muted-foreground">Always-on platform workflow</p>
                     <div className="grid gap-2 sm:grid-cols-2">

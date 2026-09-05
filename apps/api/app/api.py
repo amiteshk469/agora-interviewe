@@ -127,6 +127,7 @@ from app.services.host_invite import (
     mint_invite,
     read_invite,
 )
+from app.services.human_interviewer import ensure_host_listener
 from app.services.tools import DEFINITIONS, execute_tool
 
 router = APIRouter(prefix="/v1")
@@ -327,9 +328,7 @@ def _resume_extracted(text: str) -> dict[str, Any]:
         "summary": "summary",
     }
     sections = [
-        label
-        for term, label in section_terms.items()
-        if any(line.lower().rstrip(":") == term for line in lines)
+        label for term, label in section_terms.items() if any(line.lower().rstrip(":") == term for line in lines)
     ]
     return {
         "character_count": len(text),
@@ -409,9 +408,7 @@ async def upload_candidate_resume(
 )
 async def list_candidate_resumes(db: Db, user: CurrentUser) -> list[CandidateResume]:
     result = await db.execute(
-        select(CandidateResume)
-        .where(CandidateResume.user_id == user.id)
-        .order_by(CandidateResume.created_at.desc())
+        select(CandidateResume).where(CandidateResume.user_id == user.id).order_by(CandidateResume.created_at.desc())
     )
     return list(result.scalars())
 
@@ -557,8 +554,7 @@ async def create_interview_config(payload: InterviewConfigCreate, db: Db, user: 
     pack = get_role_pack(payload.profession)
     source_panel = [member.model_dump(mode="json") for member in payload.panel] if payload.panel else None
     panel_models = [
-        PanelistInput.model_validate(item)
-        for item in tailor_panel(pack, recommendations, source_panel=source_panel)
+        PanelistInput.model_validate(item) for item in tailor_panel(pack, recommendations, source_panel=source_panel)
     ]
     if not 2 <= len(panel_models) <= 5:
         raise HTTPException(
@@ -652,6 +648,8 @@ async def create_session(payload: SessionCreate, db: Db, user: CurrentUser) -> I
         }
     snapshot = {
         "config_id": str(config.id),
+        "agent_coding_enabled": payload.agent_coding_enabled,
+        "conversation_mode": payload.conversation_mode,
         "title": config.title,
         "profession": config.profession,
         "interview_mode": config.interview_mode,
@@ -750,6 +748,7 @@ async def start_session(
             output_audio_codec=payload.output_audio_codec,
             instructions=compile_agent_prompt(session.config_snapshot),
             roundcraft_session_id=str(session.id),
+            conversation_mode=str(session.config_snapshot.get("conversation_mode", "balanced")),
         )
         if not started_results:
             raise RuntimeError("Agora did not return the shared panel agent")
@@ -1041,11 +1040,13 @@ async def end_session(session_id: UUID, db: Db, user: CurrentUser, agora: AgoraD
         participants = list(
             (await db.execute(select(PanelParticipant).where(PanelParticipant.session_id == session_id))).scalars()
         )
+        end_host = _read_panel_state(session).host
         agent_ids = list(
             dict.fromkeys(
                 str(agent_id)
                 for agent_id in (
                     session.agora_agent_id,
+                    end_host.listener_agent_id if end_host else None,
                     *(participant.agora_agent_id for participant in participants),
                 )
                 if agent_id
@@ -1455,9 +1456,7 @@ async def generate_report(
             "strength": item.strength,
             "transcript_turn_id": str(item.transcript_turn_id),
         }
-        for item in (
-            await db.execute(select(EvidenceItem).where(EvidenceItem.session_id == session_id))
-        ).scalars()
+        for item in (await db.execute(select(EvidenceItem).where(EvidenceItem.session_id == session_id))).scalars()
     ]
     snapshot = session.config_snapshot
     focus_guard = _focus_guard_out(_read_panel_state(session)).model_dump(mode="json")
@@ -1626,6 +1625,13 @@ async def read_code_buffer(session_id: UUID, db: Db, user: CurrentUser) -> CodeB
     return _code_buffer_out(_read_panel_state(session))
 
 
+@router.get("/sessions/{session_id}/coding-task", response_model=CodingTaskOut | None, tags=["Interview sessions"])
+async def read_coding_task(session_id: UUID, db: Db, user: CurrentUser) -> CodingTaskOut | None:
+    session = cast(InterviewSession, await _owned(db, InterviewSession, session_id, user.id))
+    task = _read_panel_state(session).coding_task
+    return CodingTaskOut.model_validate(task) if task else None
+
+
 # POST rather than PUT: the deployment's CORS policy admits GET and POST only,
 # and every other mutating route in this API is a POST.
 @router.post(
@@ -1699,8 +1705,45 @@ async def _session_candidate_resume(db: Db, session: InterviewSession) -> Candid
                 CandidateResume.id == session.candidate_resume_id,
                 CandidateResume.user_id == session.user_id,
             )
-        )
+        ),
     )
+
+
+async def _acknowledge_long_answer(db: Db, session_id: UUID, agora: AgoraDep) -> dict[str, bool]:
+    session = await lock_transcript_session(db, session_id)
+    state = _read_panel_state(session)
+    now = datetime.now(UTC)
+    if (
+        session.status != "live"
+        or session.config_snapshot.get("conversation_mode", "balanced") != "balanced"
+        or not session.agora_agent_id
+        or (state.last_backchannel_at and (now - state.last_backchannel_at).total_seconds() < 60)
+    ):
+        await db.commit()
+        return {"requested": False}
+    state.last_backchannel_at = now
+    session.memory_state = state.model_dump(mode="json")
+    agent_id, channel, agent_uid = session.agora_agent_id, session.channel_name, session.agent_uid
+    await db.commit()
+    # IGNORE priority never replaces an answer already being generated/spoken.
+    # Keep the cooldown even on a transient provider error: no retry storm.
+    await agora.acknowledge(agent_id, channel or "", agent_uid or 0)
+    return {"requested": True}
+
+
+@router.post("/sessions/{session_id}/backchannel", tags=["Sessions"])
+async def acknowledge_candidate_answer(session_id: UUID, db: Db, user: CurrentUser, agora: AgoraDep) -> dict[str, bool]:
+    await _owned(db, InterviewSession, session_id, user.id)
+    return await _acknowledge_long_answer(db, session_id, agora)
+
+
+@router.post("/guest/candidates/{token}/backchannel", tags=["Candidate guest"])
+async def acknowledge_guest_answer(token: str, db: Db, settings: SettingsDep, agora: AgoraDep) -> dict[str, bool]:
+    session = await _session_for_invite(db, token, settings, seat="candidate")
+    state = _read_panel_state(session)
+    if not _candidate_is_active(state.candidate):
+        raise HTTPException(409, "Candidate seat is not active")
+    return await _acknowledge_long_answer(db, session.id, agora)
 
 
 @router.post(
@@ -1821,6 +1864,8 @@ def _host_presence_out(state: PanelState, *, now: datetime | None = None) -> Hos
         rtc_uid=host.rtc_uid,
         messages=_host_messages_out(state),
         coding_task=state.coding_task,
+        ai_listening=bool(host.listener_agent_id and host.listener_key),
+        ai_listening_error=host.listener_error,
     )
 
 
@@ -1974,6 +2019,7 @@ async def join_session_as_host(
     connection["panelists"] = await _connection_panelists(db, session)
     if not _host_is_active(host, now=now):
         host.joined_at = now
+        host.listener_key = None
     host.display_name = name
     host.last_seen_at = now
     host.left_at = None
@@ -1982,6 +2028,7 @@ async def join_session_as_host(
     session.memory_state = state.model_dump(mode="json")
     await db.commit()
     snapshot = session.config_snapshot or {}
+    await ensure_host_listener(db, session.id, agora)
     pack = get_role_pack(_session_role_pack(session))
     resume = await _session_candidate_resume(db, session)
     return GuestSessionOut(
@@ -2043,6 +2090,7 @@ async def heartbeat_host(
     token: str,
     db: Db,
     settings: SettingsDep,
+    agora: AgoraDep,
 ) -> GuestHeartbeatOut:
     """Keep candidate-visible guest presence alive while the join page is connected."""
     session = await _session_for_invite(db, token, settings, seat="interviewer")
@@ -2062,6 +2110,7 @@ async def heartbeat_host(
     state.host.left_at = None
     session.memory_state = state.model_dump(mode="json")
     await db.commit()
+    await ensure_host_listener(db, session.id, agora)
     return GuestHeartbeatOut(last_seen_at=now)
 
 
@@ -2070,17 +2119,27 @@ async def heartbeat_host(
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["Human interviewer"],
 )
-async def leave_host(token: str, db: Db, settings: SettingsDep) -> Response:
+async def leave_host(token: str, db: Db, settings: SettingsDep, agora: AgoraDep) -> Response:
     """Remove the invited guest from candidate-visible presence immediately."""
     session = await _session_for_invite(db, token, settings, seat="interviewer")
     session = await lock_transcript_session(db, session.id)
     state = _read_panel_state(session)
     if state.host is not None:
+        listener_id = state.host.listener_agent_id
         now = datetime.now(UTC)
         state.host.last_seen_at = now
         state.host.left_at = now
+        state.host.listener_key = None
         session.memory_state = state.model_dump(mode="json")
         await db.commit()
+        if listener_id:
+            await agora.stop(listener_id)
+            session = await lock_transcript_session(db, session.id)
+            state = _read_panel_state(session)
+            if state.host and state.host.listener_agent_id == listener_id:
+                state.host.listener_agent_id = None
+                session.memory_state = state.model_dump(mode="json")
+                await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -2175,6 +2234,8 @@ async def read_host_view(
         "code": _code_buffer_out(state).model_dump(mode="json"),
         "messages": [item.model_dump(mode="json") for item in _host_messages_out(state)],
         "pending_question": state.host.pending_question if state.host else None,
+        "ai_listening": bool(state.host and state.host.listener_agent_id and state.host.listener_key),
+        "ai_listening_error": state.host.listener_error if state.host else None,
         "candidate": candidate_presence.model_dump(mode="json") if candidate_presence else None,
         "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
         "focus_guard": _focus_guard_out(state).model_dump(mode="json"),
@@ -2313,6 +2374,7 @@ async def join_session_as_candidate(
         role_pack=pack.label,
         status=session.status,
         seat="candidate",
+        conversation_mode=snapshot.get("conversation_mode", "balanced"),
         display_name=name,
         connection=connection,
         panel=_guest_panel(session),
@@ -2470,11 +2532,7 @@ async def read_candidate_view(
         "messages": [item.model_dump(mode="json") for item in _host_messages_out(state)],
         "pending_question": state.host.pending_question if state.host else None,
         "coding_task": state.coding_task.model_dump(mode="json") if state.coding_task else None,
-        "host": (
-            host.model_dump(mode="json")
-            if (host := _host_presence_out(state)) is not None
-            else None
-        ),
+        "host": (host.model_dump(mode="json") if (host := _host_presence_out(state)) is not None else None),
         "focus_guard": _focus_guard_out(state).model_dump(mode="json"),
     }
 

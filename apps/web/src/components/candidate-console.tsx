@@ -11,6 +11,7 @@ import { Alert, Badge, Button, Card, CardContent, CardDescription, CardHeader, C
 import type { Panelist } from "@/data/demo";
 import {
   heartbeatCandidateSession,
+  requestGuestBackchannel,
   joinSessionAsCandidate,
   leaveCandidateSession,
   persistCandidateGuestTurn,
@@ -66,6 +67,7 @@ function asPanelist(member: GuestSession["panel"][number], index: number): Panel
 function speakerName(turn: GuestView["turns"][number], session: GuestSession) {
   if (turn.speaker_type === "candidate") return session.display_name;
   if (turn.speaker_type === "system") return "RoundCraft";
+  if (turn.speaker_id?.startsWith("human:")) return "Human interviewer";
   return session.panel.find((member) => member.id === turn.speaker_id)?.display_name ?? "AI panel";
 }
 
@@ -282,6 +284,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   }, [token]);
 
   const renewConnection = useCallback(() => renewCandidateSessionToken(token), [token]);
+  const acknowledge = useCallback(() => requestGuestBackchannel(token), [token]);
   const loadCode = useCallback(() => readCandidateGuestCode(token), [token]);
   const saveCode = useCallback((language: string, content: string) => saveCandidateGuestCode(token, language, content), [token]);
   const closeCode = useCallback(() => {
@@ -338,7 +341,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
   const hostPerson: Panelist = { id: "human-host", name: hostName, role: host ? "Human interviewer" : "Human interviewer · Waiting to join", initials: hostName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2), avatarImage: "/avatars/candidate.png", avatarId: "human-host", avatarVendor: "generic", mood: "Focused", behavior: "Leading", voice: "", prompt: "" };
   const hostVideo = humanVideoTrack(media.remoteVideos, host?.rtc_uid, session.connection.panelists);
   const participantCount = panelists.length + 2;
-  const prepared: StoredLiveSession = { sessionId: session.session_id, agentId: "", connection: session.connection, configSnapshot: { panel: session.panel }, demo: false };
+  const prepared: StoredLiveSession = { sessionId: session.session_id, agentId: "", connection: session.connection, configSnapshot: { panel: session.panel, conversation_mode: session.conversation_mode }, demo: false };
   const currentQuestion = codingTask?.question || [...storedTurns].reverse().find((turn) => turn.speaker_type === "interviewer")?.content || lastRemote?.text;
 
   return (
@@ -376,7 +379,7 @@ export function CandidateConsole({ token, initialPreview }: { token: string; ini
             <Card className="grid min-h-48 flex-1 place-items-center p-6 text-center"><div><UserRound className="mx-auto size-7 text-muted-foreground" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Answer naturally</p><p className="mx-auto mt-1 max-w-md text-xs leading-5 text-muted-foreground">The panel shares context and may return to an earlier topic. You can interrupt the active speaker when needed.</p>{session.supports_coding ? <Button className="mt-4" size="sm" variant="secondary" onClick={openCode}><Code2 aria-hidden="true" />Open coding workspace</Button> : null}</div></Card>
           )}
 
-          <div className="shrink-0 rounded-xl border bg-card p-2"><AgoraLivePanel prepared={prepared} renewConnection={renewConnection} onTranscript={handleTranscript} onAgentState={setAgentState} onMediaState={setMedia} /></div>
+          <div className="shrink-0 rounded-xl border bg-card p-2"><AgoraLivePanel prepared={prepared} renewConnection={renewConnection} onLongAnswer={acknowledge} onTranscript={handleTranscript} onAgentState={setAgentState} onMediaState={setMedia} /></div>
         </section>
 
         <aside className="flex min-h-0 flex-col gap-3">

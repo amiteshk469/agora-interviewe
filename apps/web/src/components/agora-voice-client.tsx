@@ -30,9 +30,11 @@ import { Camera, CameraOff, Mic, MicOff, Waves } from "lucide-react";
 import { Alert, Button } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { LiveAgentState, LiveMediaState, LiveTranscriptTurn } from "@/components/agora-live";
+import { panelRtmEngine } from "@/lib/panel-rtm";
 import { getAgoraConfig, renewInterviewSessionToken, type AgoraConfig } from "@/lib/api";
 import { VoiceActivityDetector } from "@/lib/voice-activity";
 import { renewAgoraSeatTokens } from "@/lib/agora-seat";
+import { BackchannelGate } from "@/lib/backchannel";
 
 type Props = {
   config: AgoraConfig;
@@ -42,6 +44,7 @@ type Props = {
   onTranscript?: (turns: LiveTranscriptTurn[]) => void;
   onAgentState?: (state: LiveAgentState) => void;
   onMediaState?: (state: LiveMediaState) => void;
+  onLongAnswer?: () => Promise<unknown>;
 };
 
 function errorMessage(error: unknown, fallback: string) {
@@ -64,74 +67,28 @@ function errorMessage(error: unknown, fallback: string) {
 
 type RoomToneGraph = {
   context: AudioContext;
-  sources: AudioScheduledSourceNode[];
+  audio: HTMLAudioElement;
+  gain: GainNode;
 };
 
 function createRoomTone(): RoomToneGraph {
   const context = new AudioContext();
-  const seconds = 20;
-  const baseBuffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
-  const baseSamples = baseBuffer.getChannelData(0);
-  let brown = 0;
-  for (let index = 0; index < baseSamples.length; index += 1) {
-    const white = Math.random() * 2 - 1;
-    brown = (brown + 0.02 * white) / 1.02;
-    baseSamples[index] = brown * 3.8;
-  }
-
-  const airBuffer = context.createBuffer(1, context.sampleRate * seconds, context.sampleRate);
-  const airSamples = airBuffer.getChannelData(0);
-  for (let index = 0; index < airSamples.length; index += 1) {
-    airSamples[index] = (Math.random() * 2 - 1) * 0.16;
-  }
-
-  const baseSource = context.createBufferSource();
-  const airSource = context.createBufferSource();
-  const highpass = context.createBiquadFilter();
-  const lowpass = context.createBiquadFilter();
-  const airBand = context.createBiquadFilter();
-  const airGain = context.createGain();
-  const masterGain = context.createGain();
-  const drift = context.createOscillator();
-  const driftDepth = context.createGain();
-
-  baseSource.buffer = baseBuffer;
-  baseSource.loop = true;
-  airSource.buffer = airBuffer;
-  airSource.loop = true;
-  highpass.type = "highpass";
-  highpass.frequency.value = 70;
-  lowpass.type = "lowpass";
-  lowpass.frequency.value = 1_250;
-  airBand.type = "bandpass";
-  airBand.frequency.value = 1_800;
-  airBand.Q.value = 0.55;
-  airGain.gain.value = 0.18;
-  drift.frequency.value = 0.07;
-  driftDepth.gain.value = 0.045;
-  masterGain.gain.setValueAtTime(0, context.currentTime);
-  // The previous 0.018 gain vanished beneath laptop fan noise. This is still
-  // background-level, but deliberately audible when the user switches it on.
-  masterGain.gain.linearRampToValueAtTime(0.052, context.currentTime + 0.9);
-
-  baseSource.connect(highpass).connect(lowpass).connect(masterGain);
-  airSource.connect(airBand).connect(airGain).connect(masterGain);
-  drift.connect(driftDepth).connect(airGain.gain);
-  masterGain.connect(context.destination);
-  baseSource.start();
-  airSource.start();
-  drift.start();
-  return { context, sources: [baseSource, airSource, drift] };
+  const audio = new Audio("/audio/soft-rain.mp3");
+  audio.loop = true;
+  const gain = context.createGain();
+  gain.gain.value = 0;
+  // This output goes only to the local speakers, never into a published RTC track.
+  context.createMediaElementSource(audio).connect(gain).connect(context.destination);
+  return { context, audio, gain };
 }
 
 function disposeRoomTone(graph: RoomToneGraph | null) {
   if (!graph) return;
-  for (const source of graph.sources) {
-    try {
-      source.stop();
-    } catch {}
-  }
-  void graph.context.close();
+  graph.audio.pause();
+  graph.audio.removeAttribute("src");
+  graph.audio.load();
+  graph.gain.disconnect();
+  if (graph.context.state !== "closed") void graph.context.close();
 }
 
 export default function AgoraVoiceClient(props: Props) {
@@ -143,7 +100,7 @@ export default function AgoraVoiceClient(props: Props) {
   return <AgoraRTCProvider client={client}><VoiceChannel {...props} /></AgoraRTCProvider>;
 }
 
-function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscript, onAgentState, onMediaState }: Props) {
+function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscript, onAgentState, onMediaState, onLongAnswer }: Props) {
   const client = useRTCClient();
   const remoteUsers = useRemoteUsers();
   const [enabled, setEnabled] = useState(true);
@@ -152,10 +109,26 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
   const [agentState, setAgentState] = useState<AgentState | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [roomToneEnabled, setRoomToneEnabled] = useState(false);
+  const [roomToneVolume, setRoomToneVolume] = useState(25);
+  const [roomToneError, setRoomToneError] = useState("");
   const roomToneRef = useRef<RoomToneGraph | null>(null);
   const [micLevel, setMicLevel] = useState(0);
   const [candidateSpeaking, setCandidateSpeaking] = useState(false);
   const [hostSpeaking, setHostSpeaking] = useState(false);
+  const backchannelGate = useRef(new BackchannelGate());
+
+  useEffect(() => {
+    const tick = () => {
+      const blocked = !enabled || !onLongAnswer || hostSpeaking || agentState === "speaking" || agentState === "thinking" || connectionState !== "CONNECTED";
+      if (backchannelGate.current.sample(performance.now(), candidateSpeaking, blocked)) {
+        // An optional acknowledgment failing must never fail the interview itself.
+        void onLongAnswer?.().catch(() => undefined);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [agentState, candidateSpeaking, connectionState, enabled, hostSpeaking, onLongAnswer]);
 
   const { isConnected, error: joinError } = useJoin({ appid: config.app_id, channel: config.channel_name, token: config.token, uid: Number(config.uid) }, true);
   const { localMicrophoneTrack, error: microphoneError } = useLocalMicrophoneTrack(true, { AEC: true, ANS: true, AGC: true });
@@ -190,14 +163,14 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
     let cancelled = false;
     void (async () => {
       try {
-        const ai = await AgoraVoiceAI.init({ rtcEngine: client, rtmConfig: { rtmEngine: rtmClient }, renderMode: TranscriptHelperMode.TEXT, enableLog: true });
+        const ai = await AgoraVoiceAI.init({ rtcEngine: client, rtmConfig: { rtmEngine: panelRtmEngine(rtmClient, String(config.agent_uid)) }, renderMode: TranscriptHelperMode.TEXT, enableLog: true });
         if (cancelled) {
           ai.unsubscribe();
           ai.destroy();
           return;
         }
         ai.on(AgoraVoiceAIEvents.TRANSCRIPT_UPDATED, (items) => {
-          const next = (items as TranscriptHelperItem<Partial<UserTranscription | AgentTranscription>>[]).map((item) => ({
+          const next = (items as TranscriptHelperItem<Partial<UserTranscription | AgentTranscription>>[]).filter((item) => !String(item.text ?? "").startsWith("roundcraft-host-event:")).map((item) => ({
             id: String(item.turn_id),
             uid: String(item.uid) === "0" ? String(client.uid ?? config.uid) : String(item.uid),
             isLocal: String(item.uid) === "0" || String(item.uid) === String(client.uid ?? config.uid),
@@ -235,12 +208,19 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
         ai?.destroy();
       } catch {}
     };
-  }, [client, config.channel_name, config.uid, isConnected, onAgentState, onTranscript, rtmClient]);
+  }, [client, config.agent_uid, config.channel_name, config.uid, isConnected, onAgentState, onTranscript, rtmClient]);
 
   useEffect(() => () => {
     disposeRoomTone(roomToneRef.current);
     roomToneRef.current = null;
   }, []);
+
+  useEffect(() => {
+    const graph = roomToneRef.current;
+    if (!graph) return;
+    const speaking = candidateSpeaking || hostSpeaking || agentState === "speaking";
+    graph.gain.gain.setTargetAtTime((roomToneVolume / 100) * (speaking ? 0.25 : 1), graph.context.currentTime, 0.35);
+  }, [roomToneEnabled, roomToneVolume, candidateSpeaking, hostSpeaking, agentState]);
 
   useEffect(() => {
     const detector = new VoiceActivityDetector();
@@ -349,18 +329,25 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
     let graph: RoomToneGraph | null = null;
     try {
       graph = createRoomTone();
-      await graph.context.resume();
       roomToneRef.current = graph;
+      setRoomToneError("");
+      await graph.context.resume();
+      await graph.audio.play();
+      if (roomToneRef.current !== graph) { disposeRoomTone(graph); return; }
       setRoomToneEnabled(true);
     } catch (error) {
       disposeRoomTone(graph);
-      console.warn("Local room tone could not start", error);
-      setRoomToneEnabled(false);
+      if (roomToneRef.current === graph) {
+        roomToneRef.current = null;
+        setRoomToneError(errorMessage(error, "Rain audio could not load. Please try again."));
+        setRoomToneEnabled(false);
+      }
     }
   }, []);
 
   return (
     <div className="space-y-2">
+      {roomToneError ? <p className="text-center text-xs text-muted-foreground" role="status">{roomToneError}</p> : null}
       {displayedError ? <Alert title="Live audio needs attention" variant="destructive"><span className="break-words [overflow-wrap:anywhere]">{displayedError}</span></Alert> : null}
       {cameraError ? <Alert title="Camera unavailable"><span>Audio is still connected. Allow camera access, then select Retry Camera.</span></Alert> : null}
       <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Live audio controls" aria-busy={!isConnected && connectionState !== "DISCONNECTED"}>
@@ -411,6 +398,7 @@ function VoiceChannel({ config, sessionId, renewConnection, rtmClient, onTranscr
         >
           <Waves aria-hidden="true" />
         </Button>
+        {roomToneEnabled ? <label className="flex items-center gap-2 text-xs text-muted-foreground">Soft rain<input type="range" min="0" max="60" step="1" value={roomToneVolume} onChange={(event) => setRoomToneVolume(Number(event.target.value))} aria-label="Soft rain volume" className="w-20 accent-[var(--primary)]" /></label> : null}
 
         {/* Connection state only earns space when it needs attention. */}
         {!isConnected || displayedError ? (

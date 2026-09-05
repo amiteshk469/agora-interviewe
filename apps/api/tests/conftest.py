@@ -16,6 +16,11 @@ os.environ.update(
         "AGORA_LLM_BEARER_SECRET": "test-llm-secret",
         "LLM_BASE_URL": "https://llm.test/v1",
         "LLM_API_KEY": "test-upstream-key",
+        "WEB_SEARCH_API_KEY": "test-search-key",
+        "FIRECRAWL_API_KEY": "test-search-key",
+        # Existing streaming/retry tests exercise the deterministic recovery path.
+        # Agent-runtime tests explicitly enable and mock model function calls.
+        "PANEL_REASONING_ENABLED": "false",
         "AGORA_WEBHOOK_SECRET": "test-webhook-secret",
         "SUPABASE_JWT_SECRET": "test-supabase-jwt-secret-at-least-32-bytes",
         "SUPABASE_JWT_AUDIENCE": "authenticated",
@@ -48,6 +53,10 @@ class FakeAgora:
         self.stopped: list[str] = []
         self.interrupted: list[str] = []
         self.dispatched: list[dict[str, str]] = []
+        self.acknowledged: list[str] = []
+
+    async def acknowledge(self, agent_id: str, channel: str, agent_uid: int) -> None:
+        self.acknowledged.append(agent_id)
 
     def generate_connection(
         self,
@@ -93,7 +102,7 @@ class FakeAgora:
     async def start(self, **kwargs: Any) -> dict[str, Any]:
         self.started.append(kwargs)
         return {
-            "agent_id": "agent-test-1",
+            "agent_id": "host-listener-1" if kwargs.get("host_listener_key") else "agent-test-1",
             "channel_name": kwargs["channel_name"],
             "status": "started",
         }

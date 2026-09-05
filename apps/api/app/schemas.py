@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from app.role_packs import DEFAULT_ROLE_PACK_ID, ROLE_PACK_IDS, SUPPORTED_LANGUAGES
 
@@ -302,6 +302,8 @@ class InterviewConfigOut(ApiModel):
 
 class SessionCreate(ApiModel):
     interview_config_id: UUID
+    agent_coding_enabled: bool = True
+    conversation_mode: Literal["balanced", "let_me_finish"] = "balanced"
 
 
 class SessionOut(ApiModel):
@@ -311,6 +313,14 @@ class SessionOut(ApiModel):
     status: str
     config_snapshot: dict[str, Any]
     memory_state: dict[str, Any]
+
+    @field_serializer("memory_state")
+    def public_memory(self, value: dict[str, Any]) -> dict[str, Any]:
+        host = value.get("host")
+        if isinstance(host, dict):
+            return {**value, "host": {key: item for key, item in host.items() if key != "listener_key"}}
+        return value
+
     channel_name: str | None
     user_uid: int | None
     agent_uid: int | None
@@ -472,6 +482,10 @@ class HostState(ApiModel):
     left_at: datetime | None = None
     rtc_uid: int | None = Field(default=None, gt=0)
     messages: list[HostTurnRecord] = Field(default_factory=list)
+    listener_agent_id: str | None = None
+    listener_key: str | None = None
+    listener_started_at: datetime | None = None
+    listener_error: str | None = None
     # Set when the human asks the panel to put a question. The next panelist to
     # speak must ask it, which is what "leading" the panel means here.
     pending_question: str | None = None
@@ -521,6 +535,8 @@ class PanelState(ApiModel):
     host: HostState | None = None
     candidate: CandidateState | None = None
     coding_task: CodingTaskState | None = None
+    agent_notes: dict[str, list[str]] = Field(default_factory=dict)
+    last_backchannel_at: datetime | None = None
 
 
 class PanelDecision(ApiModel):
@@ -705,6 +721,7 @@ class GuestSessionOut(ApiModel):
     role_pack: str
     status: str
     seat: Literal["interviewer", "candidate"] = "interviewer"
+    conversation_mode: Literal["balanced", "let_me_finish"] = "balanced"
     display_name: str
     connection: "ConnectionConfig"
     panel: list[GuestPanelist]
@@ -741,6 +758,8 @@ class HostPresenceOut(ApiModel):
     rtc_uid: int | None = None
     messages: list[HostMessageOut]
     coding_task: CodingTaskState | None = None
+    ai_listening: bool = False
+    ai_listening_error: str | None = None
 
 
 class CandidatePresenceOut(ApiModel):
