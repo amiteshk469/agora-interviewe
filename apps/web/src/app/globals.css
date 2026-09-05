@@ -278,15 +278,12 @@ input[type="file"]:not(:disabled) {
 }
 
 .landing-sculpture {
-  /* Fade the existing artwork into the page, not into a floating card. */
+  /* The transparent sculpture sits directly on the page grid in either theme. */
   isolation: isolate;
 }
 
 .landing-sculpture img {
-  mask-image:
-    linear-gradient(to right, transparent, #000 15%, #000 85%, transparent),
-    linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
-  mask-composite: intersect;
+  filter: drop-shadow(0 8px 8px rgb(0 0 0 / 12%));
 }
 
 .landing-sculpture figcaption {
