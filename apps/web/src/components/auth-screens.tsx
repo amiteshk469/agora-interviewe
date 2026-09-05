@@ -37,7 +37,7 @@ function AuthShell({ title, description, children }: { title: string; descriptio
 
 export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { mode: "sign-in" | "sign-up"; nextPath?: string; initialAudience?: AccountType }) {
   const router = useRouter();
-  const { status, resendConfirmation, signIn, signUp } = useAuth();
+  const { status, signIn, signUp } = useAuth();
   const signup = mode === "sign-up";
   const [audience, setAudience] = useState<AccountType>(initialAudience);
   const destination = nextPath
@@ -48,8 +48,6 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [pendingEmail, setPendingEmail] = useState("");
-  const [resending, setResending] = useState(false);
 
   useEffect(() => {
     if (status === "authenticated") router.replace(destination);
@@ -67,7 +65,6 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
       if (signup) {
         const result = await signUp(String(form.get("name") || "").trim(), email, password, audience, destination);
         if (result.confirmationRequired) {
-          setPendingEmail(email);
           setMessage("Check your inbox to confirm your email. This page can stay open while you finish.");
         } else {
           router.replace(destination);
@@ -80,20 +77,6 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
       setError(cause instanceof Error ? cause.message : "Authentication failed. Please try again.");
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function resend() {
-    if (!pendingEmail || resending) return;
-    setResending(true);
-    setError("");
-    try {
-      await resendConfirmation(pendingEmail, destination);
-      setMessage("A fresh confirmation email is on its way. Use the newest link in your inbox.");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The confirmation email could not be resent.");
-    } finally {
-      setResending(false);
     }
   }
 
@@ -112,7 +95,7 @@ export function AuthScreen({ mode, nextPath, initialAudience = "candidate" }: { 
           </Field>
           {!signup ? <div className="flex justify-end"><Link href="/auth/forgot-password" className="text-xs font-medium text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">Forgot password?</Link></div> : null}
           {error ? <Alert title="Could not continue" variant="destructive"><span>{error}</span></Alert> : null}
-          {message ? <Alert title="Confirm your email"><span>{message}</span>{pendingEmail ? <Button type="button" size="sm" variant="secondary" loading={resending} className="mt-3" onClick={() => void resend()}><MailCheck aria-hidden="true" />Resend email</Button> : null}</Alert> : null}
+          {message ? <Alert title="Confirm your email"><span>{message}</span></Alert> : null}
           <Button type="submit" size="lg" loading={loading} className="mt-2 w-full">{signup ? "Create workspace" : "Sign in"}<ArrowRight aria-hidden="true" /></Button>
         </form>
       )}
