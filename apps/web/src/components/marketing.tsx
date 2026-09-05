@@ -60,8 +60,7 @@ export function MarketingPage() {
             <p className="mt-5 text-xs leading-5 text-muted-foreground">Separate workspaces for candidates and recruiters. One shared conversation.</p>
           </div>
           <figure className="landing-sculpture relative mx-auto w-full max-w-[36rem] lg:-me-3">
-            <Image src="/brand/conversation-sculpture.png" alt="Five abstract acoustic forms connected around an open coral conversation ring" width={1254} height={1254} sizes="(max-width: 1023px) 90vw, 550px" priority className="theme-light-only h-auto w-full" />
-            <Image src="/brand/conversation-sculpture-dark.png" alt="Five abstract acoustic forms connected around a softly lit coral conversation ring" width={1254} height={1254} sizes="(max-width: 1023px) 90vw, 550px" priority className="theme-dark-only h-auto w-full" />
+            <Image src="/brand/conversation-sculpture-cutout.png" alt="Five abstract acoustic forms connected around an open coral conversation ring" width={1254} height={1254} sizes="(max-width: 1023px) 90vw, 550px" priority className="h-auto w-full" />
             <figcaption className="absolute inset-x-0 bottom-7 text-center font-mono text-[10px] tracking-[0.12em] text-[#525655]">DIFFERENT PERSPECTIVES. SHARED CONTEXT.</figcaption>
           </figure>
         </section>
