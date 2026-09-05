@@ -2,7 +2,7 @@
 
 import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { confirmationRedirect, getSupabaseBrowserClient } from "@/lib/supabase";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 export type AuthStatus = "loading" | "authenticated" | "anonymous" | "error";
 export type AccountType = "candidate" | "recruiter";
@@ -34,7 +34,6 @@ type AuthContextValue = {
   refresh: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (name: string, email: string, password: string, accountType: AccountType, nextPath?: string) => Promise<AuthResult>;
-  resendConfirmation: (email: string, nextPath?: string) => Promise<void>;
   signOut: () => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
   updatePassword: (password: string) => Promise<void>;
@@ -139,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [applySession]);
 
   const signUp = useCallback(async (name: string, email: string, password: string, accountType: AccountType, nextPath = accountType === "recruiter" ? "/recruiter" : "/candidate") => {
-    const redirectTo = confirmationRedirect(window.location.origin, nextPath);
+    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
     const result = await getSupabaseBrowserClient().auth.signUp({
       email,
       password,
@@ -152,15 +151,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     applySession(result.data.session);
     return { confirmationRequired: !result.data.session };
   }, [applySession]);
-
-  const resendConfirmation = useCallback(async (email: string, nextPath = "/dashboard") => {
-    const result = await getSupabaseBrowserClient().auth.resend({
-      type: "signup",
-      email,
-      options: { emailRedirectTo: confirmationRedirect(window.location.origin, nextPath) },
-    });
-    if (result.error) throw result.error;
-  }, []);
 
   const signOut = useCallback(async () => {
     const result = await getSupabaseBrowserClient().auth.signOut();
@@ -212,13 +202,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refresh,
     signIn,
     signUp,
-    resendConfirmation,
     signOut,
     sendPasswordReset,
     updatePassword,
     updateProfile,
     ...identity,
-  }), [accountType, error, identity, refresh, resendConfirmation, sendPasswordReset, session, signIn, signOut, signUp, status, updatePassword, updateProfile, user, workspaceHome]);
+  }), [accountType, error, identity, refresh, sendPasswordReset, session, signIn, signOut, signUp, status, updatePassword, updateProfile, user, workspaceHome]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
