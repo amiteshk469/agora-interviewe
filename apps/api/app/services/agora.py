@@ -27,14 +27,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROMPT = """You are a RoundCraft mock interviewer for the candidate's selected hiring track.
 Ask concise, adaptive questions, probe unsupported claims, and keep shared context. Do not request a
 human reviewer. When evidence is missing, ask another question or mark it insufficient."""
-DEFAULT_GREETING = (
-    "Welcome to RoundCraft. When you are ready, please introduce yourself."
-)
-FAILURE_MESSAGE = (
-    "I couldn't reach the interview service. Please return to the lobby and rejoin."
-)
+DEFAULT_GREETING = "Welcome to RoundCraft. When you are ready, please introduce yourself."
+FAILURE_MESSAGE = "I couldn't reach the interview service. Please return to the lobby and rejoin."
 
-def build_turn_detection(settings: Settings, *, manual_turn_control: bool) -> dict[str, Any]:
+
+def build_turn_detection(
+    settings: Settings, *, manual_turn_control: bool, conversation_mode: str | None = None
+) -> dict[str, Any]:
     """Assemble Agora turn detection for one interview session.
 
     Candidates pause mid-answer to structure a framework or work through a metric.
@@ -66,6 +65,13 @@ def build_turn_detection(settings: Settings, *, manual_turn_control: bool) -> di
             "mode": "vad",
             "vad_config": {"silence_duration_ms": settings.agora_vad_silence_ms},
         }
+    if conversation_mode and end_of_speech["mode"] == "semantic":
+        finish = conversation_mode == "let_me_finish"
+        end_of_speech["semantic_config"].update(
+            silence_duration_ms=900 if finish else 400,
+            max_wait_ms=6000 if finish else 2000,
+            pause_state_enabled=finish,
+        )
     return {
         "config": {
             "speech_threshold": 0.5,
@@ -117,17 +123,11 @@ class AgoraAgentService:
         agent_uid: int | None = None,
     ) -> dict[str, Any]:
         self._require_client()
-        user_uid = (
-            secrets.randbelow(9_998_999) + 1000 if uid is None or uid <= 0 else uid
-        )
+        user_uid = secrets.randbelow(9_998_999) + 1000 if uid is None or uid <= 0 else uid
         resolved_agent_uid = str(
-            agent_uid
-            if agent_uid is not None and agent_uid > 0
-            else secrets.randbelow(89_999_999) + 10_000_000
+            agent_uid if agent_uid is not None and agent_uid > 0 else secrets.randbelow(89_999_999) + 10_000_000
         )
-        channel_name = (
-            channel or f"roundcraft-{int(time.time())}-{secrets.randbelow(9000) + 1000}"
-        )
+        channel_name = channel or f"roundcraft-{int(time.time())}-{secrets.randbelow(9000) + 1000}"
         token = generate_convo_ai_token(
             app_id=self.settings.agora_app_id,
             app_certificate=self.settings.agora_app_certificate,
@@ -186,11 +186,7 @@ class AgoraAgentService:
         participants: list[dict[str, Any]] = []
         used = {int(connection["uid"]), first_agent_uid}
         for index, member in enumerate(panel):
-            agent_uid = (
-                first_agent_uid
-                if index == 0
-                else self._unique_uid(used, 10_000_000, 89_999_999)
-            )
+            agent_uid = first_agent_uid if index == 0 else self._unique_uid(used, 10_000_000, 89_999_999)
             used.add(agent_uid)
             avatar_uid = self._unique_uid(used, 100_000_000, 899_999_999)
             used.add(avatar_uid)
@@ -286,15 +282,17 @@ class AgoraAgentService:
         panelist_voice: str = DEFAULT_VOICE_ALIAS,
         avatar_profile: dict[str, Any] | None = None,
         manual_turn_control: bool = False,
+        host_listener_key: str | None = None,
+        conversation_mode: str | None = None,
     ) -> dict[str, Any]:
         client = self._require_client()
         if not channel_name.strip() or agent_uid <= 0 or user_uid <= 0:
             raise ValueError("channel_name and positive agent/user UIDs are required")
 
-        custom_configured = bool(
-            self.settings.agora_custom_llm_url and self.settings.agora_llm_bearer_secret
-        )
+        custom_configured = bool(self.settings.agora_custom_llm_url and self.settings.agora_llm_bearer_secret)
         managed_openai = self.settings.agora_live_llm_mode == "agora_managed_preview"
+        if host_listener_key and (managed_openai or not custom_configured):
+            raise HTTPException(503, "Human interviewer listening requires the custom panel LLM")
         llm: CustomLLM | OpenAI
         if roundcraft_session_id and managed_openai:
             logger.warning(
@@ -315,9 +313,8 @@ class AgoraAgentService:
             headers = (
                 {
                     "X-RoundCraft-Session-Id": roundcraft_session_id,
-                    **(
-                        {"X-RoundCraft-Panelist-Id": panelist_id} if panelist_id else {}
-                    ),
+                    **({"X-RoundCraft-Host-Listener": host_listener_key} if host_listener_key else {}),
+                    **({"X-RoundCraft-Panelist-Id": panelist_id} if panelist_id else {}),
                 }
                 if roundcraft_session_id
                 else None
@@ -328,7 +325,7 @@ class AgoraAgentService:
                 model="roundcraft-panel",
                 headers=headers,
                 greeting_message=greeting,
-                failure_message=FAILURE_MESSAGE,
+                failure_message="" if host_listener_key else FAILURE_MESSAGE,
                 max_history=15,
                 max_tokens=1024,
                 temperature=0.7,
@@ -374,17 +371,24 @@ class AgoraAgentService:
             "enable_error_message": True,
             "enable_metrics": True,
         }
+        if roundcraft_session_id and not host_listener_key:
+            parameters["silence_config"] = {
+                "timeout_ms": 50000 if conversation_mode == "let_me_finish" else 25000,
+                "action": "speak",
+                "content": "Take your time. Would you like me to clarify the question?",
+            }
         if output_audio_codec and output_audio_codec.strip():
             parameters["output_audio_codec"] = output_audio_codec.strip()
 
         turn_detection = build_turn_detection(
-            self.settings, manual_turn_control=manual_turn_control
+            self.settings, manual_turn_control=manual_turn_control, conversation_mode=conversation_mode
         )
         agora_agent = AgoraAgent(
             client=client,
             instructions=instructions,
             greeting=greeting,
-            failure_message=FAILURE_MESSAGE,
+            greeting_configs=cast(Any, {"mode": "single_every", "delay_ms": 1200, "interruptable": True}),
+            failure_message="" if host_listener_key else FAILURE_MESSAGE,
             max_history=50,
             turn_detection=turn_detection,
             advanced_features=cast(Any, {"enable_rtm": True, "enable_tools": True}),
@@ -436,13 +440,12 @@ class AgoraAgentService:
         instructions: str,
         roundcraft_session_id: str,
         output_audio_codec: str | None = None,
+        conversation_mode: str = "balanced",
     ) -> list[dict[str, Any]]:
         panelist_ids = {str(item["id"]) for item in panel}
         participant_ids = {str(item["panelist_id"]) for item in participants}
         if not 2 <= len(participants) <= 5 or panelist_ids != participant_ids:
-            raise ValueError(
-                "Agora panel participants must match two to five configured panelists"
-            )
+            raise ValueError("Agora panel participants must match two to five configured panelists")
 
         started: dict[str, Any] | None = None
         try:
@@ -460,11 +463,9 @@ class AgoraAgentService:
                 panelist_id=None,
                 panelist_voice=str(panel[0].get("voice") or DEFAULT_VOICE_ALIAS),
                 manual_turn_control=False,
+                conversation_mode=conversation_mode,
             )
-            return [
-                {**started, "panelist_id": str(participant["panelist_id"])}
-                for participant in participants
-            ]
+            return [{**started, "panelist_id": str(participant["panelist_id"])} for participant in participants]
         except Exception as exc:
             if started and started.get("agent_id"):
                 await asyncio.gather(
@@ -532,11 +533,25 @@ class AgoraAgentService:
             self.settings.agora_app_id,
             agent_id,
             **options,
-            request_options={
-                "additional_headers": {"Authorization": f"agora token={token}"}
-            },
+            request_options={"additional_headers": {"Authorization": f"agora token={token}"}},
         )
         return "think_injected"
+
+    async def acknowledge(self, agent_id: str, channel: str, agent_uid: int) -> None:
+        token = generate_convo_ai_token(
+            app_id=self.settings.agora_app_id,
+            app_certificate=self.settings.agora_app_certificate,
+            channel_name=channel,
+            uid=agent_uid,
+        )
+        await self._require_client().agents.speak(
+            self.settings.agora_app_id,
+            agent_id,
+            text="Mm-hm.",
+            priority="IGNORE",
+            interruptable=False,
+            request_options={"additional_headers": {"Authorization": f"agora token={token}"}},
+        )
 
     async def interrupt(self, agent_id: str) -> None:
         client = self._require_client()

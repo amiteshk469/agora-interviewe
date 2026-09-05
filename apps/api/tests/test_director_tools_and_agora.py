@@ -1463,6 +1463,20 @@ async def test_agora_sdk_boundary_uses_custom_llm_and_concrete_uid_flow(monkeypa
     assert captured["tts"]["emotion"] == "calm"
     assert captured["tts"]["english_normalization"] is True
     assert captured["tts"]["language_boost"] == "English"
+    assert captured["agent"]["greeting_configs"] == {
+        "mode": "single_every", "delay_ms": 1200, "interruptable": True,
+    }
+    assert captured["agent"]["parameters"]["silence_config"]["action"] == "speak"
+    await service.start(
+        channel_name="roundcraft-owned-channel", agent_uid=999, user_uid=333,
+        roundcraft_session_id="00000000-0000-4000-8000-000000000123",
+        host_listener_key="listener-only-secret", greeting="",
+    )
+    assert captured["session"]["remote_uids"] == ["333"]
+    assert captured["llm"]["headers"]["X-RoundCraft-Host-Listener"] == "listener-only-secret"
+    assert captured["llm"]["failure_message"] == ""
+    assert captured["agent"]["greeting"] == ""
+    assert "silence_config" not in captured["agent"]["parameters"]
     await service.stop("sdk-agent")
     assert captured["stopped"] is True
 

@@ -35,6 +35,7 @@ from app.models import (
     ToolRun,
     TranscriptTurn,
 )
+from app.role_packs import get_role_pack
 from app.schemas import (
     INTERVIEWER_TOOL_NAMES,
     ChatCompletionRequest,
@@ -42,13 +43,23 @@ from app.schemas import (
     PanelistInput,
     PanelState,
 )
+from app.services.agent_tools import consult_interviewer, open_coding_task
+from app.services.agora import AgoraDep
 from app.services.evidence import (
+    lock_transcript_session,
     normalize_transcript_content,
     persist_candidate_turn,
     persist_contradiction_evidence,
     persist_inferred_evidence,
     persist_interviewer_turn,
 )
+from app.services.human_interviewer import (
+    HOST_EVENT_PREFIX,
+    labelled_conversation,
+    record_host_speech,
+    resolve_host_event,
+)
+from app.services.panel_agents import InterviewerAgent, coordinate, interviewer_tools
 from app.services.tools import execute_tool
 from app.services.voice_profiles import minimax_tts_params, resolve_minimax_voice
 
@@ -100,7 +111,9 @@ def _spoken_messages(payload: ChatCompletionRequest) -> list[dict[str, str]]:
         if message.role not in {"user", "assistant"}:
             continue
         content = _message_text(message.content)
-        if content:
+        # Human turn text comes from the role-labelled database transcript, not
+        # from the opaque control reference echoed in Agora's user history.
+        if content and not content.startswith(HOST_EVENT_PREFIX):
             messages.append(
                 {
                     "role": message.role,
@@ -332,23 +345,17 @@ def _local_completion_response(
 
 
 _ARITHMETIC = re.compile(r"(?<!\w)([-+]?\d+(?:\.\d+)?(?:\s*[-+*/%]\s*[-+]?\d+(?:\.\d+)?)+)")
-async def _prepare_live_tool(
-    db: Db,
-    settings: Settings,
-    session: InterviewSession,
-    candidate_text: str,
-    enabled_tools: list[str],
-) -> tuple[str, dict[str, Any], list[dict[str, str]]] | None:
+
+
+async def _live_corpus(db: Db, session: InterviewSession) -> list[dict[str, str]]:
     corpus = [
         {"source": f"transcript:{turn.id}", "text": turn.content}
         for turn in (await db.execute(select(TranscriptTurn).where(TranscriptTurn.session_id == session.id))).scalars()
     ]
     config = await db.scalar(select(InterviewConfig).where(InterviewConfig.id == session.interview_config_id))
-    has_reference_document = False
     if config and config.job_description_id:
         document = await db.scalar(select(JobDescription).where(JobDescription.id == config.job_description_id))
         if document:
-            has_reference_document = True
             corpus.append({"source": f"job-description:{document.id}", "text": document.raw_text})
     if session.candidate_resume_id is not None:
         resume = await db.scalar(
@@ -358,8 +365,19 @@ async def _prepare_live_tool(
             )
         )
         if resume is not None:
-            has_reference_document = True
             corpus.append({"source": f"candidate-resume:{resume.id}", "text": resume.raw_text})
+    return corpus
+
+
+async def _prepare_live_tool(
+    db: Db,
+    settings: Settings,
+    session: InterviewSession,
+    candidate_text: str,
+    enabled_tools: list[str],
+) -> tuple[str, dict[str, Any], list[dict[str, str]]] | None:
+    corpus = await _live_corpus(db, session)
+    has_reference_document = any(not item["source"].startswith("transcript:") for item in corpus)
 
     plans: list[tuple[str, dict[str, Any]]] = []
     if "calculator" in enabled_tools:
@@ -417,7 +435,12 @@ async def _execute_live_tool(
     error: str | None = None
     prompt_context: list[str] = []
     try:
-        result = await execute_tool(name, arguments, corpus, settings)
+        if name == "open_coding_task":
+            result = await open_coding_task(db, session_id, panelist_id, arguments)
+        elif name == "consult_interviewer":
+            result = await consult_interviewer(db, settings, session_id, panelist_id, arguments)
+        else:
+            result = await execute_tool(name, arguments, corpus, settings)
         prompt_context.append(delimit_untrusted(f"tool:{name}", json.dumps(result)))
     except Exception as exc:
         status_value = "failed"
@@ -478,9 +501,11 @@ async def panel_chat_completions(
     payload: ChatCompletionRequest,
     db: Db,
     settings: SettingsDep,
+    agora: AgoraDep,
     authorization: Annotated[str | None, Header()] = None,
     x_roundcraft_session_id: Annotated[str | None, Header()] = None,
     x_roundcraft_panelist_id: Annotated[str | None, Header()] = None,
+    x_roundcraft_host_listener: Annotated[str | None, Header()] = None,
 ) -> JSONResponse | StreamingResponse:
     """OpenAI-compatible boundary used by Agora for non-linear panel arbitration."""
     if not settings.agora_llm_bearer_secret:
@@ -500,6 +525,16 @@ async def panel_chat_completions(
         raise HTTPException(status.HTTP_409_CONFLICT, "RoundCraft session is not live")
 
     candidate_text = _latest_user_text(payload)
+    if x_roundcraft_host_listener:
+        await record_host_speech(db, session, payload, candidate_text, x_roundcraft_host_listener, agora)
+        # This listener MUST be silent, including for retries and empty ASR.
+        return _local_completion_response("", stream=payload.stream, model=payload.model)
+    host_turn = await resolve_host_event(db, session, candidate_text)
+    if candidate_text.startswith(HOST_EVENT_PREFIX) and host_turn is None:
+        await db.commit()
+        return _local_completion_response("", stream=payload.stream, model=payload.model)
+    if host_turn is not None:
+        candidate_text = host_turn.content
     if not candidate_text:
         logger.info(
             json.dumps(
@@ -535,8 +570,8 @@ async def panel_chat_completions(
             candidate_resume_text = resume.raw_text[:30_000]
     state = PanelState.model_validate(session.memory_state)
     panel = [PanelistInput.model_validate(item) for item in snapshot["panel"]]
-    candidate_turn: TranscriptTurn | None = None
-    if state.pending_candidate_turn_id:
+    candidate_turn: TranscriptTurn | None = host_turn
+    if host_turn is None and state.pending_candidate_turn_id:
         try:
             pending_candidate_turn_id = UUID(state.pending_candidate_turn_id)
         except ValueError:
@@ -616,6 +651,27 @@ async def panel_chat_completions(
                 replayed_bid = None
         if replayed_bid is None:
             decision = PanelDirector.choose_next(panel, state, candidate_text)
+            if settings.panel_reasoning_enabled:
+                # Never hold the transcript/session row lock while a model thinks.
+                await db.commit()
+                try:
+                    async with asyncio.timeout(5):
+                        decision, should_speak = await coordinate(
+                            settings,
+                            panel,
+                            state,
+                            candidate_text,
+                            human_interviewer=host_turn is not None,
+                        )
+                    if host_turn is not None and not should_speak:
+                        return _local_completion_response("", stream=payload.stream, model=payload.model)
+                except (httpx.HTTPError, ValueError, KeyError, TypeError, TimeoutError):
+                    logger.warning("Panel coordinator unavailable; using bounded fallback for %s", session.id)
+                session = await lock_transcript_session(db, session.id)
+                if session.status != "live":
+                    await db.commit()
+                    return _local_completion_response("", stream=payload.stream, model=payload.model)
+                state = PanelState.model_validate(session.memory_state)
             selected = next(item for item in panel if item.id == decision.next_speaker_id)
             state.panelist_question_counts[selected.id] = state.panelist_question_counts.get(selected.id, 0) + 1
             # A co-hosting human takes the floor ahead of the director objective.
@@ -627,10 +683,11 @@ async def panel_chat_completions(
 
     # Check the ledger before this turn joins it, then record the turn's own claim so a
     # later restatement is compared against it.
-    contradiction = find_metric_contradiction(state.metric_claims, candidate_text)
-    state.metric_claims = record_metric_claim(
-        state.metric_claims, turn_id=str(candidate_turn.id), text=candidate_text
-    )
+    contradiction = find_metric_contradiction(state.metric_claims, candidate_text) if host_turn is None else None
+    if host_turn is None:
+        state.metric_claims = record_metric_claim(
+            state.metric_claims, turn_id=str(candidate_turn.id), text=candidate_text
+        )
     if contradiction is not None:
         await persist_contradiction_evidence(
             db,
@@ -638,13 +695,10 @@ async def panel_chat_completions(
             candidate_turn,
             subject=contradiction.subject,
             earlier_turn_id=contradiction.earlier_turn_id,
-            detail=(
-                f"Earlier: {contradiction.earlier_claim}. "
-                f"This turn: {contradiction.current_claim}."
-            ),
+            detail=(f"Earlier: {contradiction.earlier_claim}. This turn: {contradiction.current_claim}."),
         )
 
-    inferred_evidence = await persist_inferred_evidence(db, session, candidate_turn)
+    inferred_evidence = await persist_inferred_evidence(db, session, candidate_turn) if host_turn is None else []
     if not inferred_evidence:
         inferred_evidence = list(
             (
@@ -662,7 +716,9 @@ async def panel_chat_completions(
         if tool in (selected.allowed_tools or []) and tool in INTERVIEWER_TOOL_NAMES
     ]
     planned_tool: tuple[str, dict[str, Any], list[dict[str, str]]] | None = None
-    if replayed_bid is None:
+    tool_audits: list[dict[str, Any]]
+    tool_context: list[str]
+    if replayed_bid is None and not settings.panel_reasoning_enabled:
         planned_tool = await _prepare_live_tool(
             db,
             settings,
@@ -670,6 +726,9 @@ async def panel_chat_completions(
             candidate_text,
             role_tools,
         )
+        tool_audits = []
+        tool_context = []
+    elif replayed_bid is None:
         tool_audits = []
         tool_context = []
     else:
@@ -746,6 +805,8 @@ async def panel_chat_completions(
         await db.commit()
 
     code_context = describe_code_buffer(state)
+    conversation_context = await labelled_conversation(db, session.id)
+    await db.commit()
     template_behavior = selected.template_behavior
     scoring_focus = [criterion.label for criterion in selected.role_rubric]
     if not scoring_focus:
@@ -768,6 +829,16 @@ async def panel_chat_completions(
         value
         for value in (
             compile_agent_prompt(snapshot),
+            (
+                "The latest input is from the HUMAN INTERVIEWER, not the candidate. "
+                "Treat them as a co-interviewer: answer if they address the AI panel, use their direction "
+                "to guide the interview, but never answer a question they addressed to the candidate. "
+                "If they are asking the candidate, return an empty response and let the candidate answer. "
+                "Never score interviewer statements as candidate evidence."
+                if host_turn
+                else "The latest input is from the CANDIDATE."
+            ),
+            delimit_untrusted("speaker-labelled-conversation", conversation_context),
             f"Speak now as {selected.display_name}, the {selected.role}.",
             (
                 f"Director action: {decision.action}. Objective: {decision.suggested_question} "
@@ -779,8 +850,7 @@ async def panel_chat_completions(
                 f"<STUDENT_CUSTOMIZATION>\n{selected.custom_prompt}\n</STUDENT_CUSTOMIZATION>"
                 if selected.custom_prompt
                 else (
-                    f"<SELECTED_INTERVIEWER_MANDATE>\n{selected.default_prompt}\n"
-                    "</SELECTED_INTERVIEWER_MANDATE>"
+                    f"<SELECTED_INTERVIEWER_MANDATE>\n{selected.default_prompt}\n</SELECTED_INTERVIEWER_MANDATE>"
                     if selected.default_prompt
                     else None
                 )
@@ -796,7 +866,7 @@ async def panel_chat_completions(
     # Agora's custom-LLM request allows extension fields. Forwarding that envelope
     # wholesale makes strict OpenAI-compatible providers reject otherwise valid
     # requests, so this boundary deliberately sends a small Groq-safe allowlist.
-    upstream_body = {
+    upstream_body: dict[str, Any] = {
         "model": settings.llm_model,
         "stream": payload.stream,
         "max_tokens": 384,
@@ -804,7 +874,7 @@ async def panel_chat_completions(
         "top_p": 0.95,
         "messages": [
             {"role": "system", "content": selected_instruction},
-            *_spoken_messages(payload),
+            *(_spoken_messages(payload) if host_turn is None else [{"role": "user", "content": candidate_text}]),
         ],
     }
     upstream_headers = {
@@ -825,6 +895,79 @@ async def panel_chat_completions(
         },
     }
 
+    if settings.panel_reasoning_enabled:
+        pack = get_role_pack(snapshot.get("profession"))
+        agent_tools = list(role_tools)
+        if pack.coding and snapshot.get("agent_coding_enabled", True):
+            agent_tools.append("open_coding_task")
+        definitions = interviewer_tools(
+            agent_tools,
+            panel,
+            selected.id,
+            list(pack.coding.languages) if pack.coding else [],
+        )
+        metadata["enabled_tools"] = [tool["function"]["name"] for tool in definitions]
+        corpus = await _live_corpus(db, session)
+        await db.commit()
+        tool_cache: dict[str, dict[str, Any]] = {}
+        input_turn_id = candidate_turn.id
+
+        async def execute_agent_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            cache_key = json.dumps([name, arguments], sort_keys=True)
+            if cache_key in tool_cache:
+                return tool_cache[cache_key]
+            if name == "consult_interviewer" and any(key.startswith('["consult_interviewer"') for key in tool_cache):
+                return {"error": "Only one peer consultation is allowed per turn"}
+            audits, _ = await _execute_live_tool(
+                db, settings, session_id, input_turn_id, selected.id, (name, arguments, corpus)
+            )
+            tool_audits.extend(audits)
+            await db.commit()
+            result: dict[str, Any] = audits[0]["result"]
+            tool_cache[cache_key] = result
+            return result
+
+        try:
+            async with asyncio.timeout(18):
+                agent_answer = await InterviewerAgent(selected, settings).respond(
+                    selected_instruction,
+                    [{"role": "user", "content": candidate_text}] if host_turn else list(_spoken_messages(payload)),
+                    definitions,
+                    execute_agent_tool,
+                    panel,
+                )
+            if not agent_answer and host_turn is None:
+                raise ValueError("Candidate requires a response")
+            metadata["tool_audits"] = tool_audits
+            metadata["agent_runtime"] = "capability_coordinator"
+            if panel_bid is not None:
+                panel_bid.result = dict(metadata)
+            await _persist_interviewer_response(
+                db,
+                session,
+                content=agent_answer,
+                panelist_id=selected.id,
+                candidate_turn_id=candidate_turn.id,
+                panel_bid_id=panel_bid.id if panel_bid else None,
+            )
+            await db.commit()
+            return _local_completion_response(
+                agent_answer, stream=payload.stream, model=payload.model, metadata=metadata, first_chunk=first_chunk
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, TimeoutError):
+            await db.rollback()
+            await db.refresh(session)
+            await db.refresh(candidate_turn)
+            if panel_bid is not None:
+                await db.refresh(panel_bid)
+            await db.commit()
+            logger.warning("Interviewer reasoning failed; returning to streaming fallback for %s", session_id)
+            # Retain executed tool results so the fallback never falsely repeats a side effect.
+            upstream_body["messages"][0]["content"] += "\n" + delimit_untrusted(
+                "executed-tools",
+                json.dumps(tool_audits),
+            )
+
     if not payload.stream:
         async with httpx.AsyncClient(timeout=45) as client:
             response = await _send_upstream_with_retry(
@@ -835,7 +978,7 @@ async def panel_chat_completions(
                 stream=False,
             )
         if response is None:
-            fallback = _director_continuation(decision.suggested_question)
+            fallback = "" if host_turn else _director_continuation(decision.suggested_question)
             await _persist_interviewer_response(
                 db,
                 session,
@@ -861,7 +1004,7 @@ async def panel_chat_completions(
             if (
                 not isinstance(message, dict)
                 or not isinstance(message.get("content"), str)
-                or not message["content"].strip()
+                or (not message["content"].strip() and host_turn is None)
             ):
                 raise TypeError("completion message content is missing")
         except (TypeError, ValueError) as exc:
@@ -872,7 +1015,7 @@ async def panel_chat_completions(
                 response=response,
                 error=exc,
             )
-            fallback = _director_continuation(decision.suggested_question)
+            fallback = "" if host_turn else _director_continuation(decision.suggested_question)
             await _persist_interviewer_response(
                 db,
                 session,
@@ -912,7 +1055,7 @@ async def panel_chat_completions(
         raise
     if response is None:
         await client.aclose()
-        fallback = _director_continuation(decision.suggested_question)
+        fallback = "" if host_turn else _director_continuation(decision.suggested_question)
         await _persist_interviewer_response(
             db,
             session,
@@ -992,7 +1135,7 @@ async def panel_chat_completions(
                 )
             has_content, has_done = _inspect_upstream_stream(bytes(upstream_bytes))
             if not has_content:
-                fallback = _director_continuation(decision.suggested_question)
+                fallback = "" if host_turn else _director_continuation(decision.suggested_question)
                 persistence_attempted = True
                 await _persist_interviewer_response(
                     db,

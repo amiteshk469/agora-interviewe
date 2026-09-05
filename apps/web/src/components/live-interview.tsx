@@ -34,6 +34,7 @@ import {
   listSessionToolRuns,
   persistSessionTurn,
   readHostPresence,
+  readSessionCodingTask,
   readLiveSession,
   type HostPresence,
   type RolePack,
@@ -120,6 +121,7 @@ export function LiveInterviewScreen() {
   const [rolePack, setRolePack] = useState<RolePack | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
   const [hostPresence, setHostPresence] = useState<HostPresence | null>(null);
+  const [sharedCodingTask, setSharedCodingTask] = useState<HostPresence["coding_task"]>(null);
   const [hostMessages, setHostMessages] = useState<HostPresence["messages"]>([]);
   const [inviteState, setInviteState] = useState<"idle" | "copying" | "copied" | "ready" | "error">("idle");
   const [inviteLink, setInviteLink] = useState("");
@@ -237,9 +239,13 @@ export function LiveInterviewScreen() {
     let timer: number | null = null;
     const poll = async () => {
       try {
-        const presence = await readHostPresence(storedSession.sessionId);
+        const [presence, task] = await Promise.all([
+          readHostPresence(storedSession.sessionId),
+          readSessionCodingTask(storedSession.sessionId).catch(() => undefined),
+        ]);
         if (!cancelled) {
           setHostPresence(presence);
+          if (task !== undefined) setSharedCodingTask(task);
           if (presence?.messages.length) {
             setHostMessages((current) => mergeRecordsById(current, presence.messages));
           }
@@ -484,12 +490,13 @@ export function LiveInterviewScreen() {
   const coding = rolePack?.supports_coding ? rolePack.coding : null;
   const codingTask = (() => {
     if (!coding) return null;
-    if (hostPresence?.coding_task?.active) {
+    const sharedTask = sharedCodingTask ?? hostPresence?.coding_task;
+    if (sharedTask?.active) {
       return {
-        id: hostPresence.coding_task.id,
-        text: hostPresence.coding_task.question,
-        language: hostPresence.coding_task.language,
-        hints: hostPresence.coding_task.hints,
+        id: sharedTask.id,
+        text: sharedTask.question,
+        language: sharedTask.language,
+        hints: sharedTask.hints,
       };
     }
     const turn = liveTurns.find(

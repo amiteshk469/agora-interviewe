@@ -238,36 +238,179 @@ input[type="file"]:not(:disabled) {
   animation: enter 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.landing-shell {
-  --landing-ink: var(--foreground);
+/* Marketing-only atmosphere. The content grid and all app surfaces stay intact. */
+.landing-shell { overflow-x: clip; }
+
+.landing-header-skin {
+  background: color-mix(in oklab, var(--background) 94%, var(--card));
+}
+
+.landing-hero-skin {
+  position: relative;
+  isolation: isolate;
+}
+
+.landing-hero-skin::before,
+.landing-hero-skin::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.landing-hero-skin::before {
+  z-index: -1;
   background-image:
-    linear-gradient(to right, color-mix(in oklab, var(--foreground) 3%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 3%, transparent) 1px, transparent 1px);
-  background-size: 5rem 5rem;
+    linear-gradient(to right, color-mix(in oklab, var(--foreground) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 8%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse at 78% 35%, #000 12%, transparent 75%);
 }
 
-.landing-hero {
+.landing-hero-skin::after {
+  z-index: -2;
   background:
-    radial-gradient(circle at 74% 38%, color-mix(in oklab, var(--primary) 6%, transparent), transparent 28rem),
-    var(--background);
+    radial-gradient(ellipse at 84% 40%, rgb(215 111 84 / 17%), transparent 51%),
+    radial-gradient(ellipse at 14% 8%, rgb(255 253 247 / 85%), transparent 45%);
 }
 
-.landing-display {
-  text-wrap: balance;
-  animation: landing-type-in 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.landing-sculpture {
+  /* Fade the existing artwork into the page, not into a floating card. */
+  isolation: isolate;
 }
 
-.landing-signal {
-  animation: landing-signal-in 950ms 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  filter: drop-shadow(0 7px 18px color-mix(in oklab, var(--primary) 16%, transparent));
+.landing-sculpture img {
+  mask-image:
+    linear-gradient(to right, transparent, #000 15%, #000 85%, transparent),
+    linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+  mask-composite: intersect;
 }
 
-.landing-transcript {
-  animation: landing-transcript-in 520ms 660ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.landing-sculpture figcaption {
+  color: var(--muted-foreground);
 }
 
-.landing-document {
-  perspective: 900px;
+.landing-primary-cta {
+  box-shadow: 0 7px 22px -7px color-mix(in oklab, var(--primary) 60%, transparent), 0 1px 0 rgb(255 255 255 / 20%) inset;
+}
+
+.landing-capability-strip {
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--primary) 4%, transparent), transparent);
+}
+
+.landing-paths-skin,
+.landing-inset-surface,
+.landing-evidence-skin,
+.landing-closing-skin {
+  position: relative;
+  isolation: isolate;
+}
+
+.landing-paths-skin::before,
+.landing-evidence-skin::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset-block: 0;
+  left: 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.landing-paths-skin::before {
+  background:
+    radial-gradient(ellipse at 12% 62%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 43%),
+    radial-gradient(ellipse at 90% 90%, color-mix(in oklab, var(--foreground) 4%, transparent), transparent 48%);
+}
+
+.landing-paths-skin article {
+  position: relative;
+}
+
+.landing-paths-skin article::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  inset-inline-start: 0;
+  height: 1px;
+  width: 45%;
+  background: linear-gradient(90deg, var(--primary), transparent);
+  pointer-events: none;
+}
+
+.landing-inset-surface {
+  overflow: hidden;
+  background-image: radial-gradient(ellipse at 0% 85%, color-mix(in oklab, var(--primary) 9%, transparent), transparent 55%);
+}
+
+.landing-inset-surface::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: repeating-radial-gradient(ellipse at 0% 100%, transparent 0 60px, color-mix(in oklab, var(--primary) 14%, transparent) 61px, transparent 62px 102px);
+  mask-image: linear-gradient(115deg, #000, transparent 54%);
+  pointer-events: none;
+}
+
+.landing-evidence-skin::before {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px),
+    radial-gradient(ellipse at 80% 50%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 65%);
+  background-size: 64px 64px, 64px 64px, auto;
+  mask-image: radial-gradient(ellipse at 88% 50%, #000, transparent 68%);
+}
+
+.landing-evidence-trail {
+  position: relative;
+  background: linear-gradient(100deg, color-mix(in oklab, var(--background) 60%, transparent), transparent);
+}
+
+.landing-evidence-trail::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: -1.5rem;
+  width: 1px;
+  background: linear-gradient(transparent, color-mix(in oklab, var(--primary) 55%, transparent), transparent);
+  pointer-events: none;
+}
+
+.landing-closing-skin {
+  overflow: hidden;
+  background-image: radial-gradient(ellipse at 70% 120%, color-mix(in oklab, var(--primary) 16%, transparent), transparent 70%);
+}
+
+.landing-closing-skin::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: repeating-radial-gradient(ellipse at 75% 165%, transparent 0 64px, color-mix(in oklab, var(--primary) 18%, transparent) 65px, transparent 66px 105px);
+  mask-image: linear-gradient(to top, #000, transparent 95%);
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .landing-hero-skin::after {
+  background:
+    radial-gradient(ellipse at 84% 42%, rgb(147 54 36 / 23%), transparent 54%),
+    radial-gradient(ellipse at 8% 10%, rgb(65 89 85 / 12%), transparent 46%);
+}
+
+@media (max-width: 639px) {
+  .landing-hero-skin::before {
+    background-size: 48px 48px;
+    mask-image: linear-gradient(to bottom, transparent 10%, #000 85%, transparent);
+    opacity: 0.65;
+  }
+
+  .landing-evidence-skin::before { background-size: 48px 48px, 48px 48px, auto; }
+  .landing-evidence-trail::before { inset-inline-start: -0.65rem; }
 }
 
 .landing-link {
@@ -282,28 +425,6 @@ input[type="file"]:not(:disabled) {
 
 .landing-link:focus-visible {
   box-shadow: 0 0 0 2px var(--ring);
-}
-
-@keyframes landing-type-in {
-  from { opacity: 0; transform: translateY(1.25rem); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes landing-signal-in {
-  from { clip-path: inset(0 100% 0 0); opacity: 0; }
-  to { clip-path: inset(0 0 0 0); opacity: 1; }
-}
-
-@keyframes landing-transcript-in {
-  from { opacity: 0; transform: translateY(0.75rem) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@media (max-width: 639px) {
-  .landing-signal {
-    inset-inline: -31rem;
-    top: 8.4rem;
-  }
 }
 
 @keyframes enter {

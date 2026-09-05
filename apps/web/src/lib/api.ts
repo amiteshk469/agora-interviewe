@@ -255,10 +255,10 @@ export async function createInterviewConfig(payload: InterviewConfigPayload) {
   return productRequest<{ id: string; status: string }>("/interview-configs", { method: "POST", body: JSON.stringify(payload) });
 }
 
-export async function createInterviewSession(interviewConfigId: string) {
+export async function createInterviewSession(interviewConfigId: string, options: { conversation_mode?: "balanced" | "let_me_finish"; agent_coding_enabled?: boolean } = {}) {
   return productRequest<ProductSession>("/sessions", {
     method: "POST",
-    body: JSON.stringify({ interview_config_id: interviewConfigId }),
+    body: JSON.stringify({ interview_config_id: interviewConfigId, ...options }),
   });
 }
 
@@ -280,6 +280,14 @@ export async function endInterviewSession(sessionId: string) {
 
 export function renewInterviewSessionToken(sessionId: string) {
   return productRequest<AgoraConfig>(`/sessions/${sessionId}/token`, { method: "POST" });
+}
+
+export function requestSessionBackchannel(sessionId: string) {
+  return productRequest<{ requested: boolean }>(`/sessions/${sessionId}/backchannel`, { method: "POST" });
+}
+
+export function requestGuestBackchannel(token: string) {
+  return guestRequest<{ requested: boolean }>(`/guest/candidates/${encodeURIComponent(token)}/backchannel`, { method: "POST" });
 }
 
 export async function persistSessionTurn(sessionId: string, turn: {
@@ -430,6 +438,10 @@ export function readSessionCode(sessionId: string) {
   return productRequest<CodeBuffer>(`/sessions/${sessionId}/code`);
 }
 
+export function readSessionCodingTask(sessionId: string) {
+  return productRequest<CodingTask | null>(`/sessions/${sessionId}/coding-task`);
+}
+
 export function saveSessionCode(sessionId: string, language: string, content: string) {
   return productRequest<CodeBuffer>(`/sessions/${sessionId}/code`, {
     method: "POST",
@@ -521,6 +533,7 @@ export type GuestSession = {
   role_pack: string;
   status: string;
   seat: "interviewer" | "candidate";
+  conversation_mode?: "balanced" | "let_me_finish";
   display_name: string;
   connection: AgoraConfig;
   panel: Array<{ id: string; display_name: string; role: string; avatar_image?: string | null }>;
@@ -546,6 +559,8 @@ export type GuestInvitePreview = {
 
 export type GuestView = {
   status: string;
+  ai_listening?: boolean;
+  ai_listening_error?: string | null;
   turns: Array<{
     id: string;
     sequence: number;
