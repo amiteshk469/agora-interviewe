@@ -36,3 +36,9 @@ export function safeReturnPath(value?: string | null, fallback = "/dashboard") {
   if (value.startsWith("/auth/")) return fallback;
   return value;
 }
+
+export function confirmationRedirect(origin: string, nextPath?: string | null) {
+  const baseUrl = origin.replace(/\/+$/, "");
+  const destination = safeReturnPath(nextPath);
+  return `${baseUrl}/auth/callback?next=${encodeURIComponent(destination)}`;
+}
